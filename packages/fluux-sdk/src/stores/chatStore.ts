@@ -64,7 +64,9 @@ import {
 import {
   clearPurgedMarkers,
   isMarkerPurged,
+  isMarkerSuperseded,
   notePurgedMarker,
+  noteSupersededMarker,
   type PurgedMarkerKey,
 } from './shared/purgedMarkers'
 import {
@@ -83,7 +85,13 @@ import { createRemoteDividerAdvanceTracker } from './shared/dividerAdvance'
 import { locallyPublishedDisplayed } from '../core/localMdsPublishes'
 import { isAhead, rowRefOfPointer } from './shared/readPointer'
 import { getBareJid } from '../core/jid'
-import { resolveRemoteDisplayed, createMdsSessionGate, foldPendingRemoteDisplayed } from './shared/readMarkerSync'
+import {
+  resolveRemoteDisplayed,
+  createMdsSessionGate,
+  foldPendingRemoteDisplayed,
+  resolveStashedRemoteDisplayed,
+  supersededPendingMarker,
+} from './shared/readMarkerSync'
 import {
   advance,
   deserializeReadPointer,
@@ -105,6 +113,7 @@ import { scheduleDurableMaps, cancelDurableMaps, forgetAllDurableMapBaselines, n
 // Read via getResidentWindowSize() so a DEV/DEMO/TEST caller can shrink it — see shared/residentWindow.ts.
 import { getResidentWindowSize } from './shared/residentWindow'
 import { clearMarker, lastMessageTimestamp, clearCoverageEntry, clearGapAnchor } from './shared/keyedMapEdits'
+import { sortMessagesByTimestamp } from './shared/messageArrayUtils'
 
 const STORAGE_KEY_BASE = 'xmpp-chat-storage'
 
@@ -2172,6 +2181,7 @@ export const chatStore = createStore<ChatState>()(
         if (!connectionStore.getState().windowVisible) return
 
         let pointerAdvanced = false
+        let readThrough = false
         set((state) => {
           const meta = state.conversationMeta.get(conversationId)
           if (!meta) return state
@@ -2191,11 +2201,20 @@ export const chatStore = createStore<ChatState>()(
             { atLiveEdge }
           )
 
-          // No change: onMessageSeen hands back the pointer it was given (by
-          // reference) whenever it did not advance, and a fresh object when it did.
-          if (updated.readPointer === meta.readPointer) return state
+          // Seeing the newest row with both the loaded window and the measured
+          // viewport at the live tail is direct read evidence, even when archive
+          // coverage cannot yet support a recount. A mounted row alone is not.
+          readThrough = atLiveEdge
+            && state.activeConversationId === conversationId
+            && currentViewportEvidence(chatViewportEvidenceKey(conversationId)) === 'at-edge'
+            && sameMessageRow(row, messages[messages.length - 1])
+          const unreadCount = readThrough ? 0 : meta.unreadCount
+          pointerAdvanced = updated.readPointer !== meta.readPointer
+          if (!pointerAdvanced && unreadCount === meta.unreadCount) return state
 
-          pointerAdvanced = true
+          // A count-only clear must also invalidate a recount already in flight;
+          // its pointer-reference guard cannot detect this transition.
+          if (readThrough) bumpChatRecountVersion(conversationId)
 
           // The viewport-driven pointer just advanced — bound the transient
           // overlay's memory.
@@ -2204,22 +2223,14 @@ export const chatStore = createStore<ChatState>()(
           }
 
           const draft = draftConversationMaps(state)
-          draft.patchMeta(conversationId, { readPointer: updated.readPointer })
+          draft.patchMeta(conversationId, { readPointer: updated.readPointer, unreadCount })
           return draft.commit()
         })
 
-        // onMessageSeen only ever moves the
-        // pointer — it never recomputes unreadCount, and nothing else did
-        // either once onActivate stopped force-zeroing the active entity. Without
-        // this trigger, live-edge convergence (acceptance scenario 5: scroll an
-        // active, focused conversation to the bottom) left the sidebar badge at
-        // its stale pre-convergence value until the next arrival or the next
-        // activation. `allowActive: true` is safe here because a pointer only
-        // ever advances against the RESIDENT messages array, which only the
-        // active conversation keeps (setActiveConversation evicts everyone
-        // else's) — this trigger only ever fires for the entity that is, in
-        // practice, active.
-        if (pointerAdvanced) {
+        // Partial reading still needs the guarded archive count: unseen messages
+        // can lie beyond the resident slice. A witnessed live tail already gives
+        // the synchronous zero above and needs no archive round trip.
+        if (pointerAdvanced && !readThrough) {
           void get().recomputeUnreadForConversation(conversationId, { allowActive: true })
         }
       },
@@ -2267,6 +2278,12 @@ export const chatStore = createStore<ChatState>()(
         // active-conversation skip in recomputeUnreadForConversation
         // explicitly bypassed (`allowActive: true`).
         let advancedActive = false
+        // A stash this application released or superseded: the recount that deferred on it runs
+        // again below.
+        let supersededStash: string | undefined
+        let releasedStash = false
+        // Set when the marker could only be stashed — the cache may still order it.
+        let stashed = false
         set((state) => {
           const meta = state.conversationMeta.get(conversationId)
           if (!meta) return state
@@ -2289,9 +2306,12 @@ export const chatStore = createStore<ChatState>()(
             'chat',
             { isActive: state.activeConversationId === conversationId }
           )
+          supersededStash = supersededPendingMarker(meta.pendingRemoteDisplayedStanzaId, stanzaId, resolution)
           if (resolution.kind === 'unchanged') return state
 
           const clearsPending = meta.pendingRemoteDisplayedStanzaId === stanzaId
+          releasedStash = clearsPending
+          stashed = resolution.kind === 'stash-pending'
           const metaPatch =
             resolution.kind === 'stash-pending'
               ? { pendingRemoteDisplayedStanzaId: stanzaId }
@@ -2381,13 +2401,36 @@ export const chatStore = createStore<ChatState>()(
         // `messages`/`messagesOverride` above), deferring — leaving the last
         // TRUSTED count untouched — whenever coverage isn't proven down to the
         // new floor, rather than committing a page-scoped undercount.
+        if (stashed) bumpChatUnreadInputVersion(conversationId)
+        if (supersededStash !== undefined) noteSupersededMarker(chatPurgedMarkerKey(conversationId), supersededStash)
         if (advancedNonActive) {
           void get().recomputeUnreadForConversation(conversationId)
-        } else if (advancedActive) {
+        } else if (advancedActive || releasedStash || supersededStash !== undefined) {
           // The active entity gets the SAME re-derivation, with the
           // active-conversation skip explicitly bypassed — see this method's
-          // doc and recomputeUnreadForConversation's.
+          // doc and recomputeUnreadForConversation's. A released or superseded
+          // stash re-derives the count that deferred on it, as
+          // `discardPurgedRemoteDisplayed` does.
           void get().recomputeUnreadForConversation(conversationId, { allowActive: true })
+        }
+        if (stashed) {
+          void resolveStashedRemoteDisplayed(
+            stanzaId,
+            captureChatCacheRead(conversationId),
+            () => get().conversationMeta.get(conversationId)?.pendingRemoteDisplayedStanzaId,
+            async () => {
+              const marker = await messageCache.getMessageByStanzaId(conversationId, stanzaId)
+              if (!marker) return null
+              const pointer = get().conversationMeta.get(conversationId)?.readPointer
+              if (pointer?.order.role !== 'floor') return [marker]
+              const pointerRow = await messageCache.getMessage(conversationId, pointer.identity.messageId)
+              return sortMessagesByTimestamp(
+                pointerRow && pointerRow.id !== marker.id ? [marker, pointerRow] : [marker],
+                'chat'
+              )
+            },
+            (rows) => get().applyRemoteDisplayed(conversationId, stanzaId, rows)
+          )
         }
       },
 
@@ -2944,7 +2987,10 @@ export const chatStore = createStore<ChatState>()(
         // the read position only through XEP-0490.
         const metaNow = get().conversationMeta.get(conversationId)
         if (!metaNow) return defer('no-meta')
-        if (metaNow.pendingRemoteDisplayedStanzaId !== undefined) return defer('pending-remote-displayed')
+        if (metaNow.pendingRemoteDisplayedStanzaId !== undefined &&
+          !isMarkerSuperseded(chatPurgedMarkerKey(conversationId), metaNow.pendingRemoteDisplayedStanzaId)) {
+          return defer('pending-remote-displayed')
+        }
         if (pointerlessDefers(metaNow.readPointer, metaNow.unreadCount)) return defer('pointerless-defer')
 
         const recountToken = chatRecountsInFlight.begin(conversationId)

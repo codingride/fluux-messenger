@@ -56,13 +56,21 @@
 ### Messaging
 - **Reactions, Replies & Styling** - Emoji reactions with quick toolbar, threaded replies, and rich text formatting (bold, italic, code blocks with syntax highlighting)
 - **Emoji Autocomplete** - Type `:` and a keyword to complete emojis inline, with arrow-key navigation and Enter or Tab to insert
-- **Message Retraction & Moderation** - Delete your own messages or moderate room messages with full audit trail
+- **Message Retraction & Moderation** - Delete your own messages or remove room messages for all participants. Connected moderators can open **Bulk moderation** from the room management menu, filter by sender or message text, select messages, then **Review selection** before removal. The single-message removal dialog also offers **Review messages from…** when a stable author identity is available; a reused nickname does not identify the same author.
+
+  Each batch contains only messages already loaded when its dialog opened. To include older messages, close the dialog, scroll back in the room, then reopen it. Messages with uncertain IDs from an older local cache remain readable, but individual and bulk moderator removal are unavailable until normal loading confirms their room-assigned IDs. Moderation does not fetch history to verify them, scan the full archive, or purge the server database.
+
+  Requests run sequentially with a pause between them and recheck connection and permissions. **Stop after current message** leaves later requests unattempted. Results count removals, failures, skips and unattempted messages; **Retry** reviews failures and unattempted messages without resending successful removals.
+
+  Both removal dialogs offer a translated **Spam** preset that sends the reason `Spam`. Fluux hides the entire row and its previews when trusted room moderation carries that reason, ignoring case and surrounding whitespace; other removals retain a deletion notice. Known Spam quotations also disappear from replies and search context. A staged reply loses the hidden quotation while preserving your draft text and attachment, including during upload. Local cache checks for these previews do not fetch server history. **Load earlier messages** and keyboard history navigation remain available when every loaded row is hidden.
+
 - **Link Previews** - Automatic Open Graph previews for shared URLs
 - **File Sharing** - HTTP uploads with drag-and-drop, thumbnails, progress indicators, image lightbox, and text file preview
 - **Polls** - Create polls in rooms with emoji voting, deadlines, single or multi-vote modes, and live result tallies
 
 ### Group Chat & Collaboration
 - **Multi-user Chat** - Complete MUC support with roles, affiliations, custom hats (role badges), @mentions, and bookmarks
+- **Permission to Speak** - In moderated rooms, visitors choose **Request voice** in place of the public message composer. Room moderators review **Voice requests** and choose **Grant voice** or **Dismiss**. Visitors can request voice again after an unanswered request or an error; the button is disabled while offline or sending. Public messaging becomes available only when the server grants permission. Dismissing a request only removes it locally; whisper permissions remain governed by the room's existing private-message policy.
 - **Private Messages in Rooms** - Mediated private messages (whispers, XEP-0045 §7.5) to a single occupant, shown as a distinct private thread you can reply to privately
 - **Quick Chat** - Instantly create ad-hoc group conversations and invite contacts by name
 - **Per-User Ignore** - Mute specific users per room, synced across devices
@@ -89,7 +97,7 @@
 ### Desktop & Cross-Platform
 - **Cross-platform** - Available on the web, macOS (Intel & Apple Silicon), Windows, and Linux (deb, rpm, flatpak, AUR)
 - **Auto Updates** - Built-in update checker with release notes and one-click install (desktop)
-- **Native Notifications** - Desktop notifications with click-to-focus; web push notifications even when the tab is closed
+- **Native Notifications** - Desktop notifications with click-to-focus; web push notifications even when the tab is closed. Contact requests, room invitations, and voice requests raise actionable alerts that respect Do Not Disturb and open the relevant request or room.
 - **Auto-Away** - Automatically sets your status to away on system idle and restores it on activity
 - **Offline Support** - IndexedDB storage with automatic sync and stream management session resumption on reconnect
 

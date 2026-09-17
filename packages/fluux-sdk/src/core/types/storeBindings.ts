@@ -356,9 +356,10 @@ export interface RoomBindings {
     incrementUnread?: boolean
     incrementMentions?: boolean
   }) => void
+  waitForMessageArrivals?: (roomJid: string) => Promise<boolean> | undefined
   updateReactions: (roomJid: string, messageId: string, reactorNick: string, emojis: string[]) => void
   resolveCorrectionReferences?: (roomJid: string, targetId: string, actor: MessageActor) => Promise<CorrectionReferences | null | undefined>
-  reconcileHistoryMessages?: (messages: RoomMessage[]) => Promise<RoomMessage[]>
+  reconcileHistoryMessages?: (messages: RoomMessage[], options?: { retractionsOnly?: boolean }) => Promise<RoomMessage[]>
   updateMessage: (roomJid: string, messageId: string, updates: Partial<RoomMessage>) => void
 
   /**
@@ -381,9 +382,9 @@ export interface RoomBindings {
    * bounded resident/cache slice. Commits only on an exact derivation; every
    * uncertain case (pointerless-with-count, incomplete coverage) leaves the
    * last TRUSTED count untouched rather than writing a provisional one.
-   * `mentionsCount` is never written here (see `readState.ts`'s
-   * `RecomputeOutcome` doc) — rooms keep it on the live `+1` path. Latest-wins
-   * across concurrent recounts for the same room.
+   * Mentions stay on the live `+1` path, but a proven zero unread count
+   * clears `mentionsCount` too. Latest-wins across concurrent recounts
+   * for the same room.
    *
    * Called after a deferred-decrypt resolves an encrypted room message (the
    * badge it may have provisionally inflated needs reconciling once the

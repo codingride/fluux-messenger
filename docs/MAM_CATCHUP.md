@@ -86,6 +86,8 @@ including original IDs absorbed by an earlier cache merge.
 Before emitting or returning history, queries reconcile their rows through read-only store/cache
 bindings using the same revision selection as persistence. Reconciliation copies correction content
 and identity/retraction metadata, preserving the fetched page's reactions and other history fields.
+Room preview refreshes and single-message fetches use a retractions-only reconciliation pass,
+so known moderation survives those paths without replacing their content from a cached revision.
 Bounded search-context queries retain a newer cached edit even when its correction lies outside the
 requested window. Failed cache reads fall back to fetched history and resident revisions. Queries
 cancel when their initiating account or session changes, without emitting stale history or status.
@@ -142,7 +144,9 @@ Chains after the preview refresh completes.
   moves the read pointer. Bounded repair queries and walks carrying message
   modifications cannot certify coverage without a durability proof.
 - For an inactive entity whose XEP-0490 read marker is still unresolved, a
-  second phase walks backward from the live-edge window toward that marker. A
+  second phase walks backward from the live-edge window toward that marker.
+  A marker the message cache already holds never needs it: the store orders a
+  stashed marker from the cache as soon as it is stashed. A
   page cap, an active-entity bail, a missing or non-advancing cursor, and a
   cache-seeded archive-start response are inconclusive, so the marker remains
   pending. A complete response proves absence only after the walk descended
@@ -256,7 +260,7 @@ Lower concurrency for catch-up keeps server load reasonable during background wo
 | `packages/fluux-sdk/src/core/roomMamHandoff.ts` and `roomMembershipEpoch.ts` | Coordinates foreground/background room ownership across membership changes |
 | `packages/fluux-sdk/src/utils/mamCatchUpUtils.ts` | Selects id or timestamp catch-up anchors and derives a walk's persistable extent |
 | `packages/fluux-sdk/src/stores/shared/mamCoverage.ts` | Owns coverage bootstrap and extension rules |
-| `packages/fluux-sdk/src/stores/shared/purgedMarkers.ts` | Holds session-scoped proofs for absent XEP-0490 markers |
+| `packages/fluux-sdk/src/stores/shared/purgedMarkers.ts` | Holds session-scoped records of absent and superseded XEP-0490 markers |
 | `packages/fluux-sdk/src/utils/concurrencyUtils.ts` | `executeWithConcurrency()` utility |
 | `packages/fluux-sdk/src/core/modules/MAM.catchup.test.ts` | Tests for catch-up and discovery methods |
 | `packages/fluux-sdk/src/core/roomSideEffects.test.ts` and `backgroundSync.test.ts` | Tests for room trigger, ownership, and handoff wiring |
@@ -290,3 +294,19 @@ Connect / Reconnect
 └─ User opens eligible room
    └─ fetchMAMForRoom()                          ← on demand, cache first
 ```
+
+
+### Hidden moderation rows in history navigation
+
+Room history navigation continues past pages containing only messages moderated with the
+whole reason `Spam` (case-insensitive, with surrounding whitespace ignored). Older history
+walks the cache first, then follows raw MAM `page.first` cursors until a visible row, archive
+end, error, stale target/account, or non-advancing cursor. Newer cache navigation uses the
+same visibility rule. Other moderation reasons and ordinary retractions keep their visible
+tombstones.
+
+The durable cache retains moderation records for replay reconciliation; no schema or
+`ignore` flag is needed. When a room's resident window exceeds its bound, hidden interior
+rows leave memory before visible rows are trimmed. Compaction preserves the raw boundary rows for
+directional pagination, and all new archive rows still reach persistence. Skipping hidden
+rows does not establish archive coverage across cache gaps.

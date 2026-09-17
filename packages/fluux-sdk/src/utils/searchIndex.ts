@@ -19,9 +19,11 @@ import {
   type RetractionScope,
 } from './retractedIdentities'
 import * as messageCache from './messageCache'
+import { getRoomModerationId, roomStanzaIdsMergeable } from './roomStanzaId'
 
 import {
   archiveIdentityConflict,
+  canonicalKey,
   chatMessageAuthor,
   identityKeys,
   occupantConflict,
@@ -331,15 +333,23 @@ function getIndexId(message: Message | RoomMessage): string {
 
 /**
  * The index ids a message may ALSO be stored under, besides {@link getIndexId}.
- *
- * The two room forms are mutually exclusive at write time, so a room message
- * indexed before its archive id arrived lives under the composite form for good —
- * its document is invisible to a removal that only knows the stanza form. This is
- * the read-side complement, not a second write key: nothing is ever indexed here.
  */
 function getFallbackIndexIds(message: Message | RoomMessage): string[] {
   if (message.type !== 'groupchat' || !message.stanzaId) return []
-  return [`room:${searchDocumentFallbackKey(message)}`]
+  return [
+    `room:${searchDocumentFallbackKey(message)}`, roomCollisionIndexId(message),
+    ...(message.localRowRef ? [`room:${searchDocumentKey({ ...message, ...message.localRowRef })}`] : []),
+  ]
+}
+
+function roomCollisionIndexId(message: Pick<RoomMessage, 'roomJid' | 'from' | 'id' | 'occupantId'>): string {
+  return `room:${canonicalKey(roomScope(message.roomJid), { from: message.from, id: message.id, occupantId: message.occupantId })}`
+}
+
+function roomDocumentIdentity(doc: DocEntry) {
+  return { roomJid: doc.conversationId, from: doc.from, id: doc.messageId,
+    stanzaId: doc.stanzaId, occupantId: doc.occupantId,
+    timestamp: doc.timestamp, body: doc.body }
 }
 
 interface RoomDocumentOwner {
@@ -412,7 +422,7 @@ function recordRoomDocumentOwner(
 function docBelongsToRoom(doc: DocEntry, message: RoomMessage): boolean {
   return doc.isRoom &&
     doc.conversationId === message.roomJid &&
-    !occupantConflict(doc, message)
+    !occupantConflict(doc, message) && roomStanzaIdsMergeable(roomDocumentIdentity(doc), message)
 }
 
 function fallbackDocNamesMessage(
@@ -570,7 +580,8 @@ function isKnownRetracted(message: Message | RoomMessage, scopeJid: string | nul
     aliases,
     (record) =>
       message.type === 'groupchat'
-        ? roomMessageAuthor(message, record)
+        ? roomMessageAuthor(message, record) && !archiveIdentityConflict(message, record)
+          && (!record.moderation || !!record.stanzaId && getRoomModerationId(message, scopeJid) === record.stanzaId)
         : chatMessageAuthor(message, record) && !archiveIdentityConflict(message, record)
   ) !== undefined
 }
@@ -709,7 +720,22 @@ async function writeIndexBatch(
         const entry = resolved[i]
         if (!entry) continue
         const { message, cached } = entry
-        const indexId = getIndexId(message)
+        let indexId = getIndexId(message)
+        const collision = await docsStore.get(indexId)
+        if (message.type === 'groupchat' && collision && !docBelongsToRoom(collision, message)) {
+          if (getRoomModerationId(message) && !getRoomModerationId(roomDocumentIdentity(collision))) {
+            const relocatedId = roomCollisionIndexId(roomDocumentIdentity(collision))
+            await docsStore.put({ ...collision, indexId: relocatedId })
+            await docsStore.delete(indexId)
+            for (const token of collision.tokens) {
+              const posting = await getPostings(token)
+              posting.delete(indexId)
+              posting.add(relocatedId)
+            }
+          } else {
+            indexId = roomCollisionIndexId(message)
+          }
+        }
         const doc = message.isRetracted || isNoLocalStore(message) || isKnownRetracted(message, scopeJid)
           ? undefined : createDocEntry(message, indexId, uniqueTokens(message.body))
         if (cached || removal) await remove(message, removal?.identityClosure, messages[i], doc)
@@ -774,7 +800,8 @@ async function removeMessageEntries(
   ): Promise<void> => {
     const doc = await docsStore.get(indexId)
     if (!doc) return
-    if (source && (archiveIdentityConflict(doc, message) || (message.type === 'groupchat' &&
+    if (message.type === 'groupchat' && !docBelongsToRoom(doc, message)) return
+    if (source && (message.type !== 'groupchat' && archiveIdentityConflict(doc, message) || (message.type === 'groupchat' &&
       !roomMessageAuthor(doc, { actorJid: message.from, actorOccupantId: message.occupantId })))) return
     if (verification === 'chat' && (message.type === 'groupchat' || !docBelongsToChat(doc, message))) return
     // A closure document was written under an id the surviving row absorbed, so

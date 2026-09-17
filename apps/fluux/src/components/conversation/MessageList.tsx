@@ -82,7 +82,7 @@ export interface MessageListProps<T extends BaseMessage> {
   /** Divider derived while a synced XEP-0490 read position is still unresolved — rendered muted */
   firstNewMessageIsProvisional?: boolean
   /** ID of a specific message to scroll to (e.g., from activity log click) */
-  targetMessageId?: string | null
+  targetMessageId?: string | MessageRowRef | null
   /** Called after scrolling to target message (to clear the store value) */
   onTargetMessageConsumed?: () => void
   /** Callback to clear the first-new row marker (used by the viewport observer). */
@@ -624,10 +624,10 @@ export function MessageList<T extends BaseMessage>({
   handleVirtualRowMeasuredGrowthRef.current = handleVirtualRowMeasuredGrowth
 
   // Combined ref setter for scroll container
-  const setScrollContainerRef = (element: HTMLDivElement | null) => {
+  const setScrollContainerRef = useCallback((element: HTMLDivElement | null) => {
     (scrollContainerRef as React.MutableRefObject<HTMLDivElement | null>).current = element
     setScrollContainerRefFromHook(element)
-  }
+  }, [setScrollContainerRefFromHook])
 
   // Register this list so code with no enclosing list (PollBanner above the list, find-on-page at
   // the layout level) and ChatLayout's Escape handler can reach the LIVE conversation. Previews are
@@ -766,6 +766,7 @@ export function MessageList<T extends BaseMessage>({
             className={rowClass(rowId)}
             data-message-id={msg.id}
             data-message-row-id={rowId}
+            data-message-row-alias={msg.localRowRef && messageRowId(msg.localRowRef)}
             data-stanza-id={msg.stanzaId}
             data-origin-id={msg.originId}
             // Bulk-copy selection lives on the virtualized row, outside
@@ -943,6 +944,7 @@ export function MessageList<T extends BaseMessage>({
                     className={rowClass(rowId)}
                     data-message-id={msg.id}
                     data-message-row-id={rowId}
+                    data-message-row-alias={msg.localRowRef && messageRowId(msg.localRowRef)}
                     data-stanza-id={msg.stanzaId}
                     data-origin-id={msg.originId}
                     data-msg-selected={copySelectedIds.has(rowId) ? '' : undefined}

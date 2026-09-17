@@ -1,6 +1,6 @@
 /**
  * roomStore.recomputeUnreadForRoom: archive-derived unread,
- * coverage-gated, latest-wins, mentionsCount-preserving, divider-rederiving.
+ * coverage-gated, latest-wins, mention-clearing when fully read, divider-rederiving.
  *
  * Mirrors chatStore.archiveUnread.test.ts — see that file for the
  * shared derivation's full rationale. This file additionally covers the
@@ -60,7 +60,8 @@ vi.mock('../utils/messageCache', async (importOriginal) => {
 import * as messageCache from '../utils/messageCache'
 import { makeCacheOrderKey, type ExactPosition } from './shared/readState'
 import { makeReadPointer } from './shared/readPointer'
-import { currentViewportGeneration, reportViewport } from './shared/viewportEvidence'
+import { _clearAllViewportEvidenceForTesting, currentViewportGeneration, reportViewport } from './shared/viewportEvidence'
+import { connectionStore } from './connectionStore'
 import { roomWindow } from './roomStore.testHelpers'
 
 const countRoomUnreadInArchiveImplementation = vi.mocked(messageCache.countRoomUnreadInArchive).getMockImplementation()!
@@ -115,7 +116,7 @@ function createRoom(jid: string): Room {
 /** An archived room message. `from` defaults to a per-message occupant so a
  *  bare `{ id }` override still resolves to a valid `room/nick` JID. */
 function archiveMsg(id: string, ts: number, overrides: Partial<RoomMessage> = {}): RoomMessage {
-  return {
+  const message: RoomMessage = {
     type: 'groupchat',
     id,
     roomJid: ROOM,
@@ -126,6 +127,7 @@ function archiveMsg(id: string, ts: number, overrides: Partial<RoomMessage> = {}
     isOutgoing: false,
     ...overrides,
   }
+  return message
 }
 
 /** Mark the room caught-up-to-live with a coverage record whose bottom
@@ -174,6 +176,8 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     // The transient overlay is a module-level singleton (never cleared on
     // deactivation by design) — reset it between tests explicitly.
     clearTransientScope(getStorageScopeJid() ?? '')
+    _clearAllViewportEvidenceForTesting()
+    connectionStore.getState().setWindowVisible(true)
   })
 
   // ---------------------------------------------------------------------
@@ -190,7 +194,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     ])
     setMeta({
       unreadCount: 99, // stale — must be overwritten by the exact derivation
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
 
@@ -212,7 +216,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     ])
     setMeta({
       unreadCount: 0,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
 
@@ -258,7 +262,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
   // ---------------------------------------------------------------------
 
   it('a forward MAM merge into a non-active room with new messages triggers a recount', () => {
-    setMeta({ unreadCount: 0, readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } } })
+    setMeta({ unreadCount: 0, readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room') })
     roomStore.setState({ activeRoomJid: 'someone-else@conference.example.com' })
     const original = roomStore.getState().recomputeUnreadForRoom
     const spy = vi.fn(original)
@@ -298,7 +302,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
   // ---------------------------------------------------------------------
 
   it('a remote marker advancing a non-active room triggers a recount', () => {
-    setMeta({ unreadCount: 0, readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } } })
+    setMeta({ unreadCount: 0, readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room') })
     roomStore.setState({ activeRoomJid: 'someone-else@conference.example.com' })
     const original = roomStore.getState().recomputeUnreadForRoom
     const spy = vi.fn(original)
@@ -325,7 +329,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     await messageCache.saveRoomMessages([archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' }), archiveMsg('p0', 1000)])
     setMeta({
       unreadCount: 5,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
     roomStore.setState({ activeRoomJid: ROOM })
@@ -357,7 +361,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     // tell a real recompute from a no-op.
     setMeta({
       unreadCount: 99,
-      readPointer: { order: { role: 'exact', timestamp: new Date(500).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'anchor' } }, identity: { state: 'local', messageId: 'anchor' } },
+      readPointer: makeReadPointer(archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' }), 'room'),
     })
     seedCoverage('anchor-stanza')
     roomStore.setState({ activeRoomJid: ROOM })
@@ -458,7 +462,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     ])
     setMeta({
       unreadCount: 5, // the persisted/trusted value
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     // Coverage IS proven and resolvable — but mamQueryStates is left at its
     // default (NOT caught up to live), so the caught-up gate is the single
@@ -479,7 +483,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     await messageCache.saveRoomMessages([archiveMsg('p0', 1000), archiveMsg('u1', 1001)])
     setMeta({
       unreadCount: 7,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     roomStore.setState((state) => {
       const mamQueryStates = new Map(state.mamQueryStates)
@@ -497,7 +501,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     await messageCache.saveRoomMessages([archiveMsg('p0', 1000), archiveMsg('u1', 1001)])
     setMeta({
       unreadCount: 6,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     // bottomId names an archive stanza-id that was never saved — unresolvable.
     seedCoverage('nonexistent-stanza-id')
@@ -529,7 +533,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     ])
     setMeta({
       unreadCount: 8, // trusted — must survive untouched
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('gap-anchor-stanza')
 
@@ -621,7 +625,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     await messageCache.saveRoomMessages([archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' })])
     setMeta({
       unreadCount: 0,
-      readPointer: { order: { role: 'exact', timestamp: new Date(500).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'anchor' } }, identity: { state: 'local', messageId: 'anchor' } },
+      readPointer: makeReadPointer(archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' }), 'room'),
     })
     seedCoverage('anchor-stanza')
     // Active + focused (default windowVisible), but viewportAtLiveEdge is
@@ -670,7 +674,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     await messageCache.saveRoomMessages([archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' }), archiveMsg('p0', 1000)])
     setMeta({
       unreadCount: 0,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
 
@@ -709,7 +713,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     })
     setMeta({
       unreadCount: 5,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
 
@@ -764,7 +768,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     ])
     setMeta({
       unreadCount: 5,
-      readPointer: { order: { role: 'exact', timestamp: 1000, tiebreak: { kind: 'room', from: `${ROOM}/alice`, id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
     roomStore.setState({ activeRoomJid: ROOM })
@@ -798,7 +802,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     ])
     setMeta({
       unreadCount: 5,
-      readPointer: { order: { role: 'exact', timestamp: 1000, tiebreak: { kind: 'room', from: `${ROOM}/alice`, id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
     roomStore.setState({ activeRoomJid: ROOM })
@@ -876,7 +880,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     ])
     setMeta({
       unreadCount: 7,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
 
@@ -915,7 +919,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     ])
     setMeta({
       unreadCount: 5, // stale — the slow recompute below would derive 1 (u1) from THIS pointer
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
     roomStore.setState({ activeRoomJid: ROOM })
@@ -939,7 +943,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       meta.set(ROOM, {
         ...meta.get(ROOM)!,
         unreadCount: 0,
-        readPointer: { order: { role: 'exact', timestamp: new Date(1001).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'u1' } }, identity: { state: 'local', messageId: 'u1' } },
+        readPointer: makeReadPointer(archiveMsg('u1', 1001), 'room'),
       })
       return { roomMeta: meta }
     })
@@ -1034,7 +1038,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     await messageCache.saveRoomMessages([anchor, p0, u1])
     setMeta({
       unreadCount: 99,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
     seedActiveWithStaleMarker([anchor, p0, u1])
@@ -1060,7 +1064,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     await messageCache.saveRoomMessages([anchor, p0, u1])
     setMeta({
       unreadCount: 1,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
     roomStore.setState((state) => {
@@ -1093,7 +1097,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     await messageCache.saveRoomMessages([anchor, p0])
     setMeta({
       unreadCount: 99,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
     roomStore.setState((state) => {
@@ -1113,32 +1117,55 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
   })
 
   // ---------------------------------------------------------------------
-  // mentionsCount is NEVER written (three outcomes)
+  // Mentions clear only when the complete unread count is proven zero.
   // ---------------------------------------------------------------------
 
-  describe('mentionsCount is left unchanged by every outcome', () => {
-    // Unlike chat, rooms have a REAL mentionsCount — this is directly
-    // testable here, and required: it must survive exact/deferred/unavailable
-    // recounts untouched, same as chat's spread-preserved (unused) field.
+  describe('mentionsCount clears only when all messages are read', () => {
     const SEEDED_MENTIONS = 7
 
-    it('exact outcome', async () => {
+    it.each([0, 5])('clears stale mentions when exact unread is zero and the prior count is %i', async (unreadCount) => {
       await messageCache.saveRoomMessages([archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' }), archiveMsg('p0', 1000)])
-      // Seeded unreadCount (5) deliberately differs from the true exact
-      // derivation (0, since nothing is archived after the pointer) — this
-      // forces the commit path to actually run (a no-op "nothing changed"
-      // skip would let a broken mentionsCount-dropping write hide undetected).
-      setMeta({
-        unreadCount: 5,
+      roomStore.getState().updateRoom(ROOM, {
+        unreadCount,
         mentionsCount: SEEDED_MENTIONS,
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+        readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
 
       await roomStore.getState().recomputeUnreadForRoom(ROOM)
 
       expect(roomStore.getState().roomMeta.get(ROOM)?.unreadCount).toBe(0)
+      expect(roomStore.getState().roomMeta.get(ROOM)?.mentionsCount).toBe(0)
+      expect(roomStore.getState().rooms.get(ROOM)?.mentionsCount).toBe(0)
+
+      const settled = roomStore.getState()
+      await roomStore.getState().recomputeUnreadForRoom(ROOM)
+      expect(roomStore.getState()).toBe(settled)
+    })
+
+    it.each(['archive', 'transient'] as const)('preserves mentions while unread messages remain in the %s', async (source) => {
+      const pointer = archiveMsg('p0', 1000)
+      const unread = archiveMsg('u1', 1100)
+      await messageCache.saveRoomMessages([
+        archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' }),
+        pointer,
+        ...(source === 'archive' ? [unread] : []),
+      ])
+      roomStore.getState().updateRoom(ROOM, {
+        unreadCount: 5,
+        mentionsCount: SEEDED_MENTIONS,
+        readPointer: makeReadPointer(pointer, 'room'),
+      })
+      seedCoverage('anchor-stanza')
+      if (source === 'transient') {
+        noteTransient(scopeKey(), { position: posAt(1100) }, transientIdentity(unread, 'room'), transientAliases(unread, 'room'))
+      }
+
+      await roomStore.getState().recomputeUnreadForRoom(ROOM)
+
+      expect(roomStore.getState().roomMeta.get(ROOM)?.unreadCount).toBe(1)
       expect(roomStore.getState().roomMeta.get(ROOM)?.mentionsCount).toBe(SEEDED_MENTIONS)
+      expect(roomStore.getState().rooms.get(ROOM)?.mentionsCount).toBe(SEEDED_MENTIONS)
     })
 
     it('deferred outcome', async () => {
@@ -1155,7 +1182,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       setMeta({
         unreadCount: 3,
         mentionsCount: SEEDED_MENTIONS,
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+        readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
       vi.mocked(messageCache.countRoomUnreadInArchive).mockResolvedValueOnce(null)
@@ -1181,7 +1208,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
     ])
     setMeta({
       unreadCount: 0,
-      readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+      readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
     })
     seedCoverage('anchor-stanza')
     // One never-archived (noLocalStore) message, after the pointer.
@@ -1210,7 +1237,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       await messageCache.saveRoomMessages([archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' }), archiveMsg('p0', 1000)])
       setMeta({
         unreadCount: 0,
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+        readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
     })
@@ -1349,7 +1376,8 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       await messageCache.saveRoomMessages([anchor, m1, m2, m3])
       setMeta({
         unreadCount: 5, // stale — distinct from the correct 0 derived below
-        readPointer: { order: { role: 'exact', timestamp: new Date(500).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'anchor' } }, identity: { state: 'local', messageId: 'anchor' } },
+        mentionsCount: 1,
+        readPointer: makeReadPointer(archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' }), 'room'),
       })
       seedCoverage('anchor-stanza')
       // Active + focused (default windowVisible), with the full history
@@ -1367,6 +1395,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       await vi.waitFor(() => {
         expect(roomStore.getState().roomMeta.get(ROOM)?.unreadCount).toBe(0)
       }, { timeout: 2000 })
+      expect(roomStore.getState().roomMeta.get(ROOM)?.mentionsCount).toBe(0)
 
       // Still active throughout — this is scenario 5's store half.
       expect(roomStore.getState().activeRoomJid).toBe(ROOM)
@@ -1380,7 +1409,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       await messageCache.saveRoomMessages([anchor, m1, m2, m3])
       setMeta({
         unreadCount: 5, // stale — distinct from BOTH 0 and the correct 2
-        readPointer: { order: { role: 'exact', timestamp: new Date(500).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'anchor' } }, identity: { state: 'local', messageId: 'anchor' } },
+        readPointer: makeReadPointer(archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' }), 'room'),
       })
       seedCoverage('anchor-stanza')
       roomStore.setState({ activeRoomJid: ROOM })
@@ -1408,7 +1437,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       // above) while unreadCount is stale.
       setMeta({
         unreadCount: 5, // stale — distinct from the correct 0
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'm1' } }, identity: { state: 'local', messageId: 'm1' } },
+        readPointer: makeReadPointer(archiveMsg('m1', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
       roomStore.getState().addRoom(createRoom('other-room@conference.example.com'))
@@ -1448,7 +1477,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       // here), same as the fully-read sibling test above.
       setMeta({
         unreadCount: 5, // stale — distinct from BOTH 0 (naive force-zero) and the correct 2
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+        readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
       roomStore.getState().addRoom(createRoom('other-room@conference.example.com'))
@@ -1509,8 +1538,8 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       // touched nothing" — the sibling test below ("messages arriving after
       // creation…", seeded 0, asserts 2) is the one that actually exercises the
       // historyFloor-derived count.
-      // Requirement 2: an archive recount never writes mentionsCount.
-      expect(roomStore.getState().roomMeta.get(ROOM)?.mentionsCount).toBe(4)
+      // The proven zero unread count also clears the stale mention badge.
+      expect(roomStore.getState().roomMeta.get(ROOM)?.mentionsCount).toBe(0)
     })
 
     // The OTHER two call sites: the guard pass inside the derivation itself.
@@ -1527,7 +1556,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       await roomStore.getState().recomputeUnreadForRoom(ROOM)
 
       expect(roomStore.getState().roomMeta.get(ROOM)?.readPointer).toBeUndefined()
-      expect(roomStore.getState().roomMeta.get(ROOM)?.mentionsCount).toBe(4)
+      expect(roomStore.getState().roomMeta.get(ROOM)?.mentionsCount).toBe(0)
     })
 
     it('the recount itself does NOT advance the pointer to an outgoing message', async () => {
@@ -1541,7 +1570,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       setMeta({
         unreadCount: 3,
         mentionsCount: 4,
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+        readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
 
@@ -1566,7 +1595,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       setMeta({
         unreadCount: 4,
         mentionsCount: 4,
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+        readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
 
@@ -1618,7 +1647,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       ])
       setMeta({
         unreadCount: 1,
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+        readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
 
@@ -1669,7 +1698,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       // can never schedule a recount. This is the reported defect.
       setMeta({
         unreadCount: 5, // stale — distinct from the correct 0
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'm1' } }, identity: { state: 'local', messageId: 'm1' } },
+        readPointer: makeReadPointer(archiveMsg('m1', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
       seedResident([anchor, m1])
@@ -1703,7 +1732,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       await messageCache.saveRoomMessages([anchor, p0, u1, u2])
       setMeta({
         unreadCount: 5, // stale — distinct from BOTH 0 (naive force-zero) and the correct 2
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'p0' } }, identity: { state: 'local', messageId: 'p0' } },
+        readPointer: makeReadPointer(archiveMsg('p0', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
       seedResident([anchor, p0, u1, u2])
@@ -1728,7 +1757,7 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       ])
       setMeta({
         unreadCount: 0, // nothing to correct downward
-        readPointer: { order: { role: 'exact', timestamp: new Date(1000).getTime(), tiebreak: { kind: 'room', from: ROOM + '/alice', id: 'm1' } }, identity: { state: 'local', messageId: 'm1' } },
+        readPointer: makeReadPointer(archiveMsg('m1', 1000), 'room'),
       })
       seedCoverage('anchor-stanza')
       vi.mocked(messageCache.countRoomUnreadInArchive).mockClear()
@@ -1741,6 +1770,115 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
       expect(messageCache.countRoomUnreadInArchive).not.toHaveBeenCalled()
     })
   })
+
+  // A XEP-0490 marker no loaded slice can order stays stashed, and every recount
+  // defers on it. Reading the newest row at the live edge is direct read evidence,
+  // so the badge must not wait for a recount that cannot run.
+  describe('reading the live edge while an unresolvable XEP-0490 marker defers the recount', () => {
+    const anchor = archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' })
+    const p0 = archiveMsg('p0', 1000, { stanzaId: 'p0-stanza' })
+    const u1 = archiveMsg('u1', 1001, { stanzaId: 'u1-stanza' })
+
+    async function enterRoomWithStaleMarker(pointer: RoomMessage): Promise<void> {
+      await messageCache.saveRoomMessages([anchor, p0, u1])
+      seedCoverage('anchor-stanza')
+      roomStore.setState((state) => ({ messages: new Map(state.messages).set(ROOM, [anchor, p0, u1]) }))
+      setMeta({
+        unreadCount: 1,
+        readPointer: makeReadPointer(pointer, 'room'),
+        pendingRemoteDisplayedStanzaId: 'stanza-older-than-any-slice',
+      })
+      roomStore.getState().setActiveRoom(ROOM)
+      // Activation clears mentions; one that arrived while reading must clear with the read-through.
+      setMeta({ mentionsCount: 1 })
+      reportViewport(scopeKey(), currentViewportGeneration(scopeKey()), 'at-edge')
+      await vi.waitFor(() => expect(readRecountDeferrals()['room:pending-remote-displayed']).toBe(1))
+    }
+
+    it.each([
+      ['short of the newest row', p0],
+      ['already on the newest row', u1],
+    ])('clears the badge when the pointer starts %s', async (_label, pointer) => {
+      await enterRoomWithStaleMarker(pointer)
+
+      roomStore.getState().advanceReadPointer(ROOM, { id: 'u1' })
+
+      expect(roomStore.getState().roomMeta.get(ROOM)?.readPointer?.identity.messageId).toBe('u1')
+      expect(roomStore.getState().roomMeta.get(ROOM)?.unreadCount).toBe(0)
+      expect(roomStore.getState().rooms.get(ROOM)?.unreadCount).toBe(0)
+      expect(roomStore.getState().roomMeta.get(ROOM)?.mentionsCount).toBe(0)
+      expect(roomStore.getState().rooms.get(ROOM)?.mentionsCount).toBe(0)
+      // The read-through settles the badge; it does not touch the marker it could not order.
+      expect(roomStore.getState().roomMeta.get(ROOM)?.pendingRemoteDisplayedStanzaId).toBe('stanza-older-than-any-slice')
+
+      const settled = roomStore.getState()
+      roomStore.getState().advanceReadPointer(ROOM, { id: 'u1' })
+      expect(roomStore.getState()).toBe(settled)
+    })
+
+    it('keeps the badge when the reported row is not the newest one', async () => {
+      await enterRoomWithStaleMarker(anchor)
+
+      roomStore.getState().advanceReadPointer(ROOM, { id: 'p0' })
+
+      expect(roomStore.getState().roomMeta.get(ROOM)?.readPointer?.identity.messageId).toBe('p0')
+      expect(roomStore.getState().roomMeta.get(ROOM)?.unreadCount).toBe(1)
+      expect(roomStore.getState().roomMeta.get(ROOM)?.mentionsCount).toBe(1)
+    })
+
+    it.each([
+      ['the resident window is a historical slice', () => roomStore.setState({ windowAtLiveEdge: new Map([[ROOM, false]]) })],
+      ['the viewport was measured away from the edge', () => reportViewport(scopeKey(), currentViewportGeneration(scopeKey()), 'away')],
+      ['no viewport measurement exists for this activation', () => _clearAllViewportEvidenceForTesting()],
+      ['the report arrives for a room that is no longer active', () => roomStore.setState({ activeRoomJid: 'other@conference.example.com' })],
+    ])('keeps the badge when %s', async (_label, arrange) => {
+      await enterRoomWithStaleMarker(p0)
+      arrange()
+
+      roomStore.getState().advanceReadPointer(ROOM, { id: 'u1' })
+
+      expect(roomStore.getState().roomMeta.get(ROOM)?.unreadCount).toBe(1)
+      expect(roomStore.getState().rooms.get(ROOM)?.unreadCount).toBe(1)
+      expect(roomStore.getState().roomMeta.get(ROOM)?.mentionsCount).toBe(1)
+    })
+
+    it('keeps the badge and the pointer while the window is unfocused', async () => {
+      await enterRoomWithStaleMarker(p0)
+      connectionStore.getState().setWindowVisible(false)
+
+      roomStore.getState().advanceReadPointer(ROOM, { id: 'u1' })
+
+      expect(roomStore.getState().roomMeta.get(ROOM)?.readPointer?.identity.messageId).toBe('p0')
+      expect(roomStore.getState().roomMeta.get(ROOM)?.unreadCount).toBe(1)
+    })
+
+    it('a read-through supersedes an archive recount already in flight', async () => {
+      await messageCache.saveRoomMessages([anchor, p0, u1])
+      seedCoverage('anchor-stanza')
+      roomStore.setState((state) => ({ messages: new Map(state.messages).set(ROOM, [anchor, p0, u1]) }))
+      const pointer = makeReadPointer(u1, 'room')
+      roomStore.getState().setActiveRoom(ROOM)
+      setMeta({ unreadCount: 3, readPointer: pointer })
+      reportViewport(scopeKey(), currentViewportGeneration(scopeKey()), 'at-edge')
+
+      // Hold an older cache snapshot across the direct read acknowledgement.
+      let releaseCount!: (result: { unread: number }) => void
+      vi.mocked(messageCache.countRoomUnreadInArchive).mockImplementationOnce(
+        () => new Promise((resolve) => { releaseCount = resolve })
+      )
+      const recount = roomStore.getState().recomputeUnreadForRoom(ROOM, { allowActive: true })
+      await vi.waitFor(() => expect(releaseCount).toBeDefined())
+
+      roomStore.getState().advanceReadPointer(ROOM, { id: 'u1' })
+      expect(roomStore.getState().roomMeta.get(ROOM)?.readPointer).toBe(pointer)
+      expect(roomStore.getState().roomMeta.get(ROOM)?.unreadCount).toBe(0)
+
+      releaseCount({ unread: 3 })
+      await recount
+      expect(roomStore.getState().roomMeta.get(ROOM)?.unreadCount).toBe(0)
+      expect(roomStore.getState().rooms.get(ROOM)?.unreadCount).toBe(0)
+    })
+  })
 })
 
 /**
@@ -1751,13 +1889,11 @@ describe('roomStore.recomputeUnreadForRoom — archive-derived unread (PR B, Tas
 describe('roomStore — `start`-filtered catch-up bootstraps coverage from its walk extent', () => {
   /** The room's newest cached entry, held with no archive id. */
   function edgeMsg(overrides: Partial<RoomMessage> = {}): RoomMessage {
-    return archiveMsg('edge', 1000, { from: ROOM + '/alice', nick: 'alice', body: 'last word', ...overrides })
+    const message = archiveMsg('edge', 1000, { from: ROOM + '/alice', nick: 'alice', occupantId: 'alice', body: 'last word', ...overrides })
+    return { ...message }
   }
 
-  const POINTER_ON_EDGE = {
-    order: { role: 'exact' as const, timestamp: 1000, tiebreak: { kind: 'room' as const, from: ROOM + '/alice', id: 'edge' } },
-    identity: { state: 'local' as const, messageId: 'edge' },
-  }
+  const POINTER_ON_EDGE = makeReadPointer(edgeMsg(), 'room')
 
   function markCaughtUpWithoutCoverage(): void {
     roomStore.setState((state) => {

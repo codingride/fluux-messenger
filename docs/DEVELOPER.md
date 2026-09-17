@@ -21,7 +21,7 @@ npm run dev
 
 Open http://localhost:5173 and connect with your XMPP credentials.
 
-> **After a `git pull`**: if dependencies have changed, re-run `npm install` before building. Missing packages are the most common cause of `Cannot find module` errors after syncing.
+> **After a `git pull`**: follow the [dependency and patch setup guidance](../CONTRIBUTING.md#dependency-patches) before building. Missing packages are the most common cause of `Cannot find module` errors after syncing.
 
 ## Available Scripts
 
@@ -41,10 +41,18 @@ Open http://localhost:5173 and connect with your XMPP credentials.
 
 ### Test concurrency
 
-`npm test` runs the SDK and application suites in sequence. By default, each suite
+`npm test` runs the [Tauri feature guard](#windows-keyboard-focus), then the SDK
+and application suites in sequence. By default, each suite
 uses at most two workers and keeps one available CPU out of the worker budget
 when possible, with a minimum of one worker. This leaves CPU and memory headroom
 for cryptographic tests and other development tasks.
+
+CI runs `Test (SDK + checks)` and `Test (App)` on separate runners, both gated
+by the same changed-scope detection. Each installs dependencies and builds the SDK
+independently, so neither waits for the other. The SDK job also runs the Tauri
+feature guard, Node runtime smoke test, type checks, lint, documentation checks,
+anomaly build audits, and selector checks. The workspace worker limits also apply
+in CI.
 
 `npm run test:parallel` shares that worker budget between the two suites: on a
 machine with at least three available CPUs it runs one worker per suite. With a
@@ -58,6 +66,37 @@ working on a busy machine:
 npm run test:run -w @xmpp/fluux -- --maxWorkers=1
 npm run test:run -w @fluux/sdk -- --maxWorkers=1
 ```
+
+### Browser invariant suites
+
+`npm run test:scroll` runs both scroll suites on Chromium and WebKit:
+
+- `scroll-reading`: reading anchors, history loading, conversation re-entry, and
+  navigation through cached or moderated messages.
+- `scroll-live-edge`: following new messages at the bottom and preserving that
+  position through typing indicators, composer resizing, reactions, and media growth.
+
+The suites share their setup, geometry helpers, and after-test scroll diagnostics
+in `scripts/e2e/scrollHarness.ts`. Tests within each file run in declaration order.
+
+CI runs all browser invariants, including composer, popover, history-loading, and
+anomaly coverage, in separate Chromium and WebKit jobs with two workers per runner.
+Each job builds and serves its own demo and uploads a separate report on failure.
+To reproduce one engine's job or one scroll suite:
+
+```bash
+npm run test:e2e -- --project="*-chromium" --workers=2
+npm run test:e2e -- --project=scroll-reading-webkit
+```
+
+### Local Rust build caching
+
+Use Cargo's normal local build cache and incremental compilation. The
+[local sccache evaluation](benchmarks/sccache-2026-09-14.md) found a modest saving
+when rebuilding in another worktree, with no clear benefit for small source
+edits. This did not justify adding sccache installation and configuration to the
+development workflow. Keep the toolchain's default linker and the existing
+`Swatinem/rust-cache` setup in CI; the experiment did not evaluate CI performance.
 
 ## macOS Notifications in Local Development
 
@@ -158,6 +197,21 @@ The script navigates the demo at `/demo.html?tutorial=false`, freezes the animat
 ## Windows Test Builds
 
 Windows installers cannot be cross-compiled from macOS or Linux: the MSVC toolchain, WiX, and NSIS all require Windows. To try a branch on Windows before it is released, dispatch the **Windows Test Build** workflow (`.github/workflows/windows-test-build.yml`). It runs on `windows-latest`, builds both installers, and attaches them as a run artifact (14-day retention), with no tag and no GitHub release.
+
+### Windows keyboard focus
+
+Fluux uses a single webview. Keep the explicit `tauri/unstable` opt-in disabled in
+`apps/fluux/src-tauri/Cargo.toml` to preserve keyboard delivery after Alt-Tab on
+Windows. `npm run test:tauri-features` runs
+`apps/fluux/src-tauri/check-tauri-features.mjs`, which parses the manifest with
+Node and the declared `@iarna/toml` dependency and rejects that opt-in. The `Rust`
+job in `.github/workflows/ci.yml` also runs this guard, including for Cargo-only
+changes.
+
+Automated tests cannot prove Windows keyboard delivery. On Windows, verify that
+after returning with Alt-Tab, Ctrl+K opens the switcher and plain typing reaches
+the webview without a click. Also verify that restoring from the system tray
+delivers keyboard input with no focus oscillation.
 
 ### Triggering the build
 

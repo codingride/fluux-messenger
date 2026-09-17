@@ -1,3 +1,5 @@
+import { isSpamModerated, moderationMetadata, roomRetractionAuthorized, type ModerationMetadata } from '../utils/moderation'
+import { backfillRoomStanzaId, roomStanzaIdsMergeable } from '../utils/roomStanzaId'
 import { createStore } from 'zustand/vanilla'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type {
@@ -68,8 +70,6 @@ import {
   removeTransient,
   clearTransientScope,
   clearTransientEntity,
-  transientIdentity,
-  transientAliases,
   type ScopeKey as TransientScopeKey,
 } from './shared/transientUnread'
 import {
@@ -81,7 +81,9 @@ import {
 import {
   clearPurgedMarkers,
   isMarkerPurged,
+  isMarkerSuperseded,
   notePurgedMarker,
+  noteSupersededMarker,
   type PurgedMarkerKey,
 } from './shared/purgedMarkers'
 import {
@@ -98,8 +100,14 @@ import { retractRoomMessageInStorage, retractUnresidentRoomTarget } from './shar
 import { createRemoteDividerAdvanceTracker } from './shared/dividerAdvance'
 import { locallyPublishedDisplayed } from '../core/localMdsPublishes'
 import { isAhead, rowRefOfPointer } from './shared/readPointer'
-import { resolveRemoteDisplayed, createMdsSessionGate, foldPendingRemoteDisplayed } from './shared/readMarkerSync'
-import { advance, hasFloorResolutionEvidence, makeReadPointer } from './shared/readPointer'
+import {
+  resolveRemoteDisplayed,
+  createMdsSessionGate,
+  foldPendingRemoteDisplayed,
+  resolveStashedRemoteDisplayed,
+  supersededPendingMarker,
+} from './shared/readMarkerSync'
+import { advance, hasFloorResolutionEvidence, makeReadPointer, pointerRowRef, resolveRoomReadPointerOrder } from './shared/readPointer'
 import { loadRoomReadState, saveRoomReadState, clearRoomReadState, _clearAllRoomReadStateForTesting, type RoomReadState } from './shared/readStateStorage'
 import { ignoreStore, isMessageFromIgnoredUser } from './ignoreStore'
 import { roomActivityTone } from './roomSelectors'
@@ -117,6 +125,7 @@ import { scheduleDurableMaps, cancelDurableMaps, forgetAllDurableMapBaselines, n
 // getResidentWindowSize() so a DEV/DEMO/TEST caller can shrink it — see shared/residentWindow.ts.
 import { getResidentWindowSize } from './shared/residentWindow'
 import { clearMarker, lastMessageTimestamp, clearCoverageEntry, clearGapAnchor } from './shared/keyedMapEdits'
+import { sortMessagesByTimestamp } from './shared/messageArrayUtils'
 
 /**
  * Carry a previously-resolved avatar across a presence update.
@@ -417,6 +426,7 @@ function savePendingRetractionsToStorage(pending: Map<string, PendingRetraction[
 
 // Serializes this store's archive-page writes; see shared/archiveSaveChain.ts.
 const roomArchiveSaves = createArchiveSaveChain()
+const roomMessageArrivals = new Map<string, Promise<void>>()
 
 // Cache epoch: bumped whenever the room cache lifecycle resets
 // (logout reset or account switch). Deferred gap/coverage commits
@@ -437,6 +447,7 @@ let lastRoomTransientScope: string | null = null
 /** Test-only: drop all per-room archive-save chain entries. */
 export function _resetRoomArchiveSavesForTesting(): void {
   roomArchiveSaves.clear()
+  roomMessageArrivals.clear()
   roomCacheEpoch++
 }
 
@@ -496,6 +507,7 @@ function roomTransientScopeKey(roomJid: string): TransientScopeKey {
 function invalidateRoomEntity(roomJid: string): void {
   roomEntityEpoch.set(roomJid, currentRoomEntityEpoch(roomJid) + 1)
   roomArchiveSaves.cancel(roomJid)
+  roomMessageArrivals.delete(roomJid)
   roomPendingUnreadWrites.cancel(roomJid)
   roomRecountsInFlight.cancel(roomJid)
   roomRecountRetry.cancel(roomJid)
@@ -617,10 +629,17 @@ function getRoomMessageKeys(m: RoomMessage): string[] {
 function roomTimelineConfig(): timeline.TimelineConfig<RoomMessage> {
   return {
     getKeys: getRoomMessageKeys,
-    sameMessage: (a, b) => sameLogicalMessage(roomScope(a.roomJid), a, b),
-    getMergeCandidates: mergeableOccupantCandidates,
+    sameMessage: (a, b) => sameLogicalMessage(roomScope(a.roomJid), a, b) && roomStanzaIdsMergeable(a, b),
+    getMergeCandidates: (incoming, candidates) => mergeableOccupantCandidates(incoming, candidates).filter(candidate => roomStanzaIdsMergeable(incoming, candidate)),
+    mergeIdentity: (current, donor) => {
+      const identified = backfillRoomStanzaId(current, donor)
+      return donor.isRetracted
+        ? reconcileCachedCorrections([identified], [donor], getStorageScopeJid())[0]
+        : identified
+    },
     windowSize: getResidentWindowSize(),
     kind: 'room',
+    isHidden: isSpamModerated,
   }
 }
 
@@ -759,13 +778,13 @@ function resolveRoomPendingRetractions(
   const { messages, resolved, remaining } = applyPendingRetractions(
     slice,
     pending,
-    roomMessageAuthor
+    roomRetractionAuthorized
   )
   if (remaining.length === pending.length) return { messages }
 
   if (options.persist !== false) {
     for (const { message, retractedAt } of resolved) {
-      void retractRoomMessageInStorage(roomJid, message, { retractedAt })
+      void retractRoomMessageInStorage(roomJid, message, { retractedAt, ...moderationMetadata(message) })
     }
   }
 
@@ -977,7 +996,7 @@ export interface RoomState {
   // chatStore.pendingRetractions — see shared/pendingRetractions.ts.
   pendingRetractions: Map<string, PendingRetraction[]>
   // Target message to scroll to after navigation (ephemeral)
-  targetMessageId: string | null
+  targetMessageId: string | MessageRowRef | null
   // Session-only new-message divider per room (jid -> messageId). Derived at
   // activation from the read pointer; never persisted.
   firstNewMessageMarkers: Map<string, MessageRowRef>
@@ -1025,9 +1044,10 @@ export interface RoomState {
     incrementUnread?: boolean
     incrementMentions?: boolean
   }) => void
+  waitForMessageArrivals: (roomJid: string) => Promise<boolean> | undefined
   updateReactions: (roomJid: string, messageId: string, reactorNick: string, emojis: string[]) => void
   resolveCorrectionReferences: (roomJid: string, targetId: string, actor: MessageActor) => Promise<CorrectionReferences | null | undefined>
-  reconcileHistoryMessages: (messages: RoomMessage[]) => Promise<RoomMessage[]>
+  reconcileHistoryMessages: (messages: RoomMessage[], options?: { retractionsOnly?: boolean }) => Promise<RoomMessage[]>
   updateMessage: (
     roomJid: string,
     messageId: string,
@@ -1047,9 +1067,9 @@ export interface RoomState {
    * bounded resident/cache slice. Commits only on an exact derivation; every
    * uncertain case (pointerless-with-count, incomplete coverage) leaves the
    * last TRUSTED count untouched rather than writing a provisional one.
-   * `mentionsCount` is never written here (see `readState.ts`'s
-   * `RecomputeOutcome` doc) — rooms keep it on the live `+1` path. Latest-wins
-   * across concurrent recounts for the same room.
+   * Mentions stay on the live `+1` path, but a proven zero unread count
+   * clears `mentionsCount` too. Latest-wins across concurrent recounts
+   * for the same room.
    *
    * Called after a deferred-decrypt resolves an encrypted room message (the
    * badge it may have provisionally inflated needs reconciling once the
@@ -1069,13 +1089,14 @@ export interface RoomState {
    * XEP-0424: apply an incoming retraction, deferring it when its target is not
    * resident. Applies immediately (and writes through to the durable cache) when
    * the target is in the window; otherwise records it and replays it the moment
-   * the target arrives live or loads from the cache. Only the message's own
-   * author can retract it — a mismatched actor is dropped, never tombstoned.
+   * the target arrives live or loads from the cache. Self-retractions require
+   * matching authorship; verified moderation addresses the room's archive id.
    *
-   * @param actorJid - Full room JID (room@service/nick) the retraction came from.
+   * @param actorJid - Author's full room JID, or the bare room service for moderation.
    * @param actorOccupantId - XEP-0421 occupant-id when advertised; preferred over the nick.
+   * @param moderation - Metadata from an already verified room-service moderation event.
    */
-  recordPendingRetraction: (roomJid: string, targetId: string, actorJid: string, actorOccupantId?: string) => void
+  recordPendingRetraction: (roomJid: string, targetId: string, actorJid: string, actorOccupantId?: string, moderation?: ModerationMetadata) => void
   /**
    * Epoch ms of the room's persisted last-known message (the entity preview),
    * or undefined. Used as a last-resort forward catch-up cursor so a persisted
@@ -1235,7 +1256,7 @@ export interface RoomState {
   resetRoomMAMStates: () => void
   /** Update only the lastMessage preview without affecting message history */
   updateLastMessagePreview: (roomJid: string, lastMessage: RoomMessage) => void
-  setTargetMessageId: (id: string | null) => void
+  setTargetMessageId: (id: string | MessageRowRef | null) => void
 
   // Computed
   joinedRooms: () => Room[]
@@ -1965,6 +1986,7 @@ export const roomStore = createStore<RoomState>()(
     // In-flight archive-save gates belong to the previous account; their
     // deferred commits must not land in the new account's maps.
     roomArchiveSaves.clear()
+    roomMessageArrivals.clear()
     roomCacheEpoch++
     roomRecountVersion.clear()
     roomUnreadInputVersion.clear()
@@ -1995,6 +2017,7 @@ export const roomStore = createStore<RoomState>()(
     // In-flight archive-save gates from the old session must not commit
     // cursors into the fresh state.
     roomArchiveSaves.clear()
+    roomMessageArrivals.clear()
     roomCacheEpoch++
     roomRecountVersion.clear()
     roomUnreadInputVersion.clear()
@@ -2048,24 +2071,50 @@ export const roomStore = createStore<RoomState>()(
   },
 
   // Message actions
-  addMessage: (roomJid, message, options = {}) => {
-    bumpRoomUnreadInputVersion(roomJid)
-
+  addMessage: async (roomJid, message, options = {}) => {
     const { isLiveArrival = true, incrementUnread = true, incrementMentions = false } = options
 
     // Get room to check if it's a Quick Chat (transient history)
     const room = get().rooms.get(roomJid)
 
     // Quick Chat rooms are transient: keep their messages in memory only
-    const incoming: StoredRoomMessage = room?.isQuickChat
+    let incoming: StoredRoomMessage = room?.isQuickChat
       ? { ...message, noLocalStore: true }
       : message
+
+    const previous = roomMessageArrivals.get(roomJid)
+    const needsCache = incoming.isDelayed && !isNoLocalStore(incoming) && messageCache.isMessageCacheAvailable()
+    if (previous || needsCache) {
+      const isCurrent = captureRoomCacheRead(roomJid)
+      let finish!: () => void
+      const pending = new Promise<void>(resolve => { finish = resolve })
+      roomMessageArrivals.set(roomJid, pending)
+      try {
+        if (previous) await previous
+        if (!isCurrent()) return
+        if (needsCache) incoming = (await get().reconcileHistoryMessages([incoming], { retractionsOnly: true }))[0]
+        if (!isCurrent()) return
+      } catch {
+        if (isCurrent()) logWarn('Room replay reconciliation failed')
+        return
+      } finally {
+        if (roomMessageArrivals.get(roomJid) === pending) roomMessageArrivals.delete(roomJid)
+        finish()
+      }
+    }
+    bumpRoomUnreadInputVersion(roomJid)
+
+    for (const current of get().messages.get(roomJid) ?? []) {
+      if (roomStanzaIdsMergeable(incoming, current) && sameLogicalMessage(roomScope(roomJid), incoming, current)) {
+        incoming = backfillRoomStanzaId(incoming, current)
+      }
+    }
 
     // XEP-0424: a retraction can outrun its target (live retraction against a
     // non-resident message, out-of-order delivery). Tombstone BEFORE the save
     // below so it persists the tombstone — patching afterwards would race it.
     const arrival = resolveRoomPendingRetractions(get(), roomJid, [incoming], { persist: false })
-    const messageToAdd = arrival.messages[0]
+    const messageToAdd = messageCache.reconcileRoomRetraction(arrival.messages[0])
     if (arrival.pendingRetractions) set({ pendingRetractions: arrival.pendingRetractions })
 
     // Unread messages that are not yet durable use the transient overlay:
@@ -2108,20 +2157,10 @@ export const roomStore = createStore<RoomState>()(
       // millisecond would tie rather than compare strictly-after it,
       // undercounting the very message this branch exists to count.)
       const before = transientCounts(scopeKey, undefined).unread
-      const identityFields = {
-        roomJid,
-        from: messageToAdd.from,
-        id: messageToAdd.id,
-        stanzaId: messageToAdd.stanzaId,
-        originId: messageToAdd.originId,
-        occupantId: messageToAdd.occupantId,
-      }
       const result = noteTransient(
         scopeKey,
         { position: exactPosition(messageToAdd, 'room') },
-        transientIdentity(identityFields, 'room'),
-        transientAliases(identityFields, 'room'),
-        identityFields.occupantId
+        messageToAdd
       )
       // `added` drives the +1 (case 1: brand-new logical entry). Re-reading
       // transientCounts rather than hardcoding +1 keeps this delta honest
@@ -2163,7 +2202,8 @@ export const roomStore = createStore<RoomState>()(
           void messageCache.updateRoomMessage(
             roomJid,
             p.id,
-            { stanzaId: p.stanzaId!, ...(p.originId ? { originId: p.originId } : {}) },
+            { stanzaId: p.stanzaId!, localRowRef: p.localRowRef, occupantId: p.occupantId, ...(p.originId ? { originId: p.originId } : {}),
+              ...(p.isRetracted && { isRetracted: true, retractedAt: p.retractedAt, ...moderationMetadata(p) }) },
             p.from,
             undefined,
             p,
@@ -2214,26 +2254,7 @@ export const roomStore = createStore<RoomState>()(
       // below), so the two paths can never double-count the same message.
       const updated = notifState.onMessageReceived(
         notifInput,
-        {
-          id: messageToAdd.id,
-          from: messageToAdd.from,
-          timestamp: messageToAdd.timestamp,
-          occupantId: messageToAdd.occupantId,
-          // The room-assigned archive id when the reflection carries one, so a
-          // pointer this arrival advances is `addressable` immediately rather
-          // than needing the publisher to look it back up.
-          stanzaId: messageToAdd.stanzaId,
-          isOutgoing: messageToAdd.isOutgoing ?? false,
-          isDelayed: messageToAdd.isDelayed,
-          isMention: messageToAdd.isMention,
-          body: messageToAdd.body,
-          attachment: messageToAdd.attachment,
-          poll: messageToAdd.poll,
-          pollClosed: messageToAdd.pollClosed,
-          isRetracted: messageToAdd.isRetracted,
-          encryptedPayload: messageToAdd.encryptedPayload,
-          unsupportedEncryption: messageToAdd.unsupportedEncryption,
-        },
+        messageToAdd,
         { isActive, windowVisible, viewportAtLiveEdge },
         'room',
         { incrementUnread: incrementUnread && !noteAsTransient, incrementMentions }
@@ -2334,17 +2355,8 @@ export const roomStore = createStore<RoomState>()(
       }
     })
 
-    const transientMessageIdentity = () => transientIdentity({
-      roomJid,
-      from: messageToAdd.from,
-      id: messageToAdd.id,
-      stanzaId: messageToAdd.stanzaId,
-      originId: messageToAdd.originId,
-      occupantId: messageToAdd.occupantId,
-    }, 'room')
-
     if (!acceptedMessage && overlayUnreadDelta > 0) {
-      removeTransient(roomTransientScopeKey(roomJid), transientMessageIdentity(), messageToAdd.occupantId)
+      removeTransient(roomTransientScopeKey(roomJid), messageToAdd)
     }
 
     if (acceptedMessage && !isNoLocalStore(messageToAdd)) {
@@ -2357,8 +2369,7 @@ export const roomStore = createStore<RoomState>()(
         if (committed && noteAsTransient) {
           const removed = removeTransient(
             roomTransientScopeKey(roomJid),
-            transientMessageIdentity(),
-            messageToAdd.occupantId
+            messageToAdd
           )
           if (removed.removed) bumpRoomUnreadInputVersion(roomJid)
         }
@@ -2375,7 +2386,20 @@ export const roomStore = createStore<RoomState>()(
     }
   },
 
-  updateReactions: (roomJid, messageId, reactorNick, emojis) => {
+  waitForMessageArrivals: (roomJid) => {
+    const pending = roomMessageArrivals.get(roomJid)
+    if (!pending) return undefined
+    const isCurrent = captureRoomCacheRead(roomJid)
+    return pending.then(isCurrent)
+  },
+
+  updateReactions: async (roomJid, messageId, reactorNick, emojis) => {
+    const pending = roomMessageArrivals.get(roomJid)
+    if (pending) {
+      const isCurrent = captureRoomCacheRead(roomJid)
+      await pending
+      if (!isCurrent()) return
+    }
     set((state) => {
       const newRooms = new Map(state.rooms)
       const existing = newRooms.get(roomJid)
@@ -2453,18 +2477,36 @@ export const roomStore = createStore<RoomState>()(
     return references
   },
 
-  reconcileHistoryMessages: async (messages) => {
+  reconcileHistoryMessages: async (messages, options) => {
     const scope = captureStorageScope()
     const rooms = new Set(messages.map(message => message.roomJid))
+    const applyPending = (rows: RoomMessage[]) => {
+      for (const jid of rooms) {
+        const pending = get().pendingRetractions.get(jid)
+        if (pending?.length) rows = applyPendingRetractions(rows, pending,
+          (message, record) => message.roomJid === jid && roomRetractionAuthorized(message, record)).messages
+      }
+      return rows
+    }
     const reconciled = await messageCache.reconcileRoomHistoryMessages(messages, () => {
       scope.assertCurrent()
       return Array.from(rooms, jid => get().messages.get(jid) ?? []).flat()
-    }, scope.jid)
+    }, scope.jid, options?.retractionsOnly)
     scope.assertCurrent()
-    return reconciled
+    return applyPending(reconciled)
   },
 
-  updateMessage: (roomJid, messageId, updates, retractionReference, resolvedRetractionTarget, correctionActor, onCorrectionMissing, onCorrectionResolved) => {
+  updateMessage: async (roomJid, messageId, updates, retractionReference, resolvedRetractionTarget, correctionActor, onCorrectionMissing, onCorrectionResolved) => {
+    if (updates.isRetracted && updates.isModerated && !resolvedRetractionTarget) {
+      get().recordPendingRetraction(roomJid, messageId, roomJid, undefined, moderationMetadata(updates))
+      return
+    }
+    const pending = roomMessageArrivals.get(roomJid)
+    if (pending && !updates.isRetracted) {
+      const isCurrent = captureRoomCacheRead(roomJid)
+      await pending
+      if (!isCurrent()) return
+    }
     let recountNeeded = false
     const correctionPayload = updates
     const contentRecovery = updates.contentRecovery
@@ -2553,6 +2595,7 @@ export const roomStore = createStore<RoomState>()(
           ...updates,
           ...(updates.isRetracted && msg.retractedAt ? { retractedAt: msg.retractedAt } : {}),
         }
+
         const replay = resolveRoomPendingRetractions(state, roomJid, [updatedMessage], { persist: false })
         updatedMessage = replay.messages[0]
         if (updatedMessage.isRetracted) updates = { ...updates, isRetracted: true, retractedAt: updatedMessage.retractedAt }
@@ -2591,19 +2634,7 @@ export const roomStore = createStore<RoomState>()(
         // (safe to call for every retraction: removeTransient is a no-op
         // when the alias was never noted).
         if (updates.isRetracted) {
-          const identityFields = {
-            roomJid,
-            from: updatedMessage.from,
-            id: updatedMessage.id,
-            stanzaId: updatedMessage.stanzaId,
-            originId: updatedMessage.originId,
-            occupantId: updatedMessage.occupantId,
-          }
-          const removal = removeTransient(
-            roomTransientScopeKey(roomJid),
-            transientIdentity(identityFields, 'room'),
-            identityFields.occupantId
-          )
+          const removal = removeTransient(roomTransientScopeKey(roomJid), updatedMessage)
           if (removal.removed) recountNeeded = true
         }
       }
@@ -2660,7 +2691,8 @@ export const roomStore = createStore<RoomState>()(
       const meta = state.roomMeta.get(roomJid)
       const wasLastMessage =
         !!meta?.lastMessage &&
-        sameLogicalMessage(roomScope(roomJid), meta.lastMessage, resident[targetIdx])
+        sameLogicalMessage(roomScope(roomJid), meta.lastMessage, resident[targetIdx]) &&
+        roomStanzaIdsMergeable(meta.lastMessage, resident[targetIdx])
 
       if (meta && wasLastMessage) {
         const newMeta = new Map(state.roomMeta)
@@ -2672,10 +2704,11 @@ export const roomStore = createStore<RoomState>()(
     })
   },
 
-  recordPendingRetraction: (roomJid, targetId, actorJid, actorOccupantId) => {
+  recordPendingRetraction: (roomJid, targetId, actorJid, actorOccupantId, moderation) => {
     const storageScopeAtStart = getStorageScopeJid()
     const record: PendingRetraction = {
       targetId,
+      ...(moderation && { moderation }),
       actorJid,
       ...(actorOccupantId ? { actorOccupantId } : {}),
       retractedAt: Date.now(),
@@ -2683,7 +2716,7 @@ export const roomStore = createStore<RoomState>()(
     const resident = get().messages.get(roomJid) ?? []
     const resolution = resolveMessageReference(resident, targetId, 'archive-first')
     const target = resolution?.candidates.find(({ message }) =>
-      roomMessageAuthor(message, record)
+      roomRetractionAuthorized(message, record)
     )?.message
     if (target) {
       // Resolved on the spot — updateMessage carries the write-through to
@@ -2692,6 +2725,7 @@ export const roomStore = createStore<RoomState>()(
         roomJid,
         target.id,
         {
+          ...moderation,
           isRetracted: true,
           retractedAt: target.retractedAt ?? new Date(record.retractedAt),
         },
@@ -2700,7 +2734,16 @@ export const roomStore = createStore<RoomState>()(
       )
       return
     }
-    if (resolution?.authoritative) return
+    if (resolution?.authoritative && !moderation) return
+
+    if (moderation) set(state => {
+      const preview = state.roomMeta.get(roomJid)?.lastMessage ?? state.rooms.get(roomJid)?.lastMessage
+      if (!preview || !roomRetractionAuthorized(preview, record)) return state
+      return commitRoomUpdate(state, roomJid, { lastMessage: {
+        ...preview, ...moderation, isRetracted: true,
+        retractedAt: preview.retractedAt ?? new Date(record.retractedAt),
+      } }) ?? state
+    })
 
     set((state) => {
       const existing = state.pendingRetractions.get(roomJid) ?? []
@@ -2801,7 +2844,10 @@ export const roomStore = createStore<RoomState>()(
     // moves the read position only through XEP-0490.
     const metaNow = get().roomMeta.get(roomJid)
     if (!metaNow) return defer('no-meta')
-    if (metaNow.pendingRemoteDisplayedStanzaId !== undefined) return defer('pending-remote-displayed')
+    if (metaNow.pendingRemoteDisplayedStanzaId !== undefined &&
+      !isMarkerSuperseded(roomPurgedMarkerKey(roomJid), metaNow.pendingRemoteDisplayedStanzaId)) {
+      return defer('pending-remote-displayed')
+    }
     if (pointerlessDefers(metaNow.readPointer, metaNow.unreadCount)) return defer('pointerless-defer')
 
     const recountToken = roomRecountsInFlight.begin(roomJid)
@@ -2965,17 +3011,18 @@ export const roomStore = createStore<RoomState>()(
         }
       }
 
-      // unreadCount commits unconditionally on `exact`; mentionsCount is
-      // never written — the spread below preserves it (and
-      // anything else on `meta`) untouched.
-      if (meta.unreadCount === unreadCount && newMarkers === state.firstNewMessageMarkers) return state
+      // Mentions are not reliably recorded in archive rows. A complete zero
+      // (including transient messages) still proves no unread mentions remain.
+      const mentionsCount = unreadCount === 0 ? 0 : meta.mentionsCount
+      if (meta.unreadCount === unreadCount && meta.mentionsCount === mentionsCount
+        && newMarkers === state.firstNewMessageMarkers) return state
 
       const newMeta = new Map(state.roomMeta)
-      newMeta.set(roomJid, { ...meta, unreadCount })
+      newMeta.set(roomJid, { ...meta, unreadCount, mentionsCount })
       const room = state.rooms.get(roomJid)
       if (!room) return { roomMeta: newMeta, firstNewMessageMarkers: newMarkers }
       const newRooms = new Map(state.rooms)
-      newRooms.set(roomJid, { ...room, unreadCount })
+      newRooms.set(roomJid, { ...room, unreadCount, mentionsCount })
       return { roomMeta: newMeta, rooms: newRooms, firstNewMessageMarkers: newMarkers }
     })
     } finally {
@@ -3158,10 +3205,14 @@ export const roomStore = createStore<RoomState>()(
       const room = get().rooms.get(roomJid)
       if (room) {
         const meta = get().roomMeta.get(roomJid)
+        const messages = get().messages.get(roomJid) ?? []
+        const readPointer = meta?.readPointer ?? room.readPointer
         const notifInput: notifState.EntityNotificationState = {
           unreadCount: meta?.unreadCount ?? room.unreadCount,
           mentionsCount: meta?.mentionsCount ?? room.mentionsCount,
-          readPointer: meta?.readPointer ?? room.readPointer,
+          readPointer: readPointer
+            ? resolveRoomReadPointerOrder(readPointer, messages, findMessageRowIndex(messages, pointerRowRef(readPointer)))
+            : undefined,
           // The read BOUNDARY, not just the pointer: a room that has never been
           // read has no pointer, and the join watermark is then the only floor
           // the divider can derive from. `computeFloor` is
@@ -3170,7 +3221,6 @@ export const roomStore = createStore<RoomState>()(
           firstNewMessageRow: get().firstNewMessageMarkers.get(roomJid),
         }
 
-        const messages = get().messages.get(roomJid) ?? []
         // Position the divider at the first message the canonical count would
         // count — same floor, same predicate (see onActivate).
         const activated = notifState.onActivate(notifInput, messages, 'room')
@@ -3406,6 +3456,7 @@ export const roomStore = createStore<RoomState>()(
     if (!connectionStore.getState().windowVisible) return
 
     let pointerAdvanced = false
+    let readThrough = false
     set((state) => {
       const existing = state.rooms.get(roomJid)
       const meta = state.roomMeta.get(roomJid)
@@ -3421,23 +3472,42 @@ export const roomStore = createStore<RoomState>()(
       }
       const atLiveEdge = state.windowAtLiveEdge.get(roomJid) !== false
       const updated = notifState.onMessageSeen(notifInput, row, messages, 'room', { atLiveEdge })
-      if (updated === notifInput) return state
 
-      pointerAdvanced = true
+      // Seeing the newest row with both the loaded window and the measured
+      // viewport at the live tail is direct read evidence, even while the archive
+      // recount defers (an XEP-0490 marker no slice can order, missing coverage).
+      // A mounted row alone is not. A complete zero also proves no unread mention
+      // remains, the recount's own rule.
+      readThrough = atLiveEdge
+        && state.activeRoomJid === roomJid
+        && currentViewportEvidence(roomViewportEvidenceKey(roomJid)) === 'at-edge'
+        && messages.length > 0
+        && findMessageRowIndex(messages, row) === messages.length - 1
+      const unreadCount = readThrough ? 0 : notifInput.unreadCount
+      const mentionsCount = readThrough ? 0 : notifInput.mentionsCount
+      pointerAdvanced = updated !== notifInput
+      if (!pointerAdvanced && unreadCount === notifInput.unreadCount && mentionsCount === notifInput.mentionsCount) {
+        return state
+      }
+
+      // A count-only clear must also invalidate a recount already in flight;
+      // its pointer-reference guard cannot detect this transition.
+      if (readThrough) bumpRoomRecountVersion(roomJid)
 
       // The viewport-driven pointer just advanced — bound the transient
       // overlay's memory.
-      if (updated.readPointer) {
+      if (pointerAdvanced && updated.readPointer) {
         pruneTransient(roomTransientScopeKey(roomJid), updated.readPointer.order)
       }
 
+      const read = { readPointer: updated.readPointer, unreadCount, mentionsCount }
       const newRooms = new Map(state.rooms)
-      newRooms.set(roomJid, { ...existing, readPointer: updated.readPointer })
+      newRooms.set(roomJid, { ...existing, ...read })
 
       const newMeta = new Map(state.roomMeta)
       if (meta) {
-        newMeta.set(roomJid, { ...meta, readPointer: updated.readPointer })
-        persistRoomReadState(newMeta)
+        newMeta.set(roomJid, { ...meta, ...read })
+        if (pointerAdvanced) persistRoomReadState(newMeta)
       }
 
       return { rooms: newRooms, roomMeta: newMeta }
@@ -3451,8 +3521,9 @@ export const roomStore = createStore<RoomState>()(
     // true` is safe here because a pointer only ever advances against the
     // RESIDENT messages array, which only the active room keeps (setActiveRoom
     // evicts everyone else's) — this trigger only ever fires for the room
-    // that is, in practice, active.
-    if (pointerAdvanced) {
+    // that is, in practice, active. A witnessed live tail already committed its
+    // zero above and needs no archive round trip.
+    if (pointerAdvanced && !readThrough) {
       void get().recomputeUnreadForRoom(roomJid, { allowActive: true })
     }
   },
@@ -3516,6 +3587,12 @@ export const roomStore = createStore<RoomState>()(
     // as the non-active case, just with the active-room skip in
     // recomputeUnreadForRoom explicitly bypassed (`allowActive: true`).
     let advancedActive = false
+    // A stash this application released or superseded: the recount that deferred on it runs
+    // again below.
+    let supersededStash: string | undefined
+    let releasedStash = false
+    // Set when the marker could only be stashed — the cache may still order it.
+    let stashed = false
     set((state) => {
       const meta = state.roomMeta.get(roomJid)
       const existing = state.rooms.get(roomJid)
@@ -3540,11 +3617,14 @@ export const roomStore = createStore<RoomState>()(
         'room',
         // Rooms treat delayed history the same as chats treat offline delivery
         // (unified divider semantics) — delayed messages after the pointer are new.
-        { isActive: state.activeRoomJid === roomJid }
+        { isActive: state.activeRoomJid === roomJid, roomJid }
       )
+      supersededStash = supersededPendingMarker(meta.pendingRemoteDisplayedStanzaId, stanzaId, resolution)
       if (resolution.kind === 'unchanged') return state
 
       const clearsPending = meta.pendingRemoteDisplayedStanzaId === stanzaId
+      releasedStash = clearsPending
+      stashed = resolution.kind === 'stash-pending'
       const metaPatch =
         resolution.kind === 'stash-pending'
           ? { pendingRemoteDisplayedStanzaId: stanzaId }
@@ -3567,8 +3647,8 @@ export const roomStore = createStore<RoomState>()(
       // a multi-page pointer-stitch walk, which undercounts): both advance
       // kinds instead schedule the archive-derived recount below, which is
       // ALSO what makes a not-yet-caught-up room defer rather than commit a
-      // wrong number. mentionsCount is left untouched (the spread above
-      // preserves it) — archive recounts never write it either.
+      // wrong number. The recount clears mentionsCount only if it proves
+      // there are no unread messages left.
       // 'advanced-active' (the active room) is NOT exempted here: its
       // counts are not "already zero", so the active room needs this
       // re-derivation exactly as much as a non-active one does.
@@ -3646,13 +3726,35 @@ export const roomStore = createStore<RoomState>()(
     // `roomRuntime`/`rooms` above), deferring — leaving the last TRUSTED
     // count untouched — whenever coverage isn't proven down to the new floor,
     // rather than committing a page-scoped undercount.
+    if (stashed) bumpRoomUnreadInputVersion(roomJid)
+    if (supersededStash !== undefined) noteSupersededMarker(roomPurgedMarkerKey(roomJid), supersededStash)
     if (advancedNonActive) {
       void get().recomputeUnreadForRoom(roomJid)
-    } else if (advancedActive) {
+    } else if (advancedActive || releasedStash || supersededStash !== undefined) {
       // The active room gets the SAME re-derivation, with the
       // active-room skip explicitly bypassed — see this method's doc and
-      // recomputeUnreadForRoom's.
+      // recomputeUnreadForRoom's. A released or superseded stash re-derives the
+      // count that deferred on it, as `discardPurgedRemoteDisplayed` does.
       void get().recomputeUnreadForRoom(roomJid, { allowActive: true })
+    }
+    if (stashed) {
+      void resolveStashedRemoteDisplayed(
+        stanzaId,
+        captureRoomCacheRead(roomJid),
+        () => get().roomMeta.get(roomJid)?.pendingRemoteDisplayedStanzaId,
+        async () => {
+          const marker = await messageCache.getRoomMessageByStanzaId(roomJid, stanzaId)
+          if (!marker) return null
+          const pointer = get().roomMeta.get(roomJid)?.readPointer
+          if (pointer?.order.role !== 'floor') return [marker]
+          const pointerRow = await messageCache.getRoomMessageByRowRef(roomJid, pointerRowRef(pointer))
+          return sortMessagesByTimestamp(
+            pointerRow && pointerRow.id !== marker.id ? [marker, pointerRow] : [marker],
+            'room'
+          )
+        },
+        (rows) => get().applyRemoteDisplayed(roomJid, stanzaId, rows)
+      )
     }
   },
 
@@ -4086,57 +4188,62 @@ export const roomStore = createStore<RoomState>()(
     }
 
     try {
-      const resident = get().messages.get(roomJid) ?? []
-      if (!get().rooms.has(roomJid) || resident.length === 0) {
-        return []
+      while (isCurrent()) {
+        const resident = get().messages.get(roomJid) ?? []
+        if (!get().rooms.has(roomJid) || resident.length === 0) {
+          return []
+        }
+
+        // Get the newest message timestamp we have in memory
+        const newestInMemory = resident[resident.length - 1]
+        const afterDate = newestInMemory.timestamp
+
+        // Load newer messages from IndexedDB
+        const cachedMessages = await messageCache.getRoomMessages(roomJid, {
+          after: afterDate,
+          limit,
+        }).then(messages => refreshCachedCorrections(messages, isCurrent))
+        if (!isCurrent()) return []
+
+        // Fewer than the requested limit came back ⇒ nothing more newer remains in the
+        // cache, so the window has reached the tail (live edge) regardless of whether the
+        // batch was empty or partial.
+        const reachedTail = cachedMessages.length < limit
+
+        if (cachedMessages.length > 0) {
+          // Append to existing messages via the shared timeline machine
+          set((state) => {
+            const newRooms = new Map(state.rooms)
+            const existing = newRooms.get(roomJid)
+            if (!existing) return state
+            const resident = state.messages.get(roomJid) ?? []
+
+            // Reconcile edits, preserve resident identity, sort, and keep-newest trim
+            // (load-newer slides the window back down toward the live edge).
+            const { merged } = timeline.loadNewerSlice(
+              reconcileCachedCorrections(resident, cachedMessages, getStorageScopeJid()),
+              cachedMessages,
+              roomTimelineConfig()
+            )
+
+            const written = commitCachedRoomMessages(state, roomJid, merged,
+              reachedTail ? true : undefined)
+            if (!written) return state
+            return written
+          })
+        } else if (reachedTail) {
+          // Empty batch: still need to flip the flag if the room isn't already at the edge.
+          set((state) => {
+            if (state.windowAtLiveEdge.get(roomJid) !== false) return state
+            return { windowAtLiveEdge: new Map(state.windowAtLiveEdge).set(roomJid, true) }
+          })
+        }
+
+        if (reachedTail || cachedMessages.some(message => !isSpamModerated(message))) return cachedMessages
+        const nextTimestamp = get().messages.get(roomJid)?.at(-1)?.timestamp.getTime()
+        if (nextTimestamp === undefined || nextTimestamp <= afterDate.getTime()) return cachedMessages
       }
-
-      // Get the newest message timestamp we have in memory
-      const newestInMemory = resident[resident.length - 1]
-      const afterDate = newestInMemory.timestamp
-
-      // Load newer messages from IndexedDB
-      const cachedMessages = await messageCache.getRoomMessages(roomJid, {
-        after: afterDate,
-        limit,
-      }).then(messages => refreshCachedCorrections(messages, isCurrent))
-      if (!isCurrent()) return []
-
-      // Fewer than the requested limit came back ⇒ nothing more newer remains in the
-      // cache, so the window has reached the tail (live edge) regardless of whether the
-      // batch was empty or partial.
-      const reachedTail = cachedMessages.length < limit
-
-      if (cachedMessages.length > 0) {
-        // Append to existing messages via the shared timeline machine
-        set((state) => {
-          const newRooms = new Map(state.rooms)
-          const existing = newRooms.get(roomJid)
-          if (!existing) return state
-          const resident = state.messages.get(roomJid) ?? []
-
-          // Reconcile edits, preserve resident identity, sort, and keep-newest trim
-          // (load-newer slides the window back down toward the live edge).
-          const { merged } = timeline.loadNewerSlice(
-            reconcileCachedCorrections(resident, cachedMessages, getStorageScopeJid()),
-            cachedMessages,
-            roomTimelineConfig()
-          )
-
-          const written = commitCachedRoomMessages(state, roomJid, merged,
-            reachedTail ? true : undefined)
-          if (!written) return state
-          return written
-        })
-      } else if (reachedTail) {
-        // Empty batch: still need to flip the flag if the room isn't already at the edge.
-        set((state) => {
-          if (state.windowAtLiveEdge.get(roomJid) !== false) return state
-          return { windowAtLiveEdge: new Map(state.windowAtLiveEdge).set(roomJid, true) }
-        })
-      }
-
-      return cachedMessages
+      return []
     } catch (error) {
       console.error('Failed to load newer room messages from IndexedDB:', error)
       return []
@@ -4416,7 +4523,7 @@ export const roomStore = createStore<RoomState>()(
       const persistableMessages = newFromMAM.filter(msg => !isNoLocalStore(msg))
       const persistablePatches = patched.filter(msg => !isNoLocalStore(msg))
       const archiveWriteMessages = [...persistableMessages, ...persistablePatches]
-      durableMessages = persistableMessages
+      durableMessages = archiveWriteMessages
       mergeDiagnostics.returned = mamMessages.length
       mergeDiagnostics.newMessages = newFromMAM.length
       mergeDiagnostics.persistableNew = persistableMessages.length
@@ -4617,20 +4724,7 @@ export const roomStore = createStore<RoomState>()(
         if (!committed || roomCacheEpoch !== cacheEpochAtMerge || currentRoomEntityEpoch(roomJid) !== entityEpochAtMerge || getStorageScopeJid() !== storageScopeAtMerge) return
         let removed = false
         for (const message of durableMessages) {
-          const aliases = transientAliases({
-            roomJid,
-            from: message.from,
-            id: message.id,
-            stanzaId: message.stanzaId,
-            originId: message.originId,
-            occupantId: message.occupantId,
-          }, 'room')
-          for (const alias of aliases) {
-            if (removeTransient(roomTransientScopeKey(roomJid), alias, message.occupantId).removed) {
-              removed = true
-              break
-            }
-          }
+          if (removeTransient(roomTransientScopeKey(roomJid), message).removed) removed = true
         }
         if (removed) bumpRoomUnreadInputVersion(roomJid)
         roomRecountRetry.resume(roomJid)

@@ -13,6 +13,7 @@ import { _resetStorageScopeForTesting, setStorageScopeJid, getStorageScopeJid } 
 import { setResidentWindowSize } from './shared/residentWindow'
 import { ignoreStore } from './ignoreStore'
 import { _clearAllTransientForTesting, transientCounts } from './shared/transientUnread'
+import { _clearRetractedIdentitiesForTesting } from '../utils/retractedIdentities'
 import {
   reportViewport,
   currentViewportGeneration,
@@ -1821,41 +1822,45 @@ describe('roomStore', () => {
         }
       }
 
-      it('keeps the newer preview when an older delayed message arrives', () => {
+      it('keeps the newer preview when an older delayed message arrives', async () => {
         seedPersistedPreview(delayed('closed-1', 'Poll closed', '2026-07-18T12:00:00Z'))
 
         roomStore.getState().addMessage(ROOM, delayed('poll-1', 'Original poll', '2026-07-18T09:00:00Z'))
+        await roomStore.getState().waitForMessageArrivals(ROOM)
 
         expect(roomStore.getState().rooms.get(ROOM)?.lastMessage?.body).toBe('Poll closed')
         expect(roomStore.getState().roomMeta.get(ROOM)?.lastMessage?.body).toBe('Poll closed')
       })
 
-      it('does not drag lastInteractedAt backwards with the preview', () => {
+      it('does not drag lastInteractedAt backwards with the preview', async () => {
         // lastInteractedAt is derived from the preview timestamp — a regressed
         // preview would also demote the room's sidebar ordering.
         seedPersistedPreview(delayed('closed-1', 'Poll closed', '2026-07-18T12:00:00Z'))
 
         roomStore.getState().addMessage(ROOM, delayed('poll-1', 'Original poll', '2026-07-18T09:00:00Z'))
+        await roomStore.getState().waitForMessageArrivals(ROOM)
 
         const lastInteractedAt = roomStore.getState().rooms.get(ROOM)?.lastInteractedAt
         expect(lastInteractedAt?.getTime()).toBe(new Date('2026-07-18T12:00:00Z').getTime())
       })
 
-      it('still stores the older delayed message in the timeline', () => {
+      it('still stores the older delayed message in the timeline', async () => {
         seedPersistedPreview(delayed('closed-1', 'Poll closed', '2026-07-18T12:00:00Z'))
 
         roomStore.getState().addMessage(ROOM, delayed('poll-1', 'Original poll', '2026-07-18T09:00:00Z'))
+        await roomStore.getState().waitForMessageArrivals(ROOM)
 
         const bodies = (roomWindow(ROOM) ?? []).map((m) => m.body)
         expect(bodies).toContain('Original poll')
       })
 
-      it('advances the preview across a replay burst sharing one second-precision delay stamp', () => {
+      it('advances the preview across a replay burst sharing one second-precision delay stamp', async () => {
         const stamp = '2026-07-18T09:00:00Z'
         seedPersistedPreview(delayed('burst-1', 'Burst 1', stamp))
 
         roomStore.getState().addMessage(ROOM, delayed('burst-2', 'Burst 2', stamp))
         roomStore.getState().addMessage(ROOM, delayed('burst-3', 'Burst 3', stamp))
+        await roomStore.getState().waitForMessageArrivals(ROOM)
 
         expect(roomStore.getState().rooms.get(ROOM)?.lastMessage?.body).toBe('Burst 3')
       })
@@ -5693,6 +5698,36 @@ describe('roomStore', () => {
       }
     }
 
+    it('loads through consecutive hidden spam pages without evicting the visible anchor', async () => {
+      const anchor = roomMsgAt('anchor', 0)
+      const newer = roomMsgAt('visible-newer', 30)
+      const spam = Array.from({ length: 20 }, (_, i) => ({ ...roomMsgAt(`spam-${i}`, i + 1),
+        body: '', isRetracted: true, isModerated: true, moderationReason: ' sPaM ' }))
+      roomStore.setState({ messages: new Map([[roomJid, [anchor]]]), windowAtLiveEdge: new Map([[roomJid, false]]) })
+      vi.mocked(messageCache.getRoomMessages)
+        .mockResolvedValueOnce(spam.slice(0, 10))
+        .mockResolvedValueOnce(spam.slice(10))
+        .mockResolvedValueOnce([newer])
+      setResidentWindowSize(8)
+      try {
+        await roomStore.getState().loadNewerMessagesFromCache(roomJid, 10)
+        expect(roomWindow(roomJid)).toContainEqual(newer)
+        expect(roomWindow(roomJid)).toContainEqual(anchor)
+        expect(roomWindow(roomJid).length).toBeLessThanOrEqual(8)
+        expect(roomStore.getState().windowAtLiveEdge.get(roomJid)).toBe(true)
+      } finally {
+        setResidentWindowSize(5000)
+      }
+    })
+
+    it('stops at ordinary deletion rows instead of hiding their tombstones', async () => {
+      roomStore.setState({ messages: new Map([[roomJid, [roomMsgAt('anchor', 0)]]]) })
+      const deletion = { ...roomMsgAt('deleted', 1), body: '', isRetracted: true, isModerated: true, moderationReason: 'Other' }
+      vi.mocked(messageCache.getRoomMessages).mockResolvedValue([deletion])
+      expect(await roomStore.getState().loadNewerMessagesFromCache(roomJid, 1)).toEqual([deletion])
+      expect(messageCache.getRoomMessages).toHaveBeenCalledTimes(1)
+    })
+
     // Seed the room at the resident cap with a slid-up window (oldest resident is 'resident-0').
     function seedResidentWindow() {
       const resident: RoomMessage[] = []
@@ -6628,6 +6663,7 @@ describe('roomStore pending retractions', () => {
   beforeEach(() => {
     _resetStorageScopeForTesting()
     localStorageMock.clear()
+    _clearRetractedIdentitiesForTesting()
     roomStore.setState({
       rooms: new Map(),
       roomEntities: new Map(),

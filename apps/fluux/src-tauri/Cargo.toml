@@ -1,6 +1,6 @@
 [package]
 name = "fluux"
-version = "0.17.3"
+version = "0.17.4"
 description = "A productive messaging client that's pleasant to use."
 authors = ["ProcessOne"]
 license = "AGPL-3.0-or-later"
@@ -16,7 +16,7 @@ production-tls = ["rustls/aws_lc_rs", "rustls/prefer-post-quantum"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "devtools", "unstable", "tray-icon"] }
+tauri = { version = "2", features = ["protocol-asset", "devtools", "tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-os = "2"

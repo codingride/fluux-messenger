@@ -5,7 +5,7 @@
 # Reads one path per line on stdin, writes exactly two lines on stdout in
 # GITHUB_OUTPUT format:
 #
-#   js=true|false     -> run the Test and Scroll invariants (e2e) jobs
+#   js=true|false     -> run SDK/checks, app tests, and browser invariants
 #   rust=true|false   -> run the Rust and Rust (Windows) jobs
 #
 # Both false means the diff cannot break any job (docs, assets, metadata).
@@ -75,7 +75,7 @@ while IFS= read -r path || [ -n "$path" ]; do
         # produces the bundle those suites load. Every other path under scripts/
         # falls through to the fail-safe catch-all below, so a new suite must be
         # listed here or it needlessly runs the Rust job too.
-        packages/* | apps/fluux/* | playwright*.config.ts | scripts/scroll-invariants.ts | scripts/composer-geometry.ts | scripts/popover-geometry.ts | scripts/e2e/* | scripts/build-e2e.mjs)
+        packages/* | apps/fluux/* | playwright*.config.ts | scripts/scroll-reading.ts | scripts/scroll-live-edge.ts | scripts/composer-geometry.ts | scripts/popover-geometry.ts | scripts/e2e/* | scripts/build-e2e.mjs)
             js=true
             ;;
 

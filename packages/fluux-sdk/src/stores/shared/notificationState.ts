@@ -25,6 +25,7 @@ import {
   hasFloorResolutionEvidence,
   makeReadPointer,
   pointerRowRef,
+  resolveRoomReadPointerOrder,
   type PointerSource,
   type ReadPointer,
 } from './readPointer'
@@ -105,29 +106,10 @@ export interface EntityNotificationState {
  * content fields entirely (falling back to "not renderable", which is only
  * consulted by the one branch that needs it).
  */
-export interface NotificationMessage extends RenderabilityCheckFields {
-  id: string
-  timestamp: Date
+export interface NotificationMessage extends PointerSource, RenderabilityCheckFields {
   isOutgoing: boolean
   isDelayed?: boolean
   isMention?: boolean
-  /** Sender's JID — feeds the first rung of the ROOM key's `(from, id, occupantId)` tie-break. */
-  from?: string
-  /**
-   * XEP-0359 archive id, when the server has assigned one.
-   *
-   * Threaded through so a pointer minted from this arrival is `addressable`
-   * immediately (see `makeReadPointer`) — the free convergence path for every
-   * peer message and every MUC reflection. A caller that narrows a real message
-   * into this shape and omits `stanzaId` does not break anything, but it does
-   * silently give up that convergence, so pass it.
-   */
-  stanzaId?: string
-  /**
-   * XEP-0421 occupant-id, for a room message that carries one. It is what makes
-   * the divider and the read pointer name a ROW rather than a client id.
-   */
-  occupantId?: string
 }
 
 /** Context about the entity's current visibility and unread state. */
@@ -525,7 +507,13 @@ export function onMessageSeen(
   const current = state.readPointer.order
   if (current.role === 'exact') {
     // The ADVANCE question: never overtake at a shared millisecond (#1173).
-    return mayAdvanceTo(exactPosition(messages[newIdx], kind), current) ? advanced() : state
+    const reportedPosition = exactPosition(messages[newIdx], kind)
+    if (mayAdvanceTo(reportedPosition, current)) return advanced()
+    if (kind === 'room') {
+      const readPointer = resolveRoomReadPointerOrder(state.readPointer, messages, newIdx)
+      if (readPointer !== state.readPointer) return { ...state, readPointer }
+    }
+    return state
   }
 
   // FLOOR (migrated) pointer: order by index within the resident slice. Off

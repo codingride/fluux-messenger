@@ -750,6 +750,7 @@ export class XMPPClient {
       getXmpp: () => this.getXmpp(),
       ensureE2EEManager: () => this.ensureE2EEManager(),
       sendStanza: (stanza) => this.sendStanza(stanza),
+      emitSDK: moduleDeps.emitSDK,
       emitOnline: () => this.emit('online'),
       connectPresence: () => this.presenceActor.send({ type: 'CONNECT' }),
     })
@@ -813,7 +814,8 @@ export class XMPPClient {
       // Listen for MUC occupant avatar updates (XEP-0398)
       // Emitted by MUC module when an occupant's presence contains vcard-temp:x:update
       this.onInternal('occupantAvatarUpdate', async (roomJid, nick, hash, realJid, occupantId, invalidationJid) => {
-        await this.profile.clearVCardNegativeCache(`${roomJid}/${nick}`, invalidationJid ?? realJid)
+        const stateJid = this.profile.getOccupantAvatarStateKey(roomJid, nick, realJid, occupantId)
+        await this.profile.clearVCardNegativeCache(`${roomJid}/${nick}`, invalidationJid ?? realJid, hash, stateJid)
         // Only fetch if the avatar hash changed to avoid re-downloading on every presence
         const room = this.stores?.room.getRoom(roomJid)
         const occupant = room?.occupants.get(nick)
@@ -834,7 +836,7 @@ export class XMPPClient {
       // Emitted by PubSub module for real events or Roster for vcard-temp:x:update
       this.onInternal('avatarMetadataUpdate', async (jid, hash, ownPresence) => {
         if (hash) {
-          await this.profile.clearVCardNegativeCache(getBareJid(jid))
+          await this.profile.clearVCardNegativeCache(getBareJid(jid), undefined, hash)
           if (ownPresence) return
           // Skip if contact already has this avatar hash with a loaded avatar
           const contact = this.stores?.roster.getContact(jid)
@@ -1321,6 +1323,10 @@ export class XMPPClient {
     }
     this.eventHooks.clear()
 
+    // MUC cleanup emits voice-state events that must reach the store bindings
+    // before those bindings are detached.
+    this.rooms?.cleanup()
+
     // Clean up all subscriptions (store bindings, side effects, presence sync,
     // presence persistence) to prevent memory leaks
     for (const cleanup of this.cleanupFunctions) {
@@ -1331,9 +1337,6 @@ export class XMPPClient {
     // Tear down the snapshot subscriber + cancel pending debounced writes
     this.stateSnapshot?.stop()
     this.stateSnapshot = undefined
-
-    // Clean up MUC pending joins to prevent orphaned timeouts
-    this.rooms?.cleanup()
   }
 
   /**
@@ -1792,6 +1795,12 @@ export class XMPPClient {
     // before the plugin was available.
     this.e2ee.onPluginRegistered((pluginId) => {
       this.emitSDK('e2ee:plugin-registered', { pluginId })
+      void this.announceCapsChange()
+    })
+    // A plugin's disco features (XEP-0374 `urn:xmpp:openpgp:im:0`) are
+    // advertised only while it is registered.
+    this.e2ee.onPluginUnregistered(() => {
+      void this.announceCapsChange()
     })
     // When a peer's key material changes (PEP notification), re-attempt
     // deferred decrypts: messages that were decrypted successfully but
@@ -1809,6 +1818,25 @@ export class XMPPClient {
     this.e2ee.onKeyUnlocked(() => {
       this.notifyE2EEKeyUnlocked()
     })
+  }
+
+  /**
+   * Re-broadcast presence when the XEP-0115 hash changed after the initial
+   * presence, so the server and peers re-query our features.
+   *
+   * @internal
+   */
+  private async announceCapsChange(): Promise<void> {
+    try {
+      if (!(await this.contacts.refreshCapsHash())) return
+      if (this.stores?.connection.getStatus() !== 'online' || !this.getXmpp()) return
+      const state = this.presenceActor.getSnapshot()
+      const show = getPresenceShowFromState(state.value as PresenceStateValue) ?? 'online'
+      const status = (state.context as PresenceMachineContext).statusMessage ?? undefined
+      await this.contacts.setPresence(show, status)
+    } catch (err) {
+      this.stores?.console.addEvent(`Caps re-announcement failed: ${err}`, 'presence')
+    }
   }
 
   /**

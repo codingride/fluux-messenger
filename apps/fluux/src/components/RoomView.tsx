@@ -1,8 +1,10 @@
+import { isSpamModerated } from '@/utils/spamModeration'
+import { SpamModerationOption } from './SpamModerationOption'
 import type { MessageRowRef } from '@fluux/sdk'
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useId, useImperativeHandle, useMemo, memo, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import { detectRenderLoop } from '@/utils/renderLoopDetector'
-import { archiveReference, senderReference, useRoomActive, usePolls, useRoomModeration, useRoomManagement, useRoomEntity, useContactIdentities, getBareJid, generateConsistentColorHexSync, createMessageLookup, useReferencedMessage, isMessageFromIgnoredUser, isReplyToIgnoredUser, filterIgnoredReactions, canKick, canBan, getAvailableAffiliations, getAvailableRoles, getMyReactions, WhisperCounterpartGoneError, getStorageScopeJid, currentViewportGeneration, reportViewport, type RoomMessage, type Room, type RoomOccupant, type MentionReference, type ChatStateNotification, type ContactIdentity, type FileAttachment, type RoomAffiliation, type RoomRole, type PollData, type ViewportEvidenceKey } from '@fluux/sdk'
+import { getRoomModerationId, archiveReference, senderReference, useRoomActive, usePolls, useRoomModeration, useRoomManagement, useRoomEntity, useContactIdentities, getBareJid, generateConsistentColorHexSync, createMessageLookup, useReferencedMessage, useRoomMessageSnapshots, resolveRoomMessageSnapshot, isMessageFromIgnoredUser, isReplyToIgnoredUser, filterIgnoredReactions, canKick, canBan, getAvailableAffiliations, getAvailableRoles, getMyReactions, WhisperCounterpartGoneError, getStorageScopeJid, currentViewportGeneration, reportViewport, type RoomMessage, type Room, type RoomOccupant, type MentionReference, type ChatStateNotification, type ContactIdentity, type FileAttachment, type RoomAffiliation, type RoomRole, type PollData, type ViewportEvidenceKey } from '@fluux/sdk'
 import { useConnectionStore, useIgnoreStore, useRoomStore } from '@fluux/sdk/react'
 import { ignoreStore, roomStore, type IgnoredUser } from '@fluux/sdk/stores'
 import { useMentionAutocomplete, useFileUpload, useLinkPreview, useTypeToFocus, useMessageCopy, useMode, useMessageSelection, useMessageHoverState, useDragAndDrop, useConversationDraft, useTimeFormat, useContextMenu, useWhisperCounterpartPresent, useRoomOccupantCountBelow, isSmallScreen } from '@/hooks'
@@ -21,8 +23,11 @@ import { MessageComposer, type ReplyInfo, type EditInfo, type MessageComposerHan
 import { MentionAutocompleteMenu } from './composer/MentionAutocompleteMenu'
 import { composerAutocompleteAriaProps } from './composer/autocompleteAria'
 import { RoomHeader } from './RoomHeader'
+import { RoomVoiceControls } from './RoomVoiceControls'
 import { OccupantPanel } from './OccupantPanel'
 import { OccupantModerationModal } from './OccupantModerationModal'
+import { RoomBulkModerationModal } from './RoomBulkModerationModal'
+import { canBulkModerate } from './roomBulkModeration'
 import { PollCreator } from './PollCreator'
 import { MenuButton, MenuDivider } from './sidebar-components/SidebarListMenu'
 import { Tooltip } from './Tooltip'
@@ -139,9 +144,11 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
   // Zustand uses Object.is to compare selector results — a new [] each time causes re-render loops.
   const ignoredForRoom = useIgnoreStore((s) => activeRoom ? (s.ignoredUsers[activeRoom.jid] ?? EMPTY_IGNORED_ARRAY) : EMPTY_IGNORED_ARRAY)
   const displayMessages = useMemo(() => {
-    if (ignoredForRoom.length === 0) return activeMessages
+    const visibleMessages = activeMessages.some(isSpamModerated)
+      ? activeMessages.filter(message => !isSpamModerated(message)) : activeMessages
+    if (ignoredForRoom.length === 0) return visibleMessages
     const cache = activeRoom?.nickToJidCache
-    return activeMessages
+    return visibleMessages
       .filter(msg =>
         !isMessageFromIgnoredUser(ignoredForRoom, msg, cache) &&
         !isReplyToIgnoredUser(ignoredForRoom, msg.replyTo, cache)
@@ -167,6 +174,14 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
 
   // Reply state
   const [replyingTo, setReplyingTo] = useState<RoomMessage | null>(null)
+  const [bulkModerationRoomJid, setBulkModerationRoomJid] = useState<string | null>(null)
+  const [bulkModerationSender, setBulkModerationSender] = useState<RoomMessage | undefined>()
+  const [bulkModerationReason, setBulkModerationReason] = useState<string | undefined>()
+  const handleModerateSender = useCallback((message: RoomMessage, reason?: string) => {
+    setBulkModerationSender(message)
+    setBulkModerationReason(reason)
+    setBulkModerationRoomJid(message.roomJid)
+  }, [])
 
   // Edit state
   const [editingMessage, setEditingMessage] = useState<RoomMessage | null>(null)
@@ -192,7 +207,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
   const lastOutgoingMessageId = lastOutgoingMessage ? (messageRowId(lastOutgoingMessage) ?? null) : null
 
   // Last message ID - reply button is disabled for last message (context is already clear)
-  const lastMessage = activeMessages[activeMessages.length - 1]
+  const lastMessage = displayMessages[displayMessages.length - 1]
   const lastMessageId = lastMessage ? (messageRowId(lastMessage) ?? null) : null
 
   // Handler to edit the last outgoing message (triggered by Up arrow in empty composer)
@@ -300,7 +315,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
     clearSelection,
     handleMouseMove,
     handleMouseLeave,
-  } = useMessageSelection(activeMessages, scrollRef, isAtBottomRef, {
+  } = useMessageSelection(displayMessages, scrollRef, isAtBottomRef, {
     getRowId: messageRowId,
     onReachedFirstMessage: fetchOlderHistory,
     isLoadingOlder: activeHistoryState?.isLoading,
@@ -414,6 +429,8 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
   // Note: scroll position is managed by MessageList component
   useEffect(() => {
     setReplyingTo(null)
+    setBulkModerationRoomJid(null)
+    setBulkModerationSender(undefined)
     setEditingMessage(null)
     setWhisperTarget(null)
     // Revoke old preview URL to avoid memory leaks
@@ -496,7 +513,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
   )
 
   // Find on page: browser-style search within this room
-  const find = useFindOnPage(activeMessages, activeRoom?.jid, messageRowId)
+  const find = useFindOnPage(displayMessages, activeRoom?.jid, messageRowId)
 
   // Expose find-on-page handle to parent for keyboard shortcuts
   useImperativeHandle(findOnPageRef, () => ({
@@ -556,7 +573,25 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
           setSubject={setSubject}
           destroyRoom={destroyRoom}
           onSearchInConversation={handleSearchInConversation}
+          onBulkModeration={canBulkModerate(activeRoom) ? () => {
+            setBulkModerationSender(undefined)
+            setBulkModerationReason(undefined)
+            setBulkModerationRoomJid(activeRoom.jid)
+          } : undefined}
         />
+
+        {bulkModerationRoomJid === activeRoom.jid && (
+          <RoomBulkModerationModal
+            key={`bulk-moderation:${activeRoom.jid}`}
+            room={activeRoom}
+            messages={activeMessages}
+            isConnected={isConnected}
+            initialSender={bulkModerationSender}
+            initialReason={bulkModerationReason}
+            moderateMessage={moderateMessage}
+            onClose={() => setBulkModerationRoomJid(null)}
+          />
+        )}
 
         {/* Unanswered poll banner */}
         <PollBanner
@@ -599,6 +634,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
           <MediaAutoloadProvider autoLoad={mediaAutoLoad}>
             <RoomMessageList
               messages={displayMessages}
+              loadedMessageCount={activeMessages.length}
               interiorPlacementVersion={interiorPlacementVersion}
               scrollerRef={scrollRef}
               isAtBottomRef={isAtBottomRef}
@@ -620,6 +656,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
             onReactionPickerChange={handleReactionPickerChange}
             retractMessage={retractMessage}
             moderateMessage={moderateMessage}
+            onModerateSender={handleModerateSender}
             selectedMessageId={selectedMessageId}
             hasKeyboardSelection={hasKeyboardSelection}
             showToolbarForSelection={showToolbarForSelection}
@@ -660,38 +697,40 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
 
         {/* Input - show composer if joined, join prompt if not */}
         {activeRoom.joined ? (
-          <RoomMessageInput
-            key={activeRoom.jid}
-            ref={composerHandleRef}
-            roomJid={activeRoom.jid}
-            textareaRef={composerRef as React.RefObject<HTMLTextAreaElement | null>}
-            sendMessage={sendMessage}
-            sendCorrection={sendCorrection}
-            retractMessage={retractMessage}
-            sendChatState={sendChatState}
-            sendWhisperChatState={sendWhisperChatState}
-            sendEasterEgg={sendEasterEgg}
-            sendPoll={sendPoll}
-            replyingTo={replyingTo}
-            onCancelReply={handleCancelReply}
-            editingMessage={editingMessage}
-            onCancelEdit={handleCancelEdit}
-            onEditLastMessage={handleEditLastMessage}
-            onComposingChange={setIsComposing}
-            uploadState={uploadStateObj}
-            isUploadSupported={isSupported}
-            onFileSelect={handleFileDrop}
-            uploadFile={uploadFile}
-            pendingAttachment={pendingAttachment}
-            onRemovePendingAttachment={handleRemovePendingAttachment}
-            processLinkPreview={processMessageForLinkPreview}
-            isConnected={isConnected}
-            onMessageIdSent={handleMessageIdSent}
-            whisperTarget={whisperTarget}
-            onClearWhisper={handleClearWhisperTarget}
-            sendWhisper={sendWhisper}
-            isDarkMode={resolvedMode === 'dark'}
-          />
+          <RoomVoiceControls room={activeRoom} isConnected={isConnected} allowWhisper={!!whisperTarget}>
+            <RoomMessageInput
+              key={activeRoom.jid}
+              ref={composerHandleRef}
+              roomJid={activeRoom.jid}
+              textareaRef={composerRef as React.RefObject<HTMLTextAreaElement | null>}
+              sendMessage={sendMessage}
+              sendCorrection={sendCorrection}
+              retractMessage={retractMessage}
+              sendChatState={sendChatState}
+              sendWhisperChatState={sendWhisperChatState}
+              sendEasterEgg={sendEasterEgg}
+              sendPoll={sendPoll}
+              replyingTo={replyingTo}
+              onCancelReply={handleCancelReply}
+              editingMessage={editingMessage}
+              onCancelEdit={handleCancelEdit}
+              onEditLastMessage={handleEditLastMessage}
+              onComposingChange={setIsComposing}
+              uploadState={uploadStateObj}
+              isUploadSupported={isSupported}
+              onFileSelect={handleFileDrop}
+              uploadFile={uploadFile}
+              pendingAttachment={pendingAttachment}
+              onRemovePendingAttachment={handleRemovePendingAttachment}
+              processLinkPreview={processMessageForLinkPreview}
+              isConnected={isConnected}
+              onMessageIdSent={handleMessageIdSent}
+              whisperTarget={whisperTarget}
+              onClearWhisper={handleClearWhisperTarget}
+              sendWhisper={sendWhisper}
+              isDarkMode={resolvedMode === 'dark'}
+            />
+          </RoomVoiceControls>
         ) : (
           <RoomJoinPrompt
             onJoin={async () => {
@@ -889,6 +928,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
 
 export const RoomMessageList = memo(function RoomMessageList({
   messages,
+  loadedMessageCount = messages.length,
   interiorPlacementVersion = 0,
   scrollerRef,
   isAtBottomRef,
@@ -909,6 +949,7 @@ export const RoomMessageList = memo(function RoomMessageList({
   onReactionPickerChange,
   retractMessage,
   moderateMessage,
+  onModerateSender,
   selectedMessageId,
   hasKeyboardSelection,
   showToolbarForSelection,
@@ -941,6 +982,7 @@ export const RoomMessageList = memo(function RoomMessageList({
   isCatchingUp,
 }: {
   messages: RoomMessage[]
+  loadedMessageCount?: number
   interiorPlacementVersion?: number
   scrollerRef: React.RefObject<HTMLElement | null>
   isAtBottomRef: React.MutableRefObject<boolean>
@@ -967,13 +1009,14 @@ export const RoomMessageList = memo(function RoomMessageList({
   onReactionPickerChange: (messageId: string, isOpen: boolean) => void
   retractMessage: (roomJid: string, messageId: string) => Promise<void>
   moderateMessage: (roomJid: string, stanzaId: string, reason?: string) => Promise<void>
+  onModerateSender?: (message: RoomMessage, reason?: string) => void
   selectedMessageId: string | null
   hasKeyboardSelection: boolean
   showToolbarForSelection: boolean
   firstNewMessageRow?: MessageRowRef
   firstNewMessageIsProvisional?: boolean
   readPointerRow?: MessageRowRef
-  targetMessageId?: string | null
+  targetMessageId?: string | MessageRowRef | null
   clearTargetMessageId?: () => void
   clearFirstNewMessageId: () => void
   onMessageSeen?: (messageId: string) => void
@@ -1014,9 +1057,13 @@ export const RoomMessageList = memo(function RoomMessageList({
   // poll that closed, so it stays reactive without re-rendering unrelated rows.
   const closedPollIds = useMemo(() => {
     const ids = new Set<string>()
+    const polls = messages.filter(message => message.poll)
     for (const msg of messages) {
       if (msg.pollClosed?.pollMessageId) {
-        const rowId = messageRowId({ id: msg.pollClosed.pollMessageId, occupantId: msg.occupantId })
+        const authorPolls = polls.filter(poll => poll.occupantId && msg.occupantId
+          ? poll.occupantId === msg.occupantId : poll.from === msg.from)
+        const poll = createMessageLookup(authorPolls).get(msg.pollClosed.pollMessageId)
+        const rowId = poll && messageRowId(poll)
         if (rowId) ids.add(rowId)
       }
     }
@@ -1063,7 +1110,7 @@ export const RoomMessageList = memo(function RoomMessageList({
     isJoining: room.isJoining ?? false,
     joined: room.joined ?? false,
     isCatchingUp: isCatchingUp ?? false,
-    messageCount: messages.length,
+    messageCount: loadedMessageCount,
   })
   // Label matches the phase: still joining vs. joined and loading history.
   const isJoiningPhase = (room.isJoining ?? false) && !(room.joined ?? false)
@@ -1087,6 +1134,16 @@ export const RoomMessageList = memo(function RoomMessageList({
         <Hash className="size-7 text-fluux-brand" />
       </div>
       <p className="text-sm">{isJoined ? t('chat.noMessages') : t('rooms.joinToLoadHistory')}</p>
+      {isJoined && !isHistoryComplete && onScrollToTop && (
+        <button
+          type="button"
+          onClick={() => onScrollToTop()}
+          disabled={isLoadingOlder}
+          className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg hover:text-fluux-text hover:bg-fluux-hover disabled:cursor-wait disabled:opacity-50"
+        >
+          {t('chat.loadEarlierMessages')}
+        </button>
+      )}
     </div>
   )
 
@@ -1206,6 +1263,7 @@ export const RoomMessageList = memo(function RoomMessageList({
         onReactionPickerChange={onReactionPickerChange}
         retractMessage={retractMessage}
         moderateMessage={moderateMessage}
+        onModerateSender={onModerateSender}
         isSelected={rowId === selectedMessageId}
         hasKeyboardSelection={hasKeyboardSelection}
         showToolbarForSelection={showToolbarForSelection}
@@ -1321,6 +1379,7 @@ interface RoomMessageBubbleWrapperProps {
   onReactionPickerChange?: (messageId: string, isOpen: boolean) => void
   retractMessage: (roomJid: string, messageId: string) => Promise<void>
   moderateMessage: (roomJid: string, stanzaId: string, reason?: string) => Promise<void>
+  onModerateSender?: (message: RoomMessage, reason?: string) => void
   isSelected?: boolean
   hasKeyboardSelection?: boolean
   showToolbarForSelection?: boolean
@@ -1391,6 +1450,7 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
   onReactionPickerChange,
   retractMessage,
   moderateMessage,
+  onModerateSender,
   isSelected,
   hasKeyboardSelection,
   showToolbarForSelection,
@@ -1417,6 +1477,19 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
   const [moderateReason, setModerateReason] = useState('')
   const [banAfterModerate, setBanAfterModerate] = useState(false)
 
+  const confirmModeration = () => {
+    const stanzaId = getRoomModerationId(message)
+    if (!canModerateMsg || message.roomJid !== roomJid || !stanzaId || message.isRetracted) return
+    setShowModerateConfirm(false)
+    const reason = moderateReason.trim() || undefined
+    setModerateReason('')
+    void moderateMessage(roomJid, stanzaId, reason)
+    if (banAfterModerate && senderBareJidForBan) {
+      void setAffiliation(roomJid, senderBareJidForBan, 'outcast', reason)
+    }
+    setBanAfterModerate(false)
+  }
+
   // Delete own message confirmation state
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
@@ -1432,7 +1505,7 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
   // Resolve the replied-to message reactively from the store. Reading a render-time
   // lookup here would freeze this memoized row on the XEP-0428 fallback when the quoted
   // message only paginates in later. Uses the roomJid prop (the row never sees `room`).
-  const replyTarget = useReferencedMessage({ type: 'groupchat', roomJid, id: message.replyTo?.id })
+  const replyTarget = useReferencedMessage({ type: 'groupchat', roomJid, id: message.replyTo?.id, from: message.replyTo?.to, cache: true })
 
   const contact = senderBareJid ? contactsByJid.get(senderBareJid) : undefined
 
@@ -1628,7 +1701,7 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
         onDelete={async () => {
           if (message.isOutgoing) {
             setShowDeleteConfirm(true)
-          } else {
+          } else if (canModerateMsg && getRoomModerationId(message)) {
             setShowModerateConfirm(true)
           }
         }}
@@ -1683,28 +1756,36 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
             <>
             <h3 className="text-lg font-semibold text-fluux-text mb-2">{t('chat.moderateMessage')}</h3>
             <p className="text-sm text-fluux-muted mb-3">{t('chat.moderateMessageConfirm')}</p>
-            <div className="mb-3">
-              <label className="block text-xs text-fluux-muted mb-1">{t('chat.moderateReason')}</label>
-              <TextInput
-                type="text"
-                value={moderateReason}
-                onChange={(e) => setModerateReason(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    setShowModerateConfirm(false)
-                    const reason = moderateReason.trim() || undefined
-                    setModerateReason('')
-                    void moderateMessage(roomJid, archiveReference(message), reason)
-                    if (banAfterModerate && senderBareJidForBan) {
-                      void setAffiliation(roomJid, senderBareJidForBan, 'outcast', reason)
-                    }
-                    setBanAfterModerate(false)
-                  }
+            {onModerateSender && message.occupantId && getRoomModerationId(message) && (
+              <button
+                type="button"
+                className="w-full px-3 py-2 mb-3 rounded-lg border border-fluux-brand text-fluux-brand text-sm text-start [overflow-wrap:anywhere] hover:bg-fluux-selection transition-colors"
+                onClick={() => {
+                  setShowModerateConfirm(false)
+                  setModerateReason('')
+                  setBanAfterModerate(false)
+                  onModerateSender(message, moderateReason.trim() || undefined)
                 }}
-                placeholder={t('chat.moderateReasonPlaceholder')}
-                className="w-full px-3 py-1.5 text-sm bg-fluux-bg border border-fluux-border rounded-lg text-fluux-text placeholder-fluux-muted focus:outline-none focus:ring-2 focus:ring-fluux-brand/50"
-                autoFocus
-              />
+              >
+                {t('rooms.bulkModerationSender', { nick: message.nick })}
+              </button>
+            )}
+            <div className="mb-3 space-y-2">
+              <SpamModerationOption reason={moderateReason} onChange={setModerateReason} />
+              <div className="space-y-1">
+                <label className="block text-sm font-medium text-fluux-text">{t('chat.moderateReason')}</label>
+                <TextInput
+                  type="text"
+                  value={moderateReason}
+                  onChange={(e) => setModerateReason(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') confirmModeration()
+                  }}
+                  placeholder={t('chat.moderateReasonPlaceholder')}
+                  className="w-full px-3 py-2 text-sm bg-fluux-bg border border-fluux-border rounded-lg text-fluux-text placeholder:text-fluux-muted focus:border-fluux-brand"
+                  autoFocus
+                />
+              </div>
             </div>
             {canBanUser && senderBareJidForBan && (
               <label className="flex items-center gap-2 mb-4 cursor-pointer">
@@ -1727,17 +1808,9 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setShowModerateConfirm(false)
-                  const reason = moderateReason.trim() || undefined
-                  setModerateReason('')
-                  void moderateMessage(roomJid, archiveReference(message), reason)
-                  if (banAfterModerate && senderBareJidForBan) {
-                    void setAffiliation(roomJid, senderBareJidForBan, 'outcast', reason)
-                  }
-                  setBanAfterModerate(false)
-                }}
-                className="px-4 py-2 text-sm text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
+                onClick={confirmModeration}
+                disabled={!canModerateMsg || !getRoomModerationId(message) || message.isRetracted}
+                className="px-4 py-2 text-sm text-white bg-fluux-red hover:bg-[color-mix(in_srgb,var(--fluux-status-error),black_10%)] rounded-lg transition-colors"
               >
                 {t('chat.moderateMessage')}
               </button>
@@ -1818,6 +1891,14 @@ export const RoomMessageInput = memo(function RoomMessageInput({
   // Narrow, reference-stable subscriptions: the composer re-renders on entity
   // changes (name/nickname) and occupant COUNT changes (join/leave), but NOT on
   // message churn nor on occupant metadata churn (show/avatar/presence flapping).
+  const replySnapshots = useMemo(() => replyingTo ? [replyingTo] : [], [replyingTo])
+  const [currentReplyTarget] = useRoomMessageSnapshots(roomJid, replySnapshots)
+  const replyIsSpam = !!currentReplyTarget && isSpamModerated(currentReplyTarget)
+  const activeReply = !replyIsSpam ? replyingTo : null
+  useEffect(() => {
+    if (replyIsSpam) onCancelReply()
+  }, [replyIsSpam, onCancelReply])
+
   const entity = useRoomEntity(roomJid)
   const roomName = entity?.name ?? roomJid
   const roomNickname = entity?.nickname ?? ''
@@ -1964,13 +2045,13 @@ export const RoomMessageInput = memo(function RoomMessageInput({
   }, [replyingTo])
 
   // Convert RoomMessage to ReplyInfo for the composer
-  const replyInfo: ReplyInfo | null = replyingTo
+  const replyInfo: ReplyInfo | null = activeReply
     ? {
-        id: archiveReference(replyingTo),
-        from: replyingTo.from,
-        senderName: replyingTo.nick,
-        body: replyingTo.body,
-        senderColor: auroraSenderColor(nickColorSeed({ occupantId: replyingTo.occupantId, nick: replyingTo.nick }), isDarkMode ?? true),
+        id: archiveReference(activeReply),
+        from: activeReply.from,
+        senderName: activeReply.nick,
+        body: activeReply.body,
+        senderColor: auroraSenderColor(nickColorSeed({ occupantId: activeReply.occupantId, nick: activeReply.nick }), isDarkMode ?? true),
       }
     : null
 
@@ -2012,6 +2093,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
 
   // Handle send
   const handleSend = async (sendText: string): Promise<boolean> => {
+    const sendingAccount = getStorageScopeJid()
     // Whisper mode (XEP-0045 §7.5): text-only, ephemeral, no reply/attachment.
     if (whisperTarget) {
       // Hard backstop: re-check presence against the LIVE occupant list (not the
@@ -2033,17 +2115,6 @@ export const RoomMessageInput = memo(function RoomMessageInput({
       return true
     }
 
-    // Include reply info if replying to a message
-    // SDK resolves stanzaId vs id for the protocol reference (XEP-0461)
-    let replyTo: { id: string; to: string; fallback?: { author: string; body: string } } | undefined
-    if (replyingTo) {
-      replyTo = {
-        id: replyingTo.id,
-        to: replyingTo.from,
-        fallback: { author: replyingTo.nick, body: replyingTo.body }
-      }
-    }
-
     // If there's a pending attachment, upload it first (privacy: only upload when user explicitly sends)
     let attachment: FileAttachment | null | undefined
     if (pendingAttachment && uploadFile) {
@@ -2051,6 +2122,21 @@ export const RoomMessageInput = memo(function RoomMessageInput({
       if (!attachment) {
         // Upload failed - don't send the message
         return false
+      }
+    }
+
+    if (getStorageScopeJid() !== sendingAccount) return false
+    const sendReply = replyingTo ? await resolveRoomMessageSnapshot(replyingTo) : undefined
+    const sendReplyIsSpam = !!sendReply && isSpamModerated(sendReply)
+    // Include reply info if replying to a message
+    // SDK resolves stanzaId vs id for the protocol reference (XEP-0461)
+    let replyTo: { id: string; stanzaId?: string; to: string; fallback?: { author: string; body: string } } | undefined
+    if (sendReply && !sendReplyIsSpam) {
+      replyTo = {
+        id: sendReply.id,
+        stanzaId: sendReply.stanzaId,
+        to: sendReply.from,
+        fallback: { author: sendReply.nick, body: replyingTo!.body }
       }
     }
 

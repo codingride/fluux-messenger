@@ -53,9 +53,12 @@ function harness(kind: Kind) {
   const row = (entry: Entry): Message | RoomMessage => {
     const common = { id: entry.id, stanzaId: `archive-${entry.id}`, body: entry.body ?? '',
       timestamp: new Date(entry.at), isOutgoing: false }
-    return kind === 'room'
-      ? { ...common, type: 'groupchat', roomJid: ROOM, from: `${ROOM}/peer`, nick: 'peer' }
-      : { ...common, type: 'chat', conversationId: PEER, from: PEER }
+    if (kind !== 'room') return { ...common, type: 'chat', conversationId: PEER, from: PEER }
+    // Mirror what MAM stamps on a room row it parses out of the archive: without
+    // the room's own <stanza-id> authority this fixture would stand for a legacy
+    // cached row, and could not be compared with what the pipeline produces.
+    const message: RoomMessage = { ...common, type: 'groupchat', roomJid: ROOM, from: `${ROOM}/peer`, nick: 'peer' }
+    return { ...message }
   }
   if (kind === 'room') {
     roomStore.getState().addRoom({ jid: ROOM, name: 'Room', nickname: 'me', joined: true,

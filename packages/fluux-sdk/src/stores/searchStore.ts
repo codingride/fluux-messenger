@@ -21,6 +21,9 @@ import { connectionStore } from './connectionStore'
 import { areRetractedInCache, getMessages, getRoomMessages } from '../utils/messageCache'
 import type { XMPPClient } from '../core/XMPPClient'
 import type { Message, RoomMessage } from '../core/types'
+import { moderationMetadata, roomRetractionAuthorized } from '../utils/moderation'
+import { roomStanzaIdsMergeable } from '../utils/roomStanzaId'
+import { reconcileRoomMessageSnapshots } from '../utils/roomMessageSnapshots'
 import { applyPendingRetractions } from './shared/pendingRetractions'
 import { getCorrectionStanzaIds } from '../core/types/message-internal'
 import {
@@ -31,7 +34,6 @@ import {
   messageReferences,
   resolveMessageReference,
   roomScope,
-  roomMessageAuthor,
   sameLogicalMessage,
 } from '../utils/messageIdentity'
 
@@ -93,6 +95,10 @@ export interface SearchResult {
  * Lightweight context message for display in search result previews.
  */
 export interface ContextMessage {
+  roomMessage?: RoomMessage
+  isModerated?: boolean
+  moderatedBy?: string
+  moderationReason?: string
   body: string
   nick?: string
   from: string
@@ -245,7 +251,7 @@ function isChatRetracted(msg: Message, resident?: Message): boolean {
 
 function findResidentRoomMessage(msg: RoomMessage, roomJid: string): RoomMessage | undefined {
   const sameSender = (roomStore.getState().messages.get(roomJid) ?? [])
-    .filter(candidate => candidate.from === msg.from)
+    .filter(candidate => candidate.from === msg.from && roomStanzaIdsMergeable(msg, candidate))
   // Identity fields only — never spread `msg`, whose `body` may be a getter the
   // caller must not trigger before the tombstone check.
   const probe = {
@@ -275,7 +281,7 @@ function isRoomRetracted(msg: RoomMessage, roomJid: string): boolean {
   return applyPendingRetractions(
     [current],
     pending,
-    roomMessageAuthor
+    roomRetractionAuthorized
   ).applied.length > 0
 }
 
@@ -376,7 +382,7 @@ function messageToSearchResult(msg: Message, query: string, phrases?: string[]):
 function roomMessageToSearchResult(msg: RoomMessage, roomJid: string, query: string, phrases?: string[]): SearchResult | null {
   if (isRoomRetracted(msg, roomJid)) return null
   return {
-    indexId: `mam:room:${msg.id}`,
+    indexId: `mam:room:${JSON.stringify([roomJid, msg.id, msg.occupantId ?? msg.from, msg.stanzaId ?? null])}`,
     messageId: msg.id,
     stanzaId: msg.stanzaId,
     originId: msg.originId,
@@ -447,6 +453,8 @@ export function deduplicateMAMResults(
 
 function searchResultIdentity(result: SearchResult) {
   return {
+    timestamp: result.timestamp,
+    body: result.body,
     id: result.messageId,
     from: result.from,
     stanzaId: result.stanzaId,
@@ -458,6 +466,10 @@ function searchResultIdentity(result: SearchResult) {
 
 function sameSearchResult(a: SearchResult, b: SearchResult): boolean {
   if (a.isRoom !== b.isRoom || a.conversationId !== b.conversationId) return false
+  if (a.isRoom && !roomStanzaIdsMergeable(
+    { ...searchResultIdentity(a), roomJid: a.conversationId },
+    { ...searchResultIdentity(b), roomJid: b.conversationId },
+  )) return false
   const scope = a.isRoom ? roomScope(a.conversationId) : CHAT_SCOPE
   return sameLogicalMessage(scope, searchResultIdentity(a), searchResultIdentity(b))
 }
@@ -465,10 +477,22 @@ function sameSearchResult(a: SearchResult, b: SearchResult): boolean {
 function sameSearchResultMessage(result: SearchResult, message: Message | RoomMessage): boolean {
   if (result.isRoom) {
     if (message.type !== 'groupchat' || message.roomJid !== result.conversationId) return false
-    return sameLogicalMessage(roomScope(result.conversationId), searchResultIdentity(result), message)
+    return roomStanzaIdsMergeable({ ...searchResultIdentity(result), roomJid: result.conversationId }, message)
+      && sameLogicalMessage(roomScope(result.conversationId), searchResultIdentity(result), message)
   }
   if (message.type !== 'chat' || message.conversationId !== result.conversationId) return false
   return sameLogicalMessage(CHAT_SCOPE, searchResultIdentity(result), message)
+}
+
+function roomContextMessage(message: RoomMessage, roomJid: string): ContextMessage {
+  const state = roomStore.getState()
+  const [resolved] = reconcileRoomMessageSnapshots([message], state.messages.get(roomJid), state.pendingRetractions.get(roomJid))
+  return {
+    roomMessage: resolved,
+    body: resolved.body || '', nick: resolved.nick, from: resolved.from,
+    timestamp: resolved.timestamp.getTime(), isRetracted: resolved.isRetracted,
+    ...moderationMetadata(resolved),
+  }
 }
 
 /**
@@ -496,11 +520,11 @@ async function fetchResultContexts(results: SearchResult[], query: string): Prom
           ])
           before = beforeMsgs
             .filter(m => !sameSearchResultMessage(result, m))
-            .map(m => ({ body: m.body || '', nick: m.nick, from: m.from, timestamp: m.timestamp.getTime(), isRetracted: isRoomRetracted(m, result.conversationId) }))
+            .map(m => roomContextMessage(m, result.conversationId))
           after = afterMsgs
             .filter(m => !sameSearchResultMessage(result, m))
             .slice(0, 1)
-            .map(m => ({ body: m.body || '', nick: m.nick, from: m.from, timestamp: m.timestamp.getTime(), isRetracted: isRoomRetracted(m, result.conversationId) }))
+            .map(m => roomContextMessage(m, result.conversationId))
         } else {
           const [beforeMsgs, afterMsgs] = await Promise.all([
             getMessages(result.conversationId, { before: ts, limit: 1 }),

@@ -2,13 +2,14 @@
   "name": "fluux",
   "private": true,
   "license": "AGPL-3.0-or-later",
-  "version": "0.17.3",
+  "version": "0.17.4",
   "type": "module",
   "workspaces": [
     "packages/*",
     "apps/*"
   ],
   "scripts": {
+    "postinstall": "patch-package --error-on-fail && node scripts/check-xmpp-sasl-encoding.mjs",
     "guard:sdk-link": "node scripts/check-sdk-link.mjs",
     "predev": "npm run guard:sdk-link && node scripts/select-icon-variant.mjs",
     "dev": "npm run dev -w @xmpp/fluux",
@@ -27,11 +28,12 @@
     "check:anomaly:dev": "FLUUX_ANOMALY=1 npm run build:app && FLUUX_ANOMALY=1 node scripts/check-anomaly-elimination.mjs",
     "build:e2e": "npm run build:sdk && node scripts/build-e2e.mjs",
     "preview:e2e": "npm run preview -w @xmpp/fluux -- --port 4173 --strictPort",
-    "test": "npm run test:run --workspaces --if-present",
+    "test": "npm run test:tauri-features && npm run test:run --workspaces --if-present",
+    "test:tauri-features": "node apps/fluux/src-tauri/check-tauri-features.mjs",
     "test:parallel": "node scripts/test-parallel.mjs",
     "test:coverage": "npm run test:coverage --workspaces --if-present",
     "test:e2e": "npx playwright test --config playwright.e2e.config.ts",
-    "test:scroll": "npx playwright test --config playwright.e2e.config.ts --project=scroll-chromium --project=scroll-webkit",
+    "test:scroll": "npx playwright test --config playwright.e2e.config.ts --project=\"scroll-*\"",
     "test:composer": "npx playwright test --config playwright.e2e.config.ts --project=composer-chromium --project=composer-webkit",
     "test:popover": "npx playwright test --config playwright.e2e.config.ts --project=popover-chromium --project=popover-webkit",
     "pretypecheck": "npm run guard:sdk-link",
@@ -56,8 +58,11 @@
     "demo:video:readme": "ffmpeg -y -i video/fluux-demo-reel.mp4 -vf scale=out_range=tv:out_color_matrix=bt709,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv -c:v libx264 -crf 30 -preset slow -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -movflags +faststart -an assets/readme/fluux-demo.mp4"
   },
   "devDependencies": {
+    "@iarna/toml": "^2.2.5",
     "@playwright/test": "^1.58.2",
     "buffer": "^6.0.3",
+    "esbuild": "^0.28.2",
+    "patch-package": "8.0.1",
     "stream-browserify": "^3.0.0",
     "typescript": "^5.3.3"
   },
@@ -68,10 +73,10 @@
     "@tauri-apps/plugin-deep-link": "^2.4.7"
   },
   "overrides": {
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "zod-validation-error": "4.0.2",
-    "esbuild": "^0.28.1",
+    "esbuild": "^0.28.2",
     "eslint-plugin-react": {
       "eslint": "^10.0.0"
     }

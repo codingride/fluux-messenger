@@ -49,7 +49,7 @@ function chatMessage(
 }
 
 function roomMessage(id: string, stanzaId: string, from: string): RoomMessage {
-  return {
+  const message = {
     type: 'groupchat',
     id,
     stanzaId,
@@ -60,6 +60,7 @@ function roomMessage(id: string, stanzaId: string, from: string): RoomMessage {
     timestamp: new Date(8_000),
     isOutgoing: false,
   } as RoomMessage
+  return { ...message, localRowRef: { id } }
 }
 
 function makeClient() {

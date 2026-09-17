@@ -92,6 +92,8 @@ export { useRoomActions } from './hooks/useRoomActions'
 export { usePolls } from './hooks/usePolls'
 export { useRoomModeration } from './hooks/useRoomModeration'
 export { useRoomManagement } from './hooks/useRoomManagement'
+export { useRoomMessageSnapshots } from './hooks/useRoomMessageSnapshots'
+export { resolveRoomMessageSnapshot } from './utils/roomMessageSnapshots'
 export { useReferencedMessage, type ReferencedMessageParams } from './hooks/useReferencedMessage'
 export { useXMPP } from './hooks/useXMPP'
 export { useAdmin } from './hooks/useAdmin'
@@ -111,6 +113,7 @@ export type { SearchResult, SearchResultContext, SearchFilterType, InPrefixSugge
 export { rebuildSearchIndex, clearSearchIndex, parseSearchQuery } from './utils/searchIndex'
 export type { RebuildProgress, ParsedQuery } from './utils/searchIndex'
 export { buildScopedStorageKey, getStorageScopeJid } from './utils/storageScope'
+export { getRoomModerationId, roomStanzaIdsMergeable } from './utils/roomStanzaId'
 
 // The SDK's diagnostic channel: one subscription carrying every seam the SDK
 // reports, discriminated by `kind`. The payload-isolation and per-kind reachability
@@ -386,7 +389,7 @@ export type {
 export type { XMPPClientConfig } from './core/clientConfig'
 
 // Events types
-export type { SubscriptionRequest, StrangerMessage, RoomInvitation, SystemNotification, SystemNotificationType } from './core/types'
+export type { SubscriptionRequest, StrangerMessage, RoomInvitation, RoomVoiceRequest, VoiceRequestStatus, SystemNotification, SystemNotificationType } from './core/types'
 
 // EventHook base class (Obsidian-inspired plugin pattern)
 export { EventHook } from './core/EventHook'
@@ -480,6 +483,7 @@ export type {
   InboundSource,
   Logger as E2EELogger,
   PEPItem,
+  PEPPublishOptions,
   PeerSupport,
   PinnedStrategy,
   PluginConfiguration,
@@ -528,6 +532,7 @@ export {
   roomScope,
   sameLogicalMessage,
   sameMessageRow,
+  matchesMessageRowAlias,
   selectOccupantRow,
   senderReference,
 } from './utils/messageIdentity'
@@ -614,7 +619,7 @@ export type { WellKnownMucServer } from './core/config'
 // XMPP NAMESPACE CONSTANTS
 // =============================================================================
 
-// The 73 `NS_*` protocol namespaces are NOT exported here. A consumer that
+// The 74 `NS_*` protocol namespaces are NOT exported here. A consumer that
 // needs one is writing XMPP by hand, which the curated entry does not ask
 // anyone to do; they live on the `@fluux/sdk/xmpp` escape hatch.
 
@@ -714,3 +719,5 @@ export { checkForMention, findMentionRanges, findIrcPrefixRange } from './core/m
 // re-exported here — see src/demo/index.ts.
 
 export { setMeasurementEnabled } from './utils/measure'
+
+export { isSpamModerated } from './utils/moderation'

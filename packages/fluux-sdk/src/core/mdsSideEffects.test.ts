@@ -1,3 +1,4 @@
+import { setStorageScopeJid } from '../utils/storageScope'
 /**
  * Tests for the MDS (XEP-0490) read-position publisher side effect.
  *
@@ -21,6 +22,11 @@ import {
   noteLocallyPublishedDisplayed,
   clearLocallyPublishedDisplayed,
 } from './localMdsPublishes'
+vi.mock('../utils/messageCache', async importOriginal => ({
+  ...await importOriginal<typeof import('../utils/messageCache')>(),
+  getRoomMessageCandidates: vi.fn(async () => []),
+}))
+
 import { setupMdsSideEffects } from './mdsSideEffects'
 import { createStoreBindings, type StoreRefs } from '../bindings/storeBindings'
 import { createMockStoreRefs, type MockStoreRefs } from './test-utils'
@@ -119,7 +125,7 @@ function patchMeta(
 
 /** Build a RoomMessage (mirrors roomStore.mds.test.ts rmsg helper). */
 function rmsg(room: string, id: string, stanzaId: string | undefined, t: number): RoomMessage {
-  return {
+  const message = {
     type: 'groupchat',
     id,
     stanzaId,
@@ -130,6 +136,7 @@ function rmsg(room: string, id: string, stanzaId: string | undefined, t: number)
     timestamp: new Date(t),
     isOutgoing: false,
   } as RoomMessage
+  return { ...message, localRowRef: { id } }
 }
 
 /** Our own groupchat message — outgoing, and (until reflected) without a stanza-id. */
@@ -166,6 +173,7 @@ function seedRoom(jid: string, messages: RoomMessage[], seenMessageId?: string):
     mentionsCount: 0,
     typingUsers: new Set(),
   }
+  messages = messages.map(message => ({ ...message, localRowRef: { id: message.id, occupantId: message.occupantId } }))
   roomStore.getState().addRoom(room, messages)
   if (seenMessageId !== undefined) {
     const seen = messages.find((m) => m.id === seenMessageId)
@@ -281,6 +289,7 @@ describe('setupMdsSideEffects', () => {
     chatStore.getState().reset()
     roomStore.getState().reset()
     localStorageMock.clear()
+    setStorageScopeJid('romeo@montague.example')
   })
   afterEach(() => {
     vi.useRealTimers()
@@ -340,7 +349,7 @@ describe('setupMdsSideEffects', () => {
 
     chatStore.getState().applyRemoteDisplayed(cid, 's3')
 
-    expect(chatStore.getState().firstNewMessageMarkers.get(cid)).toEqual({ id:'m4' })
+    expect(chatStore.getState().firstNewMessageMarkers.get(cid)).toEqual({ id: 'm4', stanzaId: 's4' })
     cleanup()
   })
 
@@ -951,6 +960,71 @@ describe('setupMdsSideEffects', () => {
     await vi.runOnlyPendingTimersAsync()
 
     expect(roomStore.getState().roomMeta.get(ROOM)?.readPointer?.identity.messageId).toBe('m2')
+    cleanup()
+  })
+
+  // XEP-0490 keys a private conversation with a room occupant by the occupant's FULL JID, and its
+  // stanza-id comes from the account's own archive. Read as the room's marker it can never be
+  // ordered, so every fresh session would stash it again and hold the room's publisher.
+  it('seeds a room from its own item, never from a private-message item under the room JID', async () => {
+    const ROOM = 'room@conference.example'
+    const client = makeClient()
+    client.internal.mds.fetchAllDisplayed = vi.fn().mockResolvedValue([
+      { conversationJid: ROOM, stanzaId: 's2' },
+      { conversationJid: `${ROOM}/juliet`, stanzaId: 'pm-archive-id' },
+    ])
+    connectionStore.setState({ status: 'online', jid: 'romeo@montague.example/phone' } as never)
+    seedRoom(ROOM, [rmsg(ROOM, 'm1', 's1', 1), rmsg(ROOM, 'm2', 's2', 2)], 'm1')
+
+    const cleanup = setupMdsSideEffects(client as never)
+    client._emit('online')
+    await vi.runOnlyPendingTimersAsync()
+
+    const meta = roomStore.getState().roomMeta.get(ROOM)
+    expect(meta?.pendingRemoteDisplayedStanzaId).toBeUndefined()
+    expect(meta?.readPointer?.identity.messageId).toBe('m2')
+    cleanup()
+  })
+
+  it('does not let a private-message notify unlock publishing over a room marker it cannot order', async () => {
+    const ROOM = 'room@conference.example'
+    const client = makeClient()
+    client.internal.mds.fetchAllDisplayed = vi.fn().mockResolvedValue([{ conversationJid: ROOM, stanzaId: 's9' }])
+    connectionStore.setState({ status: 'online', jid: 'romeo@montague.example/phone' } as never)
+    seedRoom(ROOM, [rmsg(ROOM, 'm1', 's1', 1), rmsg(ROOM, 'm2', 's2', 2)], 'm1')
+
+    const cleanup = setupMdsSideEffects(client as never)
+    client._emit('online')
+    await vi.runOnlyPendingTimersAsync()
+    expect(roomStore.getState().roomMeta.get(ROOM)?.pendingRemoteDisplayedStanzaId).toBe('s9')
+
+    // Another device read a private message from an occupant of that room.
+    client._emit('read:displayed-synced', { conversationId: `${ROOM}/juliet`, stanzaId: 'pm-archive-id' })
+    roomStore.getState().advanceReadPointer(ROOM, { id: 'm2' })
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    // The room's own node item still names s9, which nothing here can order against m2.
+    expect(client.internal.mds.publishDisplayed).not.toHaveBeenCalled()
+    cleanup()
+  })
+
+  it('does not drain a full-JID seed marker when room membership changes', async () => {
+    const ROOM = 'room@conference.example'
+    const client = makeClient()
+    client.internal.mds.fetchAllDisplayed = vi
+      .fn()
+      .mockResolvedValue([{ conversationJid: `${ROOM}/juliet`, stanzaId: 'pm-archive-id' }])
+    connectionStore.setState({ status: 'online', jid: 'romeo@montague.example/phone' } as never)
+
+    const cleanup = setupMdsSideEffects(client as never)
+    client._emit('online')
+    await vi.runOnlyPendingTimersAsync()
+    seedRoom(ROOM, [rmsg(ROOM, 'm1', 's1', 1), rmsg(ROOM, 'm2', 's2', 2)])
+    seedRoom('other@conference.example', [])
+
+    const meta = roomStore.getState().roomMeta.get(ROOM)
+    expect(meta?.pendingRemoteDisplayedStanzaId).toBeUndefined()
+    expect(meta?.readPointer).toBeUndefined()
     cleanup()
   })
 
@@ -1651,13 +1725,13 @@ describe('setupMdsSideEffects', () => {
       's1',
       'romeo@montague.example',
     )
-    expect(chatStore.getState().firstNewMessageMarkers.get(cid)).toEqual({ id:'m2' })
+    expect(chatStore.getState().firstNewMessageMarkers.get(cid)).toEqual({ id: 'm2', stanzaId: 's2' })
 
     // s2 is behind the position this client published from its own pointer (m3), so it tells us
     // nothing we had not already claimed — our own scrolling must not move the line through it.
     chatStore.getState().applyRemoteDisplayed(cid, 's2')
 
-    expect(chatStore.getState().firstNewMessageMarkers.get(cid)).toEqual({ id:'m2' })
+    expect(chatStore.getState().firstNewMessageMarkers.get(cid)).toEqual({ id: 'm2', stanzaId: 's2' })
     cleanup()
   })
 
@@ -1744,7 +1818,7 @@ describe('setupMdsSideEffects', () => {
 
     chatStore.getState().applyRemoteDisplayed(cid, 's3')
 
-    expect(chatStore.getState().firstNewMessageMarkers.get(cid)).toEqual({ id:'m4' })
+    expect(chatStore.getState().firstNewMessageMarkers.get(cid)).toEqual({ id: 'm4', stanzaId: 's4' })
     cleanup()
   })
 
@@ -1830,6 +1904,7 @@ describe('setupMdsSideEffects catch-up gate', () => {
     chatStore.getState().reset()
     roomStore.getState().reset()
     localStorageMock.clear()
+    setStorageScopeJid('romeo@montague.example')
   })
   afterEach(() => {
     vi.useRealTimers()
