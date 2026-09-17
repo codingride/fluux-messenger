@@ -305,6 +305,7 @@ export class WebOpenPGPPlugin extends OpenPGPPluginBase {
     const { readKey } = await import('openpgp')
     const key = await readKey({ armoredKey: publicArmored })
     const fingerprint = key.getFingerprint()
+    const createdAt = key.getCreationTime().toISOString()
     let encryptionSubkeyCount = 0
     try {
       await key.getEncryptionKey()
@@ -319,6 +320,7 @@ export class WebOpenPGPPlugin extends OpenPGPPluginBase {
     const subkeyFingerprints = key.getSubkeys().map((sk) => sk.getFingerprint())
     return {
       fingerprint,
+      createdAt,
       encryptionSubkeyCount,
       hasEncryptionSubkey: encryptionSubkeyCount > 0,
       userIds,
@@ -577,10 +579,7 @@ export class WebOpenPGPPlugin extends OpenPGPPluginBase {
     this.ownPrivateKey = privateKey
     this.pendingImportKeys.clear()
 
-    return {
-      ...this.bundleFromKey(privateKey),
-      createdAt: privateKey.getCreationTime().toISOString(),
-    }
+    return this.bundleFromKey(privateKey)
   }
 
   protected async forgetAccount(_accountJid: string): Promise<void> {
@@ -797,6 +796,7 @@ export class WebOpenPGPPlugin extends OpenPGPPluginBase {
       fingerprint: privateKey.getFingerprint(),
       publicArmored: privateKey.toPublic().armor(),
       keychainBacked: false,
+      createdAt: privateKey.getCreationTime().toISOString(),
     }
   }
 
