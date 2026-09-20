@@ -68,23 +68,16 @@ import {
   noteTransient,
   pruneTransient,
   removeTransient,
-  clearTransientScope,
-  clearTransientEntity,
-  type ScopeKey as TransientScopeKey,
 } from './shared/transientUnread'
 import {
   beginViewportGeneration,
   currentViewportEvidence,
-  clearViewportEvidence,
-  type EvidenceKey as ViewportEvidenceKey,
 } from './shared/viewportEvidence'
 import {
-  clearPurgedMarkers,
   isMarkerPurged,
   isMarkerSuperseded,
   notePurgedMarker,
   noteSupersededMarker,
-  type PurgedMarkerKey,
 } from './shared/purgedMarkers'
 import {
   matchesCorrectionTarget, reconcileCachedCorrections, reconcileCorrectionHandoff, refreshCachedCorrections,
@@ -97,17 +90,15 @@ import { shouldUpdateLastMessage, shouldReplaceLastMessage, isPreviewableMessage
 import { derivePreviewAfterMerge } from './shared/previewState'
 import { addPendingRetraction, applyPendingRetractions, removePendingRetraction, type PendingRetraction } from './shared/pendingRetractions'
 import { retractRoomMessageInStorage, retractUnresidentRoomTarget } from './shared/retractionStorage'
-import { createRemoteDividerAdvanceTracker } from './shared/dividerAdvance'
 import { locallyPublishedDisplayed } from '../core/localMdsPublishes'
 import { isAhead, rowRefOfPointer } from './shared/readPointer'
 import {
   resolveRemoteDisplayed,
-  createMdsSessionGate,
   foldPendingRemoteDisplayed,
   resolveStashedRemoteDisplayed,
   supersededPendingMarker,
 } from './shared/readMarkerSync'
-import { advance, hasFloorResolutionEvidence, makeReadPointer, pointerRowRef, resolveRoomReadPointerOrder } from './shared/readPointer'
+import { advance, pointerRowRef, resolveRoomReadPointerOrder } from './shared/readPointer'
 import { loadRoomReadState, saveRoomReadState, clearRoomReadState, _clearAllRoomReadStateForTesting, type RoomReadState } from './shared/readStateStorage'
 import { ignoreStore, isMessageFromIgnoredUser } from './ignoreStore'
 import { roomActivityTone } from './roomSelectors'
@@ -115,10 +106,9 @@ import * as notifState from './shared/notificationState'
 import { markerDebugLog } from '../utils/markerDebug'
 import { connectionStore } from './connectionStore'
 import { buildScopedStorageKey, captureStorageScope, getStorageScopeJid } from '../utils/storageScope'
-import { countOnlyClear, recountLedger, reportUnreadCleared } from './shared/recountDiagnostics'
+import { recountLedger } from './shared/recountDiagnostics'
 import type { RecountDeferralReason } from '../diagnostics/channel'
-import { createRecountRetryScheduler } from './shared/recountRetry'
-import { createPendingEntityWrites } from './shared/pendingEntityWrites'
+import { createReadTracker } from './readTracker'
 import { schedule, flush as flushThrottledStorage } from './shared/throttledStorage'
 import { scheduleDurableMaps, cancelDurableMaps, forgetAllDurableMapBaselines, noteCoverageTransition } from './shared/durableMapPersist'
 // Sliding-window bound (messages kept resident per room; rest live in IndexedDB + MAM). Read via
@@ -434,16 +424,6 @@ const roomMessageArrivals = new Map<string, Promise<void>>()
 // already in flight when the state was torn down must not resurrect entries.
 let roomCacheEpoch = 0
 
-/**
- * The account scope this store last saw its OWN transient-overlay
- * entries filed under. Tracked separately from `getStorageScopeJid()` because
- * by the time `switchAccount` runs, the global scope has ALREADY flipped to
- * the incoming account (XMPPClient calls `setStorageScopeJid` before
- * `switchAccount`) — `getStorageScopeJid()` there would name the NEW account,
- * not the one being torn down.
- */
-let lastRoomTransientScope: string | null = null
-
 /** Test-only: drop all per-room archive-save chain entries. */
 export function _resetRoomArchiveSavesForTesting(): void {
   roomArchiveSaves.clear()
@@ -451,37 +431,46 @@ export function _resetRoomArchiveSavesForTesting(): void {
   roomCacheEpoch++
 }
 
-// Per-room recount version for `recomputeUnreadForRoom`'s latest-wins
-// commit. Mirrors chatStore's `chatRecountVersion` — see that doc for the
-// race it guards against. Cleared on logout/account switch: a stale version
-// surviving into a new account can only ever cause an extra discarded
-// recompute, never a wrong write (the recompute also re-checks `roomMeta`
-// under the same key).
-const roomRecountVersion = new Map<string, number>()
-const roomUnreadInputVersion = new Map<string, number>()
-const roomPendingUnreadWrites = createPendingEntityWrites()
-const roomRecountsInFlight = createPendingEntityWrites()
 const roomEntityEpoch = new Map<string, number>()
-const roomRecountRetry = createRecountRetryScheduler((error) => {
-  console.warn('Unread recount retry failed for a room:', error)
+const roomReadTracker = createReadTracker('room', {
+  storage: {
+    update: (roomJid, change) => roomStore.setState((state) => {
+      const existing = state.rooms.get(roomJid)
+      if (!existing) return state
+      const meta = state.roomMeta.get(roomJid)
+      const patch = change({
+        readPointer: meta?.readPointer ?? existing.readPointer,
+        unreadCount: meta?.unreadCount ?? existing.unreadCount,
+        mentionsCount: meta?.mentionsCount ?? existing.mentionsCount,
+        messages: state.messages.get(roomJid) ?? [],
+        atLiveEdge: state.windowAtLiveEdge.get(roomJid) !== false,
+        isActive: state.activeRoomJid === roomJid,
+        divider: state.firstNewMessageMarkers.get(roomJid),
+        lastMessage: meta?.lastMessage ?? existing.lastMessage,
+      })
+      if (!patch) return state
+      // Read state lives on both the room and its metadata; the metadata is
+      // what gets persisted.
+      const read = { readPointer: patch.readPointer, unreadCount: patch.unreadCount, mentionsCount: patch.mentionsCount }
+      const newRooms = new Map(state.rooms)
+      newRooms.set(roomJid, { ...existing, ...read })
+      const newMeta = new Map(state.roomMeta)
+      newMeta.set(roomJid, { ...(meta ?? { unreadCount: 0, mentionsCount: 0, typingUsers: new Set<string>() }), ...read })
+      persistRoomReadState(newMeta)
+      if (!patch.clearDivider) return { rooms: newRooms, roomMeta: newMeta }
+      const firstNewMessageMarkers = new Map(state.firstNewMessageMarkers)
+      firstNewMessageMarkers.delete(roomJid)
+      return { rooms: newRooms, roomMeta: newMeta, firstNewMessageMarkers }
+    }),
+  },
+  recount: (roomJid) => {
+    void roomStore.getState().recomputeUnreadForRoom(roomJid, { allowActive: true })
+  },
+  archiveReadyForCounting: (roomJid) => {
+    const mam = mamState.getMAMQueryState(roomStore.getState().mamQueryStates, roomJid)
+    return !roomArchiveSaves.has(roomJid) && isCaughtUpForCounting(mam)
+  },
 })
-
-function bumpRoomRecountVersion(roomJid: string): number {
-  const next = (roomRecountVersion.get(roomJid) ?? 0) + 1
-  roomRecountVersion.set(roomJid, next)
-  return next
-}
-
-function bumpRoomUnreadInputVersion(roomJid: string): void {
-  roomUnreadInputVersion.set(roomJid, (roomUnreadInputVersion.get(roomJid) ?? 0) + 1)
-}
-
-function roomRecountReady(roomJid: string): boolean {
-  const mam = mamState.getMAMQueryState(roomStore.getState().mamQueryStates, roomJid)
-  return !roomPendingUnreadWrites.has(roomJid) &&
-    !roomArchiveSaves.has(roomJid) &&
-    isCaughtUpForCounting(mam)
-}
 
 function currentRoomEntityEpoch(roomJid: string): number {
   return roomEntityEpoch.get(roomJid) ?? 0
@@ -495,41 +484,11 @@ export function roomReadStateGeneration(roomJid: string): ReadStateGeneration {
   return { store: roomCacheEpoch, entity: currentRoomEntityEpoch(roomJid) }
 }
 
-/**
- * The transient-overlay scope key for a room. `accountScope` mirrors
- * chatStore's `chatTransientScopeKey` — a bare room JID can collide across
- * accounts, so the overlay is scoped by the account JID, never a bare room JID.
- */
-function roomTransientScopeKey(roomJid: string): TransientScopeKey {
-  return { accountScope: getStorageScopeJid() ?? '', kind: 'room', entityId: roomJid }
-}
-
 function invalidateRoomEntity(roomJid: string): void {
   roomEntityEpoch.set(roomJid, currentRoomEntityEpoch(roomJid) + 1)
   roomArchiveSaves.cancel(roomJid)
   roomMessageArrivals.delete(roomJid)
-  roomPendingUnreadWrites.cancel(roomJid)
-  roomRecountsInFlight.cancel(roomJid)
-  roomRecountRetry.cancel(roomJid)
-  roomRecountVersion.delete(roomJid)
-  roomUnreadInputVersion.delete(roomJid)
-  clearTransientEntity(roomTransientScopeKey(roomJid))
-}
-
-/**
- * The viewport-evidence key for a room. Same shape/rationale as
- * {@link roomTransientScopeKey}: scoped by account JID.
- */
-function roomViewportEvidenceKey(roomJid: string): ViewportEvidenceKey {
-  return { accountScope: getStorageScopeJid() ?? '', kind: 'room', entityId: roomJid }
-}
-
-/**
- * The purged-marker key for a room. Same shape/rationale as
- * {@link roomViewportEvidenceKey}: scoped by account JID.
- */
-function roomPurgedMarkerKey(roomJid: string): PurgedMarkerKey {
-  return { accountScope: getStorageScopeJid() ?? '', kind: 'room', entityId: roomJid }
+  roomReadTracker.forgetEntity(roomJid)
 }
 
 /**
@@ -593,11 +552,6 @@ const EMPTY_SIDEBAR_JIDS: string[] = []
 // Monotonic token so a slow cache read from a superseded activateRoom call
 // can't overwrite a newer activation when it finally resolves
 let activationToken = 0
-
-// XEP-0490 first-open-per-session fold gate (see shared/readMarkerSync;
-// parity with chatStore). Reset on reset() (logout).
-const mdsGate = createMdsSessionGate()
-const remoteDividerAdvances = createRemoteDividerAdvanceTracker()
 
 // Selector memoization caches.
 // Store selectors (joinedRooms, allRooms, etc.) are called on every Zustand subscription check.
@@ -1000,6 +954,9 @@ export interface RoomState {
   // Session-only new-message divider per room (jid -> messageId). Derived at
   // activation from the read pointer; never persisted.
   firstNewMessageMarkers: Map<string, MessageRowRef>
+  // Session-only: how many messages sit under each room's divider. Seeded when the divider is
+  // placed and incremented by rows reaching the bottom below it; see notifState.DividerCount.
+  firstNewMessageCounts: Map<string, notifState.DividerCount>
   /**
    * Monotonic per-room versions incremented whenever `appendLive` places a
    * genuine arrival before the resident timeline's live edge.
@@ -1287,7 +1244,7 @@ function createEmptyRoomState(
   acknowledgedNonAnonymousRooms: Set<string> = new Set(),
   roomCoverage: Map<string, CoverageRecord> = new Map(),
   pendingRetractions: Map<string, PendingRetraction[]> = new Map(),
-): Pick<RoomState, 'rooms' | 'roomEntities' | 'roomMeta' | 'roomRuntime' | 'messages' | 'lastArrivedMessage' | 'windowAtLiveEdge' | 'activeRoomJid' | 'activationPending' | 'activeAnimation' | 'drafts' | 'votedPollIds' | 'dismissedPollIds' | 'mamQueryStates' | 'roomGaps' | 'roomCoverage' | 'acknowledgedNonAnonymousRooms' | 'pendingRetractions' | 'targetMessageId' | 'firstNewMessageMarkers' | 'interiorPlacementVersions'> {
+): Pick<RoomState, 'rooms' | 'roomEntities' | 'roomMeta' | 'roomRuntime' | 'messages' | 'lastArrivedMessage' | 'windowAtLiveEdge' | 'activeRoomJid' | 'activationPending' | 'activeAnimation' | 'drafts' | 'votedPollIds' | 'dismissedPollIds' | 'mamQueryStates' | 'roomGaps' | 'roomCoverage' | 'acknowledgedNonAnonymousRooms' | 'pendingRetractions' | 'targetMessageId' | 'firstNewMessageMarkers' | 'firstNewMessageCounts' | 'interiorPlacementVersions'> {
   return {
     rooms: new Map(),
     roomEntities: new Map(),
@@ -1309,6 +1266,7 @@ function createEmptyRoomState(
     acknowledgedNonAnonymousRooms,
     targetMessageId: null,
     firstNewMessageMarkers: new Map(),
+    firstNewMessageCounts: new Map(),
     interiorPlacementVersions: new Map(),
   }
 }
@@ -1988,24 +1946,8 @@ export const roomStore = createStore<RoomState>()(
     roomArchiveSaves.clear()
     roomMessageArrivals.clear()
     roomCacheEpoch++
-    roomRecountVersion.clear()
-    roomUnreadInputVersion.clear()
-    roomPendingUnreadWrites.clear()
-    roomRecountsInFlight.clear()
     roomEntityEpoch.clear()
-    roomRecountRetry.clear()
-    remoteDividerAdvances.reset()
-    // Tear down the OUTGOING account's transient overlay entries
-    // before adopting the new scope — see lastRoomTransientScope's doc for
-    // why this can't just read getStorageScopeJid() here.
-    if (lastRoomTransientScope !== null) {
-      clearTransientScope(lastRoomTransientScope)
-      // Viewport evidence is scoped the same way — same teardown timing.
-      clearViewportEvidence(lastRoomTransientScope)
-      // Proven-purged XEP-0490 markers, scoped and torn down the same way.
-      clearPurgedMarkers(lastRoomTransientScope)
-    }
-    lastRoomTransientScope = getStorageScopeJid()
+    roomReadTracker.resetForAccountSwitch()
     // Read state is folded into roomMeta by addRoom, not held in the state
     // object — reload the account's rows so the rooms this account is about to
     // add find theirs.
@@ -2019,29 +1961,11 @@ export const roomStore = createStore<RoomState>()(
     roomArchiveSaves.clear()
     roomMessageArrivals.clear()
     roomCacheEpoch++
-    roomRecountVersion.clear()
-    roomUnreadInputVersion.clear()
-    roomPendingUnreadWrites.clear()
-    roomRecountsInFlight.clear()
     roomEntityEpoch.clear()
-    roomRecountRetry.clear()
-    remoteDividerAdvances.reset()
-    // Logout tears down this account's transient overlay too.
-    // Unlike switchAccount, nothing flips the global scope before reset()
-    // runs (clearLocalData calls it directly), so getStorageScopeJid() here
-    // is still the account being logged out — read it directly rather than
-    // through lastRoomTransientScope.
-    clearTransientScope(getStorageScopeJid() ?? '')
-    // Viewport evidence, same account-scoped teardown.
-    clearViewportEvidence(getStorageScopeJid() ?? '')
-    // Proven-purged XEP-0490 markers, same account-scoped teardown.
-    clearPurgedMarkers(getStorageScopeJid() ?? '')
-    lastRoomTransientScope = null
+    roomReadTracker.resetForLogout()
     // Note: We don't clear IndexedDB on reset - room messages are valuable cache
     // They will be cleared when rooms are explicitly removed or user logs out
     // (The connection store's reset handles full logout cleanup via clearAllMessages)
-    // New session → the XEP-0490 synced read marker may be folded again on first open.
-    mdsGate.reset()
     // Clear persisted room drafts and poll state on logout.
     //
     // Cancel BEFORE removing. Unlike chatStore, nothing after this re-triggers
@@ -2102,7 +2026,7 @@ export const roomStore = createStore<RoomState>()(
         finish()
       }
     }
-    bumpRoomUnreadInputVersion(roomJid)
+    roomReadTracker.bumpUnreadInputVersion(roomJid)
 
     for (const current of get().messages.get(roomJid) ?? []) {
       if (roomStanzaIdsMergeable(incoming, current) && sameLogicalMessage(roomScope(roomJid), incoming, current)) {
@@ -2136,7 +2060,7 @@ export const roomStore = createStore<RoomState>()(
     // overlay instead of being representable ONLY by the live `+1`, which an
     // archive-only recount can never see again.
     const priorMeta = get().roomMeta.get(roomJid)
-    const viewportAtLiveEdgeForNote = currentViewportEvidence(roomViewportEvidenceKey(roomJid)) === 'at-edge'
+    const viewportAtLiveEdgeForNote = currentViewportEvidence(roomReadTracker.scopeKey(roomJid)) === 'at-edge'
     const unseen = notifState.isUnseenIncomingMessage(messageToAdd, {
       isActive: get().activeRoomJid === roomJid,
       windowVisible: connectionStore.getState().windowVisible,
@@ -2147,7 +2071,7 @@ export const roomStore = createStore<RoomState>()(
     let overlayRequiresRecount = false
     let acceptedMessage = false
     if (noteAsTransient && priorMeta) {
-      const scopeKey = roomTransientScopeKey(roomJid)
+      const scopeKey = roomReadTracker.scopeKey(roomJid)
       // No boundary here: `isUnseenIncomingMessage` above already establishes
       // this is a genuine new arrival relative to the read state, so only the
       // BEFORE/AFTER *delta* matters — adding one brand-new logical entry
@@ -2238,7 +2162,7 @@ export const roomStore = createStore<RoomState>()(
       const windowVisible = connectionStore.getState().windowVisible
       // See chatStore's addMessage twin — missing/stale/unknown evidence
       // conservatively resolves to false, never authorizing the pointer advance.
-      const viewportAtLiveEdge = currentViewportEvidence(roomViewportEvidenceKey(roomJid)) === 'at-edge'
+      const viewportAtLiveEdge = currentViewportEvidence(roomReadTracker.scopeKey(roomJid)) === 'at-edge'
       const existingMeta = state.roomMeta.get(roomJid)
 
       const notifInput: notifState.EntityNotificationState = {
@@ -2356,24 +2280,24 @@ export const roomStore = createStore<RoomState>()(
     })
 
     if (!acceptedMessage && overlayUnreadDelta > 0) {
-      removeTransient(roomTransientScopeKey(roomJid), messageToAdd)
+      removeTransient(roomReadTracker.scopeKey(roomJid), messageToAdd)
     }
 
     if (acceptedMessage && !isNoLocalStore(messageToAdd)) {
       const scopeAtSave = getStorageScopeJid()
-      const writeToken = roomPendingUnreadWrites.begin(roomJid)
+      const writeToken = roomReadTracker.pendingUnreadWrites.begin(roomJid)
       const save = messageCache.saveRoomMessageWithResult(messageToAdd)
       void save.then((committed) => {
-        const owned = roomPendingUnreadWrites.finish(roomJid, writeToken)
+        const owned = roomReadTracker.pendingUnreadWrites.finish(roomJid, writeToken)
         if (!owned || getStorageScopeJid() !== scopeAtSave) return
         if (committed && noteAsTransient) {
           const removed = removeTransient(
-            roomTransientScopeKey(roomJid),
+            roomReadTracker.scopeKey(roomJid),
             messageToAdd
           )
-          if (removed.removed) bumpRoomUnreadInputVersion(roomJid)
+          if (removed.removed) roomReadTracker.bumpUnreadInputVersion(roomJid)
         }
-        roomRecountRetry.resume(roomJid)
+        roomReadTracker.recountRetry.resume(roomJid)
       })
       searchIndex.indexMessage(messageToAdd).catch((e) => console.warn('[searchIndex] indexMessage failed:', e))
     }
@@ -2634,7 +2558,7 @@ export const roomStore = createStore<RoomState>()(
         // (safe to call for every retraction: removeTransient is a no-op
         // when the alias was never noted).
         if (updates.isRetracted) {
-          const removal = removeTransient(roomTransientScopeKey(roomJid), updatedMessage)
+          const removal = removeTransient(roomReadTracker.scopeKey(roomJid), updatedMessage)
           if (removal.removed) recountNeeded = true
         }
       }
@@ -2787,11 +2711,11 @@ export const roomStore = createStore<RoomState>()(
     const allowActive = options?.allowActive ?? false
     // Every exit below goes through `defer` or `counted`; the `finally` publishes.
     const ledger = recountLedger('room', roomJid, () =>
-      roomRecountRetry.schedule(
+      roomReadTracker.recountRetry.schedule(
         roomJid,
         allowActive,
         (retryOptions) => get().recomputeUnreadForRoom(roomJid, retryOptions),
-        () => roomRecountReady(roomJid)
+        () => roomReadTracker.recountReady(roomJid)
       )
     )
     const { defer, counted } = ledger
@@ -2845,12 +2769,12 @@ export const roomStore = createStore<RoomState>()(
     const metaNow = get().roomMeta.get(roomJid)
     if (!metaNow) return defer('no-meta')
     if (metaNow.pendingRemoteDisplayedStanzaId !== undefined &&
-      !isMarkerSuperseded(roomPurgedMarkerKey(roomJid), metaNow.pendingRemoteDisplayedStanzaId)) {
+      !isMarkerSuperseded(roomReadTracker.scopeKey(roomJid), metaNow.pendingRemoteDisplayedStanzaId)) {
       return defer('pending-remote-displayed')
     }
     if (pointerlessDefers(metaNow.readPointer, metaNow.unreadCount)) return defer('pointerless-defer')
 
-    const recountToken = roomRecountsInFlight.begin(roomJid)
+    const recountToken = roomReadTracker.recountsInFlight.begin(roomJid)
     try {
 
     // Latest-wins: bumped once this call is committed to
@@ -2859,19 +2783,19 @@ export const roomStore = createStore<RoomState>()(
     // the first await, then re-checked immediately before every commit below,
     // so a slow recount that resolves after a faster, newer one for the SAME
     // room is discarded instead of overwriting the newer (correct) result.
-    const version = bumpRoomRecountVersion(roomJid)
+    const version = roomReadTracker.bumpRecountVersion(roomJid)
     const cacheEpochAtStart = roomCacheEpoch
     const entityEpochAtStart = currentRoomEntityEpoch(roomJid)
     const storageScopeAtStart = getStorageScopeJid()
-    const unreadInputVersionAtStart = roomUnreadInputVersion.get(roomJid) ?? 0
+    const unreadInputVersionAtStart = roomReadTracker.unreadInputVersion(roomJid) ?? 0
     const record = get().roomCoverage.get(roomJid)
     const recountContextDeferral = (): RecountDeferralReason | undefined => {
       if (roomCacheEpoch !== cacheEpochAtStart || currentRoomEntityEpoch(roomJid) !== entityEpochAtStart || getStorageScopeJid() !== storageScopeAtStart) {
         return 'context-changed'
       }
-      if (roomRecountVersion.get(roomJid) !== version) return 'recount-superseded'
+      if (roomReadTracker.recountVersion(roomJid) !== version) return 'recount-superseded'
       if (get().roomCoverage.get(roomJid) !== record) return 'input-version-changed'
-      if ((roomUnreadInputVersion.get(roomJid) ?? 0) !== unreadInputVersionAtStart) {
+      if ((roomReadTracker.unreadInputVersion(roomJid) ?? 0) !== unreadInputVersionAtStart) {
         return 'input-version-changed'
       }
       return undefined
@@ -2881,7 +2805,7 @@ export const roomStore = createStore<RoomState>()(
     // computed against. Re-check it at the final commit because an
     // allowActive recount can race advanceReadPointer.
     const pointerAtCompute = metaNow.readPointer
-    const unreadInputVersionAtCompute = roomUnreadInputVersion.get(roomJid) ?? 0
+    const unreadInputVersionAtCompute = roomReadTracker.unreadInputVersion(roomJid) ?? 0
 
     const floor = computeFloor(metaNow.readPointer, metaNow.historyFloor)
     if (!floor) return defer('no-floor')
@@ -2910,7 +2834,7 @@ export const roomStore = createStore<RoomState>()(
     // Safety net: this recompute is one of the "pointer advance / content
     // settled" triggers, and not every trigger path calls pruneTransient
     // directly.
-    pruneTransient(roomTransientScopeKey(roomJid), floorPos)
+    pruneTransient(roomReadTracker.scopeKey(roomJid), floorPos)
 
     // A BOUNDARY test: a FLOOR (migrated) boundary reads as at-or-after its
     // millisecond, so an equal-ms bottom counts as not reaching it (#1173).
@@ -2925,12 +2849,12 @@ export const roomStore = createStore<RoomState>()(
     if (res === null) return defer('cache-unavailable') // unavailable — IndexedDB error
 
     // --- Latest-wins commit ---------------------------
-    if (roomRecountVersion.get(roomJid) !== version) return defer('recount-superseded')
-    if ((roomUnreadInputVersion.get(roomJid) ?? 0) !== unreadInputVersionAtCompute) {
+    if (roomReadTracker.recountVersion(roomJid) !== version) return defer('recount-superseded')
+    if ((roomReadTracker.unreadInputVersion(roomJid) ?? 0) !== unreadInputVersionAtCompute) {
       return defer('input-version-changed')
     }
 
-    const transient = transientCounts(roomTransientScopeKey(roomJid), floorPos)
+    const transient = transientCounts(roomReadTracker.scopeKey(roomJid), floorPos)
     const unreadCount = Math.min(999, res.unread + transient.unread)
 
     set((state) => {
@@ -2938,8 +2862,8 @@ export const roomStore = createStore<RoomState>()(
       // pre-commit check and still be superseded during the final `set`.
       const commitContextDeferral = recountContextDeferral()
       if (commitContextDeferral) { defer(commitContextDeferral); return state }
-      if (roomRecountVersion.get(roomJid) !== version) { defer('recount-superseded'); return state }
-      if ((roomUnreadInputVersion.get(roomJid) ?? 0) !== unreadInputVersionAtCompute) {
+      if (roomReadTracker.recountVersion(roomJid) !== version) { defer('recount-superseded'); return state }
+      if ((roomReadTracker.unreadInputVersion(roomJid) ?? 0) !== unreadInputVersionAtCompute) {
         defer('input-version-changed')
         return state
       }
@@ -3026,7 +2950,7 @@ export const roomStore = createStore<RoomState>()(
       return { roomMeta: newMeta, rooms: newRooms, firstNewMessageMarkers: newMarkers }
     })
     } finally {
-      roomRecountsInFlight.finish(roomJid, recountToken)
+      roomReadTracker.recountsInFlight.finish(roomJid, recountToken)
     }
     } finally {
       ledger.publish()
@@ -3039,127 +2963,11 @@ export const roomStore = createStore<RoomState>()(
   },
 
   markAsRead: (roomJid) => {
-    // Set when the counts were cleared without moving the read pointer — see
-    // `reportUnreadCleared`. Published after the update, never from inside `set`.
-    let clearedFrom: number | undefined
-    set((state) => {
-      const existing = state.rooms.get(roomJid)
-      if (!existing) return {}
-
-      const meta = state.roomMeta.get(roomJid)
-      const notifInput: notifState.EntityNotificationState = {
-        unreadCount: meta?.unreadCount ?? existing.unreadCount,
-        mentionsCount: meta?.mentionsCount ?? existing.mentionsCount,
-        readPointer: meta?.readPointer ?? existing.readPointer,
-        firstNewMessageRow: state.firstNewMessageMarkers.get(roomJid),
-      }
-
-      const messages = state.messages.get(roomJid) ?? []
-
-      const windowAtLiveEdge = state.windowAtLiveEdge.get(roomJid) !== false
-      const viewportAtLiveEdge =
-        currentViewportEvidence(roomViewportEvidenceKey(roomJid)) === 'at-edge'
-      let updated = notifState.onMarkAsRead(notifInput, messages, 'room', {
-        windowAtLiveEdge,
-        viewportAtLiveEdge,
-      })
-
-      // Store recounts need an exact boundary for a proven, already-read row.
-      const newest = messages[messages.length - 1]
-      if (windowAtLiveEdge && viewportAtLiveEdge && newest && updated.readPointer
-        && hasFloorResolutionEvidence(updated.readPointer, messages, messages.length - 1, 'room')) {
-        updated = {
-          ...updated,
-          readPointer: {
-            order: makeReadPointer(newest, 'room').order,
-            identity: updated.readPointer.identity,
-          },
-        }
-      }
-
-      // Skip update if no change
-      if (updated === notifInput) return {}
-
-      clearedFrom = countOnlyClear(notifInput, updated)
-
-      // The read pointer just moved (or the counts were cleared) — bound the
-      // transient overlay's memory now rather than waiting for a later
-      // recompute trigger.
-      if (updated.readPointer && updated.readPointer !== notifInput.readPointer) {
-        pruneTransient(roomTransientScopeKey(roomJid), updated.readPointer.order)
-      }
-
-      const newRooms = new Map(state.rooms)
-      newRooms.set(roomJid, { ...existing, unreadCount: updated.unreadCount, mentionsCount: updated.mentionsCount, readPointer: updated.readPointer })
-
-      const newMeta = new Map(state.roomMeta)
-      const newMetaEntry = {
-        ...(meta ?? { unreadCount: 0, mentionsCount: 0, typingUsers: new Set<string>() }),
-        unreadCount: updated.unreadCount,
-        mentionsCount: updated.mentionsCount,
-        readPointer: updated.readPointer,
-      }
-      newMeta.set(roomJid, newMetaEntry)
-      persistRoomReadState(newMeta)
-
-      return { rooms: newRooms, roomMeta: newMeta }
-    })
-    if (clearedFrom !== undefined) reportUnreadCleared('room', roomJid, clearedFrom)
+    roomReadTracker.markAsRead(roomJid)
   },
 
   markReadToNewest: (roomJid) => {
-    remoteDividerAdvances.clear(roomJid)
-    set((state) => {
-      const existing = state.rooms.get(roomJid)
-      if (!existing) return state
-
-      const slice = state.messages.get(roomJid)
-      const resident = slice?.length ? slice : (state.messages.get(roomJid) ?? [])
-      const newest = resident[resident.length - 1] ?? existing.lastMessage
-      if (!newest) return state
-
-      // Skip update if already fully read: no pointer advancement,
-      // no unread/mentions, and no "new messages" divider to clear.
-      const meta = state.roomMeta.get(roomJid)
-      const currentReadPointer = meta?.readPointer ?? existing.readPointer
-      const candidate = makeReadPointer(newest, 'room')
-      const readPointer = currentReadPointer && (
-        currentReadPointer.identity.state === 'addressable'
-          ? hasFloorResolutionEvidence(currentReadPointer, [newest], 0, 'room')
-          : hasFloorResolutionEvidence(currentReadPointer, resident, resident.length - 1, 'room')
-      )
-        ? { order: candidate.order, identity: currentReadPointer.identity }
-        : advance(currentReadPointer, candidate)
-      const currentUnreadCount = meta?.unreadCount ?? existing.unreadCount
-      const currentMentionsCount = meta?.mentionsCount ?? existing.mentionsCount
-      if (
-        readPointer === currentReadPointer &&
-        currentUnreadCount === 0 &&
-        currentMentionsCount === 0 &&
-        !state.firstNewMessageMarkers.has(roomJid)
-      ) {
-        return state
-      }
-
-      const read = {
-        readPointer,
-        unreadCount: 0,
-        mentionsCount: 0,
-      }
-
-      // Mark-all-read retains or advances the pointer —
-      // prune the overlay now rather than leaving every noted entry to a
-      // later recompute trigger.
-      pruneTransient(roomTransientScopeKey(roomJid), read.readPointer.order)
-
-      const committed = commitRoomUpdate(state, roomJid, read)
-      if (!committed) return state
-
-      const newMarkers = new Map(state.firstNewMessageMarkers)
-      newMarkers.delete(roomJid)
-
-      return { ...committed, firstNewMessageMarkers: newMarkers }
-    })
+    roomReadTracker.markReadToNewest(roomJid)
   },
 
   markAllRoomsRead: () => {
@@ -3174,8 +2982,8 @@ export const roomStore = createStore<RoomState>()(
     const prevJid = get().activeRoomJid
     // Skip if already the active room (prevents duplicate side effects)
     if (roomJid === prevJid) return
-    if (prevJid) remoteDividerAdvances.clear(prevJid)
-    if (roomJid) remoteDividerAdvances.clear(roomJid)
+    if (prevJid) roomReadTracker.remoteDividerAdvances.clear(prevJid)
+    if (roomJid) roomReadTracker.remoteDividerAdvances.clear(roomJid)
 
     // Deactivating the previous room clears its "new messages" marker (if any)
     // and evicts its resident window. The durable copy stays in IndexedDB and
@@ -3200,7 +3008,7 @@ export const roomStore = createStore<RoomState>()(
       // `set()` calls below make this activation visible to subscribers/renders — the
       // SOLE call site for `beginViewportGeneration` (mirrors chatStore's
       // setActiveConversation). Runs whether or not `room` resolves below.
-      beginViewportGeneration(roomViewportEvidenceKey(roomJid))
+      beginViewportGeneration(roomReadTracker.scopeKey(roomJid))
 
       const room = get().rooms.get(roomJid)
       if (room) {
@@ -3343,7 +3151,7 @@ export const roomStore = createStore<RoomState>()(
       const foldOnce = (stage: string) => {
         const lastSeenBefore = get().roomMeta.get(roomJid)?.readPointer?.identity.messageId
         const fold = foldPendingRemoteDisplayed(
-          mdsGate,
+          roomReadTracker.mdsGate,
           roomJid,
           () => get().roomMeta.get(roomJid)?.pendingRemoteDisplayedStanzaId,
           (stanzaId) => get().applyRemoteDisplayed(roomJid, stanzaId)
@@ -3400,7 +3208,7 @@ export const roomStore = createStore<RoomState>()(
   getActiveRoomJid: () => get().activeRoomJid,
 
   clearFirstNewMessageId: (roomJid) => {
-    remoteDividerAdvances.clear(roomJid)
+    roomReadTracker.remoteDividerAdvances.clear(roomJid)
     set((state) => {
       const next = clearMarker(state.firstNewMessageMarkers, roomJid)
       return next ? { firstNewMessageMarkers: next } : state
@@ -3443,89 +3251,7 @@ export const roomStore = createStore<RoomState>()(
   },
 
   advanceReadPointer: (roomJid, row) => {
-    // Presence gate (issue #1076): the viewport observer reports what is PAINTED,
-    // and the list auto-scrolls to arriving messages whether or not the user is
-    // at the window. Without this check a backgrounded client marks every new
-    // message read in real time — the pointer rides the live edge, the "new
-    // messages" divider never survives to the next open, and the bogus position
-    // is published to other devices over XEP-0490. Rendered is not seen.
-    //
-    // This gate is independent of
-    // where the count comes from — painted is not seen — so nothing in the
-    // derived-count model makes it redundant.
-    if (!connectionStore.getState().windowVisible) return
-
-    let pointerAdvanced = false
-    let readThrough = false
-    set((state) => {
-      const existing = state.rooms.get(roomJid)
-      const meta = state.roomMeta.get(roomJid)
-      if (!existing) return state
-
-      const messages = state.messages.get(roomJid) ?? []
-
-      const notifInput: notifState.EntityNotificationState = {
-        unreadCount: meta?.unreadCount ?? existing.unreadCount,
-        mentionsCount: meta?.mentionsCount ?? existing.mentionsCount,
-        readPointer: meta?.readPointer ?? existing.readPointer,
-        firstNewMessageRow: state.firstNewMessageMarkers.get(roomJid),
-      }
-      const atLiveEdge = state.windowAtLiveEdge.get(roomJid) !== false
-      const updated = notifState.onMessageSeen(notifInput, row, messages, 'room', { atLiveEdge })
-
-      // Seeing the newest row with both the loaded window and the measured
-      // viewport at the live tail is direct read evidence, even while the archive
-      // recount defers (an XEP-0490 marker no slice can order, missing coverage).
-      // A mounted row alone is not. A complete zero also proves no unread mention
-      // remains, the recount's own rule.
-      readThrough = atLiveEdge
-        && state.activeRoomJid === roomJid
-        && currentViewportEvidence(roomViewportEvidenceKey(roomJid)) === 'at-edge'
-        && messages.length > 0
-        && findMessageRowIndex(messages, row) === messages.length - 1
-      const unreadCount = readThrough ? 0 : notifInput.unreadCount
-      const mentionsCount = readThrough ? 0 : notifInput.mentionsCount
-      pointerAdvanced = updated !== notifInput
-      if (!pointerAdvanced && unreadCount === notifInput.unreadCount && mentionsCount === notifInput.mentionsCount) {
-        return state
-      }
-
-      // A count-only clear must also invalidate a recount already in flight;
-      // its pointer-reference guard cannot detect this transition.
-      if (readThrough) bumpRoomRecountVersion(roomJid)
-
-      // The viewport-driven pointer just advanced — bound the transient
-      // overlay's memory.
-      if (pointerAdvanced && updated.readPointer) {
-        pruneTransient(roomTransientScopeKey(roomJid), updated.readPointer.order)
-      }
-
-      const read = { readPointer: updated.readPointer, unreadCount, mentionsCount }
-      const newRooms = new Map(state.rooms)
-      newRooms.set(roomJid, { ...existing, ...read })
-
-      const newMeta = new Map(state.roomMeta)
-      if (meta) {
-        newMeta.set(roomJid, { ...meta, ...read })
-        if (pointerAdvanced) persistRoomReadState(newMeta)
-      }
-
-      return { rooms: newRooms, roomMeta: newMeta }
-    })
-
-    // onMessageSeen only ever moves the
-    // pointer — it never recomputes unreadCount. Without this trigger, an
-    // active room's pointer could converge to the live edge (acceptance
-    // scenario 5) while the sidebar badge kept its stale pre-convergence
-    // value until the next arrival or the next activation. `allowActive:
-    // true` is safe here because a pointer only ever advances against the
-    // RESIDENT messages array, which only the active room keeps (setActiveRoom
-    // evicts everyone else's) — this trigger only ever fires for the room
-    // that is, in practice, active. A witnessed live tail already committed its
-    // zero above and needs no archive round trip.
-    if (pointerAdvanced && !readThrough) {
-      void get().recomputeUnreadForRoom(roomJid, { allowActive: true })
-    }
+    roomReadTracker.advance(roomJid, row)
   },
 
   /**
@@ -3567,7 +3293,7 @@ export const roomStore = createStore<RoomState>()(
     if (!discarded) return
     // Remember the proof: the marker is still on the MDS node until our
     // replacement publish lands, so the next seed would otherwise re-stash it.
-    notePurgedMarker(roomPurgedMarkerKey(roomJid), stanzaId)
+    notePurgedMarker(roomReadTracker.scopeKey(roomJid), stanzaId)
     // The count was deferring on the stash — re-derive it now that it cannot.
     void get().recomputeUnreadForRoom(roomJid, { allowActive: true })
   },
@@ -3577,7 +3303,7 @@ export const roomStore = createStore<RoomState>()(
     // will ever contain it, so stashing it again would only re-arm the lock the
     // discard just cleared. The node keeps serving it until our own position
     // replaces it, so this is reached on every reconnect seed until then.
-    if (isMarkerPurged(roomPurgedMarkerKey(roomJid), stanzaId)) return
+    if (isMarkerPurged(roomReadTracker.scopeKey(roomJid), stanzaId)) return
     // Set when the resolution advanced the pointer on a NON-active room —
     // triggers the archive-derived recount below.
     let advancedNonActive = false
@@ -3677,7 +3403,7 @@ export const roomStore = createStore<RoomState>()(
           roomJid,
         )
         if (claimed === undefined || isAhead(markerPointer, claimed)) {
-          const dividerAdvance = remoteDividerAdvances.apply(
+          const dividerAdvance = roomReadTracker.remoteDividerAdvances.apply(
             roomJid,
             state.firstNewMessageMarkers.get(roomJid),
             markerPointer,
@@ -3726,8 +3452,8 @@ export const roomStore = createStore<RoomState>()(
     // `roomRuntime`/`rooms` above), deferring — leaving the last TRUSTED
     // count untouched — whenever coverage isn't proven down to the new floor,
     // rather than committing a page-scoped undercount.
-    if (stashed) bumpRoomUnreadInputVersion(roomJid)
-    if (supersededStash !== undefined) noteSupersededMarker(roomPurgedMarkerKey(roomJid), supersededStash)
+    if (stashed) roomReadTracker.bumpUnreadInputVersion(roomJid)
+    if (supersededStash !== undefined) noteSupersededMarker(roomReadTracker.scopeKey(roomJid), supersededStash)
     if (advancedNonActive) {
       void get().recomputeUnreadForRoom(roomJid)
     } else if (advancedActive || releasedStash || supersededStash !== undefined) {
@@ -4373,7 +4099,7 @@ export const roomStore = createStore<RoomState>()(
     set((state) => ({
       mamQueryStates: mamState.setMAMLoading(state.mamQueryStates, roomJid, isLoading, requestId),
     }))
-    if (!isLoading) roomRecountRetry.resume(roomJid)
+    if (!isLoading) roomReadTracker.recountRetry.resume(roomJid)
   },
 
   setRoomMAMError: (roomJid, error, requestId) => {
@@ -4383,7 +4109,7 @@ export const roomStore = createStore<RoomState>()(
   },
 
   mergeRoomMAMMessages: (roomJid, archivePage, page, complete, direction, preserveGapMarker = false, isFetchLatest = false, extras = undefined) => {
-    bumpRoomUnreadInputVersion(roomJid)
+    roomReadTracker.bumpUnreadInputVersion(roomJid)
     const cacheEpochAtMerge = roomCacheEpoch
     const entityEpochAtMerge = currentRoomEntityEpoch(roomJid)
     const storageScopeAtMerge = getStorageScopeJid()
@@ -4682,7 +4408,7 @@ export const roomStore = createStore<RoomState>()(
         }
 
         // roomRuntime deliberately untouched.
-        return { rooms: newRooms, roomMeta: newMeta, mamQueryStates: newStates, roomGaps: gapsAfterMerge }
+        return { rooms: newRooms, roomMeta: newMeta, mamQueryStates: newStates, roomGaps: gapsAfterMerge, roomCoverage: coverageAfterMerge }
       }
 
       // ACTIVE room: populate the resident array (foreground catch-up / scroll-up).
@@ -4706,7 +4432,7 @@ export const roomStore = createStore<RoomState>()(
       // jump-to-latest. The content-anchor scroll restore then degrades to an
       // estimate rather than an exact reposition.
 
-      return { ...written, roomMeta: newMeta, mamQueryStates: newStates, roomGaps: gapsAfterMerge }
+      return { ...written, roomMeta: newMeta, mamQueryStates: newStates, roomGaps: gapsAfterMerge, roomCoverage: coverageAfterMerge }
     })
 
     reportArchiveMergeWhenDurable(
@@ -4724,10 +4450,10 @@ export const roomStore = createStore<RoomState>()(
         if (!committed || roomCacheEpoch !== cacheEpochAtMerge || currentRoomEntityEpoch(roomJid) !== entityEpochAtMerge || getStorageScopeJid() !== storageScopeAtMerge) return
         let removed = false
         for (const message of durableMessages) {
-          if (removeTransient(roomTransientScopeKey(roomJid), message).removed) removed = true
+          if (removeTransient(roomReadTracker.scopeKey(roomJid), message).removed) removed = true
         }
-        if (removed) bumpRoomUnreadInputVersion(roomJid)
-        roomRecountRetry.resume(roomJid)
+        if (removed) roomReadTracker.bumpUnreadInputVersion(roomJid)
+        roomReadTracker.recountRetry.resume(roomJid)
       })
     }
 
@@ -4754,10 +4480,10 @@ export const roomStore = createStore<RoomState>()(
         if (roomCacheEpoch !== cacheEpochAtMerge || currentRoomEntityEpoch(roomJid) !== entityEpochAtMerge || getStorageScopeJid() !== storageScopeAtMerge) return
         if (direction === 'forward' && complete && !preserveGapMarker && !extras?.walkCarriedModifications) {
           const record = get().roomCoverage.get(roomJid)
-          const inputVersion = roomUnreadInputVersion.get(roomJid)
+          const inputVersion = roomReadTracker.unreadInputVersion(roomJid)
           const repaired = await recoverCoverageForCounting(roomJid, record,
             [extras?.initialAfter, extras?.walkOldestId ?? walkExtentBottomId(mamMessages)], true)
-          if (roomCacheEpoch !== cacheEpochAtMerge || currentRoomEntityEpoch(roomJid) !== entityEpochAtMerge || getStorageScopeJid() !== storageScopeAtMerge || roomUnreadInputVersion.get(roomJid) !== inputVersion) return
+          if (roomCacheEpoch !== cacheEpochAtMerge || currentRoomEntityEpoch(roomJid) !== entityEpochAtMerge || getStorageScopeJid() !== storageScopeAtMerge || roomReadTracker.unreadInputVersion(roomJid) !== inputVersion) return
           if (repaired && get().roomCoverage.get(roomJid) === record) {
             set(state => {
               const next = new Map(state.roomCoverage).set(roomJid, repaired)
@@ -4767,10 +4493,10 @@ export const roomStore = createStore<RoomState>()(
             coverageChanged = true
           }
         }
-        roomRecountRetry.resume(roomJid)
+        roomReadTracker.recountRetry.resume(roomJid)
         if (coverageChanged) {
-          roomRecountRetry.schedule(roomJid, true,
-            options => get().recomputeUnreadForRoom(roomJid, options), () => roomRecountReady(roomJid))
+          roomReadTracker.recountRetry.schedule(roomJid, true,
+            options => get().recomputeUnreadForRoom(roomJid, options), () => roomReadTracker.recountReady(roomJid))
         }
       }
       if (archiveCommitGate) void archiveCommitGate.then((committed) => { if (committed) return resume() })
@@ -5001,16 +4727,29 @@ export const roomStore = createStore<RoomState>()(
 )
 
 roomStore.subscribe((state, previous) => {
+  if (state.firstNewMessageMarkers === previous.firstNewMessageMarkers
+    && state.messages === previous.messages
+    && state.lastArrivedMessage === previous.lastArrivedMessage) return
+  const counts = notifState.nextDividerCounts(
+    state.firstNewMessageCounts,
+    { markers: state.firstNewMessageMarkers, messages: state.messages, lastArrivedMessage: state.lastArrivedMessage },
+    { markers: previous.firstNewMessageMarkers, messages: previous.messages, lastArrivedMessage: previous.lastArrivedMessage },
+    'room',
+  )
+  if (counts !== state.firstNewMessageCounts) roomStore.setState({ firstNewMessageCounts: counts })
+})
+
+roomStore.subscribe((state, previous) => {
   const roomJid = state.activeRoomJid
-  if (!roomJid || !remoteDividerAdvances.has(roomJid)) return
+  if (!roomJid || !roomReadTracker.remoteDividerAdvances.has(roomJid)) return
   const parked = state.firstNewMessageMarkers.get(roomJid)
   if (parked === undefined) {
-    remoteDividerAdvances.clear(roomJid)
+    roomReadTracker.remoteDividerAdvances.clear(roomJid)
     return
   }
   if (state.messages.get(roomJid) === previous.messages.get(roomJid)) return
 
-  const result = remoteDividerAdvances.retry(
+  const result = roomReadTracker.remoteDividerAdvances.retry(
     roomJid,
     parked,
     state.messages.get(roomJid) ?? [],
