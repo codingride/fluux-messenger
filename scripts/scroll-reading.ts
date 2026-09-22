@@ -615,7 +615,7 @@ test.describe('Virtualization scroll invariants', () => {
   // from the loaded set — couldn't be resolved and the restore fell back near the TOP at the
   // load-more trigger. The fix loads the cache slice AROUND the anchor on demand, so the anchor is
   // resident before restore runs and the position is restored.
-  test('invariant-8: deep-history anchor is reloaded and repositioned after switching away and back', async ({ page }) => {
+  test('invariant-8: deep-history anchor is reloaded and repositioned after switching away and back', async ({ page }, testInfo) => {
     await loadDemo(page)
     await navigateToStressRoom(page)
 
@@ -645,18 +645,40 @@ test.describe('Virtualization scroll invariants', () => {
     // load-more trigger. This leaves a deep OLD message as the bottom-most-visible content anchor.
     const box = await page.locator('[data-message-list]').first().boundingBox()
     if (box) await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-    for (let i = 0; i < 8; i++) {
-      await page.mouse.wheel(0, -1500)
-      await page.waitForTimeout(150)
+
+    // How far the bottom-most visible row sits from the live edge, counted in resident rows. The
+    // scenario needs an anchor the return rehydration will NOT bring back on its own — it reloads
+    // the latest slice — so the anchor has to be deeper than that slice. Being a synthesized
+    // `older-` row does not say that by itself: how deep eight wheel steps land depends on the
+    // machine, and an anchor inside the latest rows leaves nothing for the reload to do.
+    const REHYDRATED_SLICE = 100
+    const MIN_ANCHOR_DEPTH = 150
+    const depthFromLiveEdge = (id: string) => page.evaluate(([jid, messageId]) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const resident = ((window as any).__roomStore.getState().messages.get(jid) ?? []) as { id: string }[]
+      const index = resident.findIndex((m) => m.id === messageId)
+      return index === -1 ? -1 : resident.length - 1 - index
+    }, [STRESS_ROOM_JID, id] as const)
+
+    let anchorId = ''
+    let anchorDepth = -1
+    for (let attempt = 0; attempt < 4 && anchorDepth < MIN_ANCHOR_DEPTH; attempt++) {
+      for (let i = 0; i < 8; i++) {
+        await page.mouse.wheel(0, -1500)
+        await page.waitForTimeout(150)
+      }
+      await page.waitForTimeout(400)
+      await syncEngineGeometry(page)
+      const anchor = await findBottomVisibleMessage(page)
+      expect(anchor, 'must capture a deep-history anchor message').not.toBeNull()
+      anchorId = anchor!.id
+      anchorDepth = await depthFromLiveEdge(anchorId)
     }
-    await page.waitForTimeout(400)
-    await syncEngineGeometry(page)
-    const anchor = await findBottomVisibleMessage(page)
-    expect(anchor, 'must capture a deep-history anchor message').not.toBeNull()
-    const anchorId = anchor!.id
-    // Sanity: the anchor is a synthesized OLDER message, i.e. genuinely deep history (not a seed),
-    // so after eviction it is absent from the latest-~100 rehydration.
+    // Sanity: a synthesized OLDER message, i.e. genuinely deep history rather than a seed...
     expect(anchorId, `anchor "${anchorId}" should be a deep older message, not the latest slice`).toContain('older-')
+    // ...and deep enough that the return rehydration cannot contain it, which is what makes the
+    // on-demand reload the only way it can come back.
+    expect(anchorDepth, `anchor "${anchorId}" sits ${anchorDepth} rows from the live edge, inside the ${REHYDRATED_SLICE} the return rehydrates`).toBeGreaterThan(MIN_ANCHOR_DEPTH)
 
     // SWITCH AWAY → the room's resident window is evicted from RAM.
     await page.evaluate(() => {
@@ -675,18 +697,42 @@ test.describe('Virtualization scroll invariants', () => {
     // SWITCH BACK → activation rehydrates the latest slice; the restore must pull in the anchor's
     // slice on demand and reposition to it.
     await navigateToStressRoom(page)
-    await page.waitForTimeout(2500) // activation + on-demand around-load + retry restore + re-assert
+
+    // The restore is an activation, an on-demand around-load and a retry; how long those take
+    // varies with the machine, so wait for the outcome rather than for a fixed slice of time — a
+    // fixed wait can only ever be too short. The window it waits in is generous, and the
+    // assertions below are unchanged, so a restore that never happens still fails, and the
+    // growth recorded here says whether it was late or absent.
+    const readResident = () => page.evaluate(([jid, id]) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rs = (window as any).__roomStore.getState()
+      const msgs = rs.messages.get(jid) ?? []
+      return {
+        residentLen: msgs.length,
+        hasAnchor: msgs.some((m: { id: string }) => m.id === id),
+        activationPending: rs.activationPending === true,
+      }
+    }, [STRESS_ROOM_JID, anchorId] as const)
+
+    const startedAt = Date.now()
+    const growth: Array<{ atMs: number; residentLen: number; hasAnchor: boolean; activationPending: boolean }> = []
+    let reloaded = await readResident()
+    growth.push({ atMs: Date.now() - startedAt, ...reloaded })
+    while (Date.now() - startedAt < 10_000 && !(reloaded.residentLen > 150 && reloaded.hasAnchor)) {
+      await page.waitForTimeout(250)
+      reloaded = await readResident()
+      growth.push({ atMs: Date.now() - startedAt, ...reloaded })
+    }
+    await testInfo.attach('resident-window-growth', {
+      body: JSON.stringify({ anchorId, evicted, growth }),
+      contentType: 'application/json',
+    })
+    await page.waitForTimeout(250) // let the reposition settle before reading geometry
     await syncEngineGeometry(page)
 
     // CORE OF THE FIX: the deep anchor's cache slice was pulled back in. The resident window now
     // spans far more than the latest-~100 rehydration (the buggy path stayed at ~100, never reloaded
     // the anchor), and the captured deep-history anchor is resident again.
-    const reloaded = await page.evaluate(([jid, id]) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rs = (window as any).__roomStore.getState()
-      const msgs = rs.messages.get(jid) ?? []
-      return { residentLen: msgs.length, hasAnchor: msgs.some((m: { id: string }) => m.id === id) }
-    }, [STRESS_ROOM_JID, anchorId] as const)
     expect(reloaded.residentLen, 'resident window did not grow past the latest slice — anchor slice not reloaded').toBeGreaterThan(150)
     expect(reloaded.hasAnchor, `deep anchor "${anchorId}" was not reloaded into the resident window`).toBe(true)
 
@@ -2615,6 +2661,186 @@ test('cached search navigation preserves confirmed rows and opaque literal IDs',
   await expect(highlighted).toContainText(fixture.literal.body)
   await expect(highlighted).toHaveAttribute('data-message-id', fixture.literal.id)
   await expect(highlighted).toBeInViewport()
+})
+
+test.describe('search navigation beyond the resident bound', () => {
+  // 600 cached messages against a 100-message window: the load around message 50 reaches the
+  // whole tail, so a keep-newest merge would evict the target it was asked to load.
+  const DEEP_URL = '/demo.html?tutorial=false&virt=1&window=100&stress=rooms:1,messages:600,msgStep:0,mode:live'
+  const STRESS_CONTACT_JID = 'stress-contact@fluux.chat'
+
+  async function goToSearchResult(page: Page, messageId: string, query: string, conversationName: string) {
+    // Cache writes and search indexing finish independently of the demo seeding, and indexing
+    // the seeded history can take tens of seconds on a loaded WebKit runner.
+    await expect.poll(() => page.evaluate(id => new Promise<boolean>((resolve, reject) => {
+      const request = indexedDB.open('fluux-search-index')
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const db = request.result
+        if (!db.objectStoreNames.contains('search-docs')) {
+          db.close()
+          resolve(false)
+          return
+        }
+        const tx = db.transaction('search-docs', 'readonly')
+        const documents = tx.objectStore('search-docs').getAll()
+        tx.oncomplete = () => {
+          db.close()
+          resolve(documents.result.some(document => document.messageId === id))
+        }
+        tx.onabort = () => { db.close(); reject(tx.error) }
+      }
+    }), messageId), { message: 'precondition: the deep target must be indexed', timeout: 90_000 }).toBe(true)
+    await page.evaluate(() => { window.location.hash = '#/search' })
+    await page.getByPlaceholder('Search messages…').fill(query)
+    const result = page.locator('[data-search-result-id]').filter({ hasText: conversationName })
+    await expect(result).toHaveCount(1)
+    await result.hover()
+    await result.locator('[title="Go to message"]').click()
+  }
+
+  /**
+   * Records every row the highlight ever lands on, from before the jump.
+   *
+   * The highlight fades on a timer, so asking whether it is present is a race the test loses on a
+   * slow runner — and "gone already" then reads exactly like "the jump missed". What the test
+   * means is that the jump marked this row, which is a fact about the past, so it is recorded
+   * rather than polled for.
+   */
+  async function recordHighlightedRows(page: Page) {
+    await page.evaluate(() => {
+      const seen: string[] = []
+      ;(window as unknown as { __highlightedRows: string[] }).__highlightedRows = seen
+      const note = (node: Element) => {
+        const id = (node as HTMLElement).dataset?.messageId
+        if (id && node.classList.contains('message-highlight') && !seen.includes(id)) seen.push(id)
+      }
+      document.querySelectorAll('.message-row').forEach(note)
+      new MutationObserver(records => {
+        for (const record of records) {
+          if (record.type === 'attributes' && record.target instanceof Element) note(record.target)
+          record.addedNodes.forEach(node => { if (node instanceof Element) note(node) })
+        }
+      }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] })
+    })
+  }
+
+  for (const preference of ['system', 'reduced'] as const) {
+    test(`reduced motion keeps the search target visibly marked (${preference})`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: preference === 'system' ? 'reduce' : 'no-preference' })
+      await page.addInitScript(value => localStorage.setItem('fluux-motion', value), preference)
+      await bootDemo(page, DEEP_URL)
+      await goToSearchResult(page, 'stress-0-50', '50 stress', 'Stress 0')
+
+      const target = page.locator('[data-message-list] .message-row[data-message-id="stress-0-50"]')
+      await expect(target).toHaveClass(/message-highlight/)
+      await expect(target).toBeInViewport({ ratio: 1 })
+      const background = await target.evaluate(element => getComputedStyle(element).backgroundColor)
+      expect(background).not.toBe('rgba(0, 0, 0, 0)')
+      await page.waitForTimeout(400)
+      await expect(target).toHaveCSS('background-color', background)
+      await page.screenshot({ path: test.info().outputPath(`reduced-motion-${preference}.png`) })
+      await expect(target).not.toHaveClass(/message-highlight/)
+      await expect(target).not.toHaveCSS('background-color', background)
+      await expect(target).toBeInViewport({ ratio: 1 })
+    })
+  }
+
+  test('a room jump lands on the target and a parked window does not take a catch-up page', async ({ page }) => {
+    await bootDemo(page, DEEP_URL)
+    await recordHighlightedRows(page)
+    await goToSearchResult(page, 'stress-0-50', '50 stress', 'Stress 0')
+
+    // The jump marked the target row...
+    await expect.poll(
+      () => page.evaluate(() => (window as unknown as { __highlightedRows: string[] }).__highlightedRows),
+      // What is under test is WHERE the jump lands, not how fast: a loaded runner may take
+      // several seconds to page in the history around the target.
+      { message: 'the jump never highlighted a row', timeout: 15_000 },
+    ).toEqual(['stress-0-50'])
+    // ...and brought it into view. Held by id, not by the highlight, which may already have faded.
+    const targetRow = page.locator('[data-message-list] .message-row[data-message-id="stress-0-50"]')
+    try {
+      await expect(targetRow).toBeInViewport()
+    } catch (failure) {
+      // Where the row actually sat, read once AFTER the assertion gave up so the reading cannot
+      // eat the window it describes. A row a little outside the fold was still settling; one far
+      // outside it landed somewhere else, and the two want opposite fixes.
+      await test.info().attach('search-jump-placement', {
+        body: JSON.stringify(await page.evaluate(() => {
+          const scroller = document.querySelector('[data-message-list]') as HTMLElement | null
+          const row = document.querySelector('[data-message-list] .message-row[data-message-id="stress-0-50"]')
+          const view = scroller?.getBoundingClientRect()
+          const rect = row?.getBoundingClientRect()
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const store = (window as any).__roomStore?.getState?.()
+          return {
+            rendered: !!row,
+            offsetFromViewportTop: rect && view ? Math.round(rect.top - view.top) : null,
+            viewportHeight: view ? Math.round(view.height) : null,
+            scrollTop: scroller ? Math.round(scroller.scrollTop) : null,
+            scrollHeight: scroller ? Math.round(scroller.scrollHeight) : null,
+            targetMessageId: store?.targetMessageId ?? null,
+            residentCount: store?.messages?.get('stress-0@conference.fluux.chat')?.length ?? null,
+          }
+        })),
+        contentType: 'application/json',
+      })
+      throw failure
+    }
+    await page.screenshot({ path: test.info().outputPath('deep-room-target.png') })
+
+    const readWindow = () => page.evaluate(jid => {
+      const state = (window as unknown as { __roomStore: typeof roomStore }).__roomStore.getState()
+      return {
+        ids: state.messages.get(jid)!.map(message => message.id),
+        atLiveEdge: state.windowAtLiveEdge.get(jid),
+        target: state.targetMessageId,
+      }
+    }, STRESS_ROOM_JID)
+    const landed = await readWindow()
+    expect(landed.ids).toContain('stress-0-50')
+    expect(landed.atLiveEdge).toBe(false)
+    expect(landed.target).toBeNull()
+
+    // A forward catch-up page is newer than everything cached. Attaching it here would splice it
+    // after the window's last row and hide the 500 cached messages in between.
+    await page.evaluate(jid => {
+      const store = (window as unknown as { __roomStore: typeof roomStore }).__roomStore
+      const newest = store.getState().rooms.get(jid)!.lastMessage!
+      const page = Array.from({ length: 5 }, (_, index): RoomMessage => ({
+        type: 'groupchat', roomJid: jid, id: `caught-up-${index}`, stanzaId: `sid-caught-up-${index}`,
+        from: `${jid}/U0_1`, nick: 'U0_1', body: `caught up ${index}`, isOutgoing: false,
+        timestamp: new Date(newest.timestamp.getTime() + (index + 1) * 1000),
+      }))
+      store.getState().mergeRoomMAMMessages(jid, page, {}, true, 'forward')
+    }, STRESS_ROOM_JID)
+    expect(await readWindow()).toEqual(landed)
+    await expect(page.locator('[data-message-list] .message-row[data-message-id="stress-0-50"]')).toBeInViewport()
+
+    await page.getByRole('button', { name: 'Scroll to bottom' }).click()
+    await expect.poll(async () => (await readWindow()).ids.slice(-7)).toEqual([
+      'stress-0-598', 'stress-0-599', 'caught-up-0', 'caught-up-1', 'caught-up-2', 'caught-up-3', 'caught-up-4',
+    ])
+    expect((await readWindow()).atLiveEdge).toBe(true)
+  })
+
+  test('a direct chat jump lands on the target', async ({ page }) => {
+    await bootDemo(page, DEEP_URL)
+    await recordHighlightedRows(page)
+    await goToSearchResult(page, `${STRESS_CONTACT_JID}::seed-50`, '50 seed', 'Stress Contact')
+
+    // Recorded rather than polled for: see recordHighlightedRows.
+    await expect.poll(
+      () => page.evaluate(() => (window as unknown as { __highlightedRows: string[] }).__highlightedRows),
+      { message: 'the jump never highlighted a row', timeout: 15_000 },
+    ).toEqual([`${STRESS_CONTACT_JID}::seed-50`])
+    await expect(page.locator(`[data-message-list] .message-row[data-message-id="${STRESS_CONTACT_JID}::seed-50"]`)).toBeInViewport()
+    expect(await page.evaluate(jid => {
+      const state = (window as unknown as { __chatStore: typeof chatStore }).__chatStore.getState()
+      return { resident: state.messages.get(jid)!.some(message => message.id === `${jid}::seed-50`), target: state.targetMessageId }
+    }, STRESS_CONTACT_JID)).toEqual({ resident: true, target: null })
+  })
 })
 
 test('direct chat keyboard selection preserves opaque literal row IDs', async ({ page }) => {

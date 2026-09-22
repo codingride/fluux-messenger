@@ -1,7 +1,7 @@
 /**
  * Shared test utilities for XMPPClient tests
  */
-import { vi, type Mock } from 'vitest'
+import { onTestFinished, vi, type Mock } from 'vitest'
 import type { Element } from '@xmpp/client'
 import type { Room, StoreBindings, SDKEvents, SDKEventPayload } from './types'
 import type { StoreRefs } from '../bindings/storeBindings'
@@ -352,6 +352,28 @@ export const createMockXmppClient = (): MockXmppClient => {
   }
 }
 
+// Test files install fake timers after their imports have run, so this is the real one.
+const realSetTimeout = globalThis.setTimeout
+
+/**
+ * Make every WebCrypto digest take `delayMs` of real time for the rest of the current test.
+ *
+ * Initial presence carries the XEP-0115 hash, a `crypto.subtle.digest` that settles on the
+ * event loop, which fake timers do not drive. Under this delay, a test that waits in simulated
+ * time for anything behind the hash fails on every run rather than only on a loaded
+ * machine (#1469). Such a test has to wait for the condition with `vi.waitFor`.
+ */
+export const slowDownDigest = (delayMs = 5): void => {
+  const subtle = globalThis.crypto.subtle
+  const digest = subtle.digest.bind(subtle)
+  const spy = vi.spyOn(subtle, 'digest').mockImplementation(async (algorithm, data) => {
+    const hash = await digest(algorithm, data)
+    await new Promise((resolve) => realSetTimeout(resolve, delayMs))
+    return hash
+  })
+  onTestFinished(() => spy.mockRestore())
+}
+
 // Type for mock element children - supports nested elements with optional methods
 type MockChildInput = {
   name: string
@@ -668,6 +690,14 @@ export const createIQHandlerTester = (mockClient: ReturnType<typeof createMockXm
 const mockMethods = <K extends PropertyKey>(keys: readonly K[]): Record<K, Mock> =>
   Object.fromEntries(keys.map((key) => [key, vi.fn()])) as Record<K, Mock>
 
+function mockConnectionStatus(): Pick<MockStoreBindings['connection'], 'getStatus' | 'setStatus'> {
+  let status: ReturnType<StoreBindings['connection']['getStatus']> = 'disconnected'
+  return {
+    getStatus: vi.fn(() => status),
+    setStatus: vi.fn(next => { status = next }),
+  }
+}
+
 // Create mock store bindings with proper mock types.
 // Only members whose RETURN VALUE matters to tests are declared explicitly
 // (as overrides after the spread); everything else derives from the key lists.
@@ -675,7 +705,7 @@ export const createMockStores = (): MockStoreBindings => ({
   connection: {
     ...mockMethods(connectionBindingMethodKeys),
     // State getters
-    getStatus: vi.fn().mockReturnValue('disconnected'),
+    ...mockConnectionStatus(),
     getOwnNickname: vi.fn().mockReturnValue(null),
     getJid: vi.fn().mockReturnValue(null),
     getHttpUploadService: vi.fn().mockReturnValue(null),

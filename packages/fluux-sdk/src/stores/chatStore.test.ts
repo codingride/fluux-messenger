@@ -364,7 +364,7 @@ describe('chatStore', () => {
       chatStore.getState().addMessage(held)
 
       const fetched = { ...createMessage(cid, 'fresh'), id: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z') }
-      chatStore.getState().mergeMAMMessages(cid, [fetched], {}, true, 'backward', true)
+      chatStore.getState().mergeMAMMessages(cid, [fetched], {}, true, 'backward', { isFetchLatest: true })
 
       // Formation defers until the page is durably cached.
       await vi.waitFor(() => {
@@ -382,7 +382,7 @@ describe('chatStore', () => {
 
       // Overlapping fetch-latest: dedupe hit → connected.
       const fresh = { ...createMessage(cid, 'fresh'), id: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z') }
-      chatStore.getState().mergeMAMMessages(cid, [{ ...held }, fresh], {}, true, 'backward', true)
+      chatStore.getState().mergeMAMMessages(cid, [{ ...held }, fresh], {}, true, 'backward', { isFetchLatest: true })
       expect(chatStore.getState().conversationGaps.has(cid)).toBe(false)
 
       // Plain pagination (isFetchLatest omitted): never a formation candidate.
@@ -399,7 +399,7 @@ describe('chatStore', () => {
       chatStore.getState().addConversation({ ...createConversation(cid), lastMessage: preview })
 
       const fresh = { ...createMessage(cid, 'fresh'), id: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z') }
-      chatStore.getState().mergeMAMMessages(cid, [fresh], {}, true, 'backward', true)
+      chatStore.getState().mergeMAMMessages(cid, [fresh], {}, true, 'backward', { isFetchLatest: true })
 
       // No spurious seam from the (possibly unarchived) preview.
       expect(chatStore.getState().conversationGaps.has(cid)).toBe(false)
@@ -415,7 +415,7 @@ describe('chatStore', () => {
       chatStore.getState().addConversation({ ...createConversation(cid), lastMessage: preview })
 
       const fresh = { ...createMessage(cid, 'fresh'), id: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z') }
-      chatStore.getState().mergeMAMMessages(cid, [fresh], {}, true, 'backward', true)
+      chatStore.getState().mergeMAMMessages(cid, [fresh], {}, true, 'backward', { isFetchLatest: true })
       expect(chatStore.getState().getMAMQueryState(cid).coverageBottomUnproven).toBe(true)
 
       // Second, unrelated merge: an ordinary backward pagination page
@@ -439,7 +439,7 @@ describe('chatStore', () => {
       chatStore.getState().addMessage(held)
 
       const fresh = { ...createMessage(cid, 'fresh'), id: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z') }
-      chatStore.getState().mergeMAMMessages(cid, [fresh], {}, true, 'backward', true)
+      chatStore.getState().mergeMAMMessages(cid, [fresh], {}, true, 'backward', { isFetchLatest: true })
 
       // Resident boundary proven → the seam is still recorded (deferred until
       // the page is durably cached).
@@ -459,7 +459,7 @@ describe('chatStore', () => {
       chatStore.getState().addConversation(createConversation(cid))
 
       const fresh = { ...createMessage(cid, 'fresh'), id: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z') }
-      chatStore.getState().mergeMAMMessages(cid, [fresh], {}, true, 'backward', true)
+      chatStore.getState().mergeMAMMessages(cid, [fresh], {}, true, 'backward', { isFetchLatest: true })
 
       expect(chatStore.getState().conversationGaps.has(cid)).toBe(false)
       expect(chatStore.getState().getMAMQueryState(cid).coverageBottomUnproven).toBeFalsy()
@@ -626,8 +626,7 @@ describe('chatStore', () => {
       const m = { ...createMessage(cid, 'm1'), id: 'm1', stanzaId: 'sid-1', timestamp: new Date('2026-07-15T00:00:00Z') }
       const lookup = vi.spyOn(messageCache, 'resolveArchivePosition').mockResolvedValue(exactPosition(m, 'chat'))
       try {
-        chatStore.getState().mergeMAMMessages(cid, [m], { first: 'sid-1', last: 'sid-1' }, false, 'backward', true, false,
-          { initialBefore: '', fetchLatestTopId: 'sid-1' })
+        chatStore.getState().mergeMAMMessages(cid, [m], { first: 'sid-1', last: 'sid-1' }, false, 'backward', { isFetchLatest: true, preserveGapMarker: false, extras: { initialBefore: '', fetchLatestTopId: 'sid-1' } })
         await vi.waitFor(() => {
           expect(chatStore.getState().getConversationCoverage(cid)).toEqual({ bottomId: 'sid-1', topId: 'sid-1', countBottomId: 'sid-1' })
         })
@@ -638,8 +637,7 @@ describe('chatStore', () => {
 
     it('signal-only give-up (zero messages) records coverage immediately (nothing to persist)', () => {
       chatStore.getState().addConversation(createConversation(cid))
-      chatStore.getState().mergeMAMMessages(cid, [], { first: 'p5-first', last: 'p5-last' }, false, 'backward', true, false,
-        { initialBefore: '', fetchLatestTopId: 'p1-last' })
+      chatStore.getState().mergeMAMMessages(cid, [], { first: 'p5-first', last: 'p5-last' }, false, 'backward', { isFetchLatest: true, preserveGapMarker: false, extras: { initialBefore: '', fetchLatestTopId: 'p1-last' } })
       expect(chatStore.getState().getConversationCoverage(cid)).toEqual({ bottomId: 'p5-first', topId: 'p1-last', countBottomId: null })
     })
 
@@ -651,8 +649,7 @@ describe('chatStore', () => {
 
       const older = { ...createMessage(cid, 'old'), id: 'old', stanzaId: 'deeper', timestamp: new Date('2026-07-01T00:00:00Z') }
       // Plain backward page resumed id-exactly from the coverage bottom.
-      chatStore.getState().mergeMAMMessages(cid, [older], { first: 'deeper' }, false, 'backward', false, false,
-        { initialBefore: 'deep' })
+      chatStore.getState().mergeMAMMessages(cid, [older], { first: 'deeper' }, false, 'backward', { isFetchLatest: false, preserveGapMarker: false, extras: { initialBefore: 'deep' } })
       expect(chatStore.getState().getConversationCoverage(cid)?.bottomId).toBe('deep')
       resolveSave(true)
       await vi.waitFor(() => {
@@ -666,8 +663,7 @@ describe('chatStore', () => {
       vi.mocked(messageCache.saveMessages).mockResolvedValue(false)
 
       const older = { ...createMessage(cid, 'old'), id: 'old', stanzaId: 'deeper', timestamp: new Date('2026-07-01T00:00:00Z') }
-      chatStore.getState().mergeMAMMessages(cid, [older], { first: 'deeper' }, false, 'backward', false, false,
-        { initialBefore: 'deep' })
+      chatStore.getState().mergeMAMMessages(cid, [older], { first: 'deeper' }, false, 'backward', { isFetchLatest: false, preserveGapMarker: false, extras: { initialBefore: 'deep' } })
       await Promise.resolve()
       await Promise.resolve()
       expect(chatStore.getState().getConversationCoverage(cid)?.bottomId).toBe('deep')
@@ -716,8 +712,7 @@ describe('chatStore', () => {
       chatStore.getState().addConversation(createConversation(cid))
       chatStore.setState({ conversationCoverage: new Map([[cid, { bottomId: 'deep' }]]) })
       const island = { ...createMessage(cid, 'island'), id: 'island', stanzaId: 'island-id', timestamp: new Date('2026-06-01T00:00:00Z') }
-      chatStore.getState().mergeMAMMessages(cid, [island], { first: 'island-id' }, true, 'backward', true, true,
-        { initialBefore: '' })
+      chatStore.getState().mergeMAMMessages(cid, [island], { first: 'island-id' }, true, 'backward', { isFetchLatest: true, preserveGapMarker: true, extras: { initialBefore: '' } })
       expect(chatStore.getState().getConversationCoverage(cid)).toEqual({ bottomId: 'deep' })
     })
 
@@ -795,7 +790,7 @@ describe('chatStore', () => {
       chatStore.setState({ conversationGaps: new Map([[cid, { start: 1000, end: 5000 }]]) })
 
       // A bounded windowed context fetch completes within its window — must not clear an older gap.
-      chatStore.getState().mergeMAMMessages(cid, [], {}, true, 'forward', false, true)
+      chatStore.getState().mergeMAMMessages(cid, [], {}, true, 'forward', { isFetchLatest: false, preserveGapMarker: true })
 
       expect(chatStore.getState().conversationGaps.get(cid)).toEqual({ start: 1000, end: 5000 })
     })
@@ -1313,6 +1308,26 @@ describe('chatStore', () => {
 
       const resident = chatStore.getState().messages.get(A)
       expect(resident?.map((m) => m.id)).toEqual(['anchor', 'newer-5', 'newer-6', 'newer-7'])
+    })
+
+    it('keeps the anchor resident when more than the window bound of cached messages are newer', async () => {
+      const A = 'alice@example.com'
+      const latest = [msgAt(A, 'newer-7', 7), msgAt(A, 'newer-8', 8), msgAt(A, 'newer-9', 9)]
+      chatStore.getState().addConversation(createConversation(A))
+      chatStore.setState({ activeConversationId: A, messages: new Map([[A, latest]]) })
+      vi.mocked(messageCache.getMessagesAround).mockResolvedValue([
+        msgAt(A, 'old-3', 3), msgAt(A, 'anchor', 4), msgAt(A, 'newer-5', 5), msgAt(A, 'newer-6', 6),
+        ...latest.map((m) => ({ ...m })),
+      ])
+      setResidentWindowSize(3)
+      try {
+        await chatStore.getState().loadMessagesAroundFromCache(A, { id: 'anchor' })
+      } finally {
+        setResidentWindowSize(5000)
+      }
+
+      expect(chatStore.getState().messages.get(A)?.map((m) => m.id)).toEqual(['old-3', 'anchor', 'newer-5'])
+      expect(chatStore.getState().windowAtLiveEdge.get(A)).toBe(false)
     })
   })
 
@@ -4707,14 +4722,27 @@ describe('chatStore', () => {
       expect(chatStore.getState().conversationMeta.get(conversationId)?.unreadCount).toBe(1)
     })
 
-    it('recenters to the live edge when the latest window is (re)loaded', async () => {
+    it('keeps a parked window on a latest-N load, which only jump-to-latest replaces', async () => {
       seedSlidWindow()
       await chatStore.getState().loadOlderMessagesFromCache(conversationId, 50)
-      expect(chatStore.getState().windowAtLiveEdge.get(conversationId)).toBe(false)
+      const parked = chatStore.getState().messages.get(conversationId)
 
-      // A latest-N load (activation path) makes the newest messages resident again.
       vi.mocked(messageCache.getMessages).mockResolvedValue([chatMsgAt('latest-1', 9000)])
       await chatStore.getState().loadMessagesFromCache(conversationId, { limit: 100 })
+      expect(chatStore.getState().messages.get(conversationId)).toBe(parked)
+      expect(chatStore.getState().windowAtLiveEdge.get(conversationId)).toBe(false)
+
+      await chatStore.getState().recenterToLatest(conversationId)
+      expect(chatStore.getState().messages.get(conversationId)?.at(-1)?.id).toBe('latest-1')
+      expect(chatStore.getState().windowAtLiveEdge.get(conversationId) ?? true).toBe(true)
+    })
+
+    it('recenters an emptied window to the live edge on a latest-N load', async () => {
+      chatStore.setState((state) => ({ windowAtLiveEdge: new Map(state.windowAtLiveEdge).set(conversationId, false) }))
+
+      vi.mocked(messageCache.getMessages).mockResolvedValue([chatMsgAt('latest-1', 9000)])
+      await chatStore.getState().loadMessagesFromCache(conversationId, { limit: 100 })
+      expect(chatStore.getState().messages.get(conversationId)?.map((m) => m.id)).toEqual(['latest-1'])
       expect(chatStore.getState().windowAtLiveEdge.get(conversationId) ?? true).toBe(true)
     })
 
@@ -4724,24 +4752,39 @@ describe('chatStore', () => {
       expect('windowAtLiveEdge' in persisted).toBe(false)
     })
 
-    it('mergeMAMMessages flips windowAtLiveEdge true on a fetch-latest merge, but a plain backward merge does not', () => {
+    it('mergeMAMMessages lands an empty window at the live edge on a fetch-latest merge', () => {
       chatStore.getState().setActiveConversation(conversationId)
-      // Seed the flag false, as if a prior scroll-up slid the window off the live edge.
-      chatStore.setState((state) => {
-        const w = new Map(state.windowAtLiveEdge)
-        w.set(conversationId, false)
-        return { windowAtLiveEdge: w }
-      })
+      chatStore.setState((state) => ({ windowAtLiveEdge: new Map(state.windowAtLiveEdge).set(conversationId, false) }))
 
-      // A plain backward merge (isFetchLatest false) must not flip it back.
-      const older = chatMsgAt('older-1', 1)
-      chatStore.getState().mergeMAMMessages(conversationId, [older], {}, false, 'backward')
-      expect(chatStore.getState().windowAtLiveEdge.get(conversationId)).toBe(false)
-
-      // A fetch-latest merge lands the window AT the live edge by construction.
-      const fresh = chatMsgAt('fresh-1', 20000)
-      chatStore.getState().mergeMAMMessages(conversationId, [fresh], {}, false, 'backward', true)
+      chatStore.getState().mergeMAMMessages(conversationId, [chatMsgAt('fresh-1', 20000)], {}, false, 'backward', { isFetchLatest: true })
+      expect(chatStore.getState().messages.get(conversationId)?.map((m) => m.id)).toEqual(['fresh-1'])
       expect(chatStore.getState().windowAtLiveEdge.get(conversationId)).toBe(true)
+    })
+
+    it('mergeMAMMessages does not flip windowAtLiveEdge back on a plain backward merge', () => {
+      chatStore.getState().setActiveConversation(conversationId)
+      chatStore.setState((state) => ({ windowAtLiveEdge: new Map(state.windowAtLiveEdge).set(conversationId, false) }))
+
+      chatStore.getState().mergeMAMMessages(conversationId, [chatMsgAt('older-1', 1)], {}, false, 'backward')
+      expect(chatStore.getState().windowAtLiveEdge.get(conversationId)).toBe(false)
+    })
+
+    it('does not attach forward or fetch-latest pages to a parked window, but still persists them and updates the preview', () => {
+      chatStore.getState().setActiveConversation(conversationId)
+      seedSlidWindow()
+      chatStore.setState((state) => ({ windowAtLiveEdge: new Map(state.windowAtLiveEdge).set(conversationId, false) }))
+      const parked = chatStore.getState().messages.get(conversationId)
+      vi.mocked(messageCache.saveMessages).mockClear()
+
+      chatStore.getState().mergeMAMMessages(conversationId, [chatMsgAt('caught-up-1', 20000)], {}, true, 'forward')
+      chatStore.getState().mergeMAMMessages(conversationId, [chatMsgAt('fetch-latest-1', 30000)], {}, false, 'backward', { isFetchLatest: true })
+
+      // Attaching either page would splice it after resident-4999 and hide every cached message between.
+      expect(chatStore.getState().messages.get(conversationId)).toBe(parked)
+      expect(chatStore.getState().windowAtLiveEdge.get(conversationId)).toBe(false)
+      expect(messageCache.saveMessages).toHaveBeenCalledWith([expect.objectContaining({ id: 'caught-up-1' })])
+      expect(messageCache.saveMessages).toHaveBeenCalledWith([expect.objectContaining({ id: 'fetch-latest-1' })])
+      expect(chatStore.getState().conversationMeta.get(conversationId)?.lastMessage?.id).toBe('fetch-latest-1')
     })
   })
 

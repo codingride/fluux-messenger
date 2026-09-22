@@ -161,6 +161,21 @@ describe('chatStore.recomputeUnreadForConversation — archive-derived unread (P
   // exact
   // ---------------------------------------------------------------------
 
+  it('stops counting a message the live write lost once a merge stores it', async () => {
+    // The overlay carries an unread message only until the archive does. When the live write
+    // fails the entry stays, which is the point of it — but a later merge that stores the very
+    // same row as a patch makes it durable, and the entry then has to go, or the recount adds it
+    // to the archived count it is now part of.
+    vi.mocked(messageCache.saveMessageWithResult).mockResolvedValueOnce(false)
+    chatStore.getState().addMessage(archiveMsg('u1', 5000))
+    await vi.waitFor(() => expect(transientCounts(scopeKey(), undefined).unread).toBe(1))
+
+    chatStore.getState().mergeMAMMessages(
+      CID, [archiveMsg('u1', 5000, { stanzaId: 'arch-u1' })], { first: 'arch-u1' }, true, 'backward',
+    )
+    await vi.waitFor(() => expect(transientCounts(scopeKey(), undefined).unread).toBe(0))
+  })
+
   it('backgrounded deep pointer with proven coverage derives an exact count from the archive', async () => {
     await messageCache.saveMessages([
       archiveMsg('anchor', 500, { stanzaId: 'anchor-stanza' }),
@@ -1820,17 +1835,8 @@ describe('chatStore — `start`-filtered catch-up bootstraps coverage from its w
   /** The walk's messages carry archive ids: `start` is inclusive, so the
    *  anchor own send comes back down with the id the archive gave it. */
   function catchUp(complete: boolean): void {
-    chatStore.getState().mergeMAMMessages(
-      CID,
-      [ownSend({ stanzaId: 'own-archive-id' })],
-      { first: 'own-archive-id' },
-      complete,
-      'forward',
-      false,
-      false,
-      // No `initialAfter`: this walk resumed from a timestamp, not a cursor.
-      { walkCarriedModifications: false, walkOldestId: 'own-archive-id' }
-    )
+    chatStore.getState().mergeMAMMessages(CID, [ownSend({ stanzaId: 'own-archive-id' })], { first: 'own-archive-id' }, complete, 'forward', { isFetchLatest: false, preserveGapMarker: false, extras: // No `initialAfter`: this walk resumed from a timestamp, not a cursor.
+      { walkCarriedModifications: false, walkOldestId: 'own-archive-id' } })
   }
 
   /** Let the archive write, and the coverage commit gated on it, settle. */
