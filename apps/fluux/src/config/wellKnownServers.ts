@@ -32,9 +32,9 @@ export interface WildcardServerConfig {
  * own. A domain that publishes one needs nothing here.
  */
 export const wellKnownServers: Record<string, ServerConfig> = {
-  'process-one.net': {
-    websocketUrl: 'wss://chat.process-one.net/xmpp',
-    name: 'ProcessOne',
+  'sanady.work': {
+    websocketUrl: 'wss://sanady.work:5281/xmpp-websocket',
+    name: 'Sanady',
   },
 }
 
@@ -45,7 +45,7 @@ export const wellKnownServers: Record<string, ServerConfig> = {
 export const wildcardServers: WildcardServerConfig[] = [
   {
     suffix: '.m.in-app.io',
-    websocketUrl: 'wss://{domain}/xmpp',
+    websocketUrl: 'wss://{domain}/xmpp-websocket',
     name: 'Fluux',
   },
 ]
@@ -83,7 +83,7 @@ export function getConnectionServerOptions(jid: string, server: string): Connect
   const fallbackWebSocketUrl = domain && target.toLowerCase() === domain.toLowerCase()
     ? getFallbackWebsocketUrlForDomain(domain) || undefined
     : undefined
-
+  
   return { server: target, fallbackWebSocketUrl }
 }
 
