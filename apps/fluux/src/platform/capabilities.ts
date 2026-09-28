@@ -24,14 +24,17 @@
  */
 
 /** Which shell the UI is running inside. */
-export type PlatformShell = 'desktop' | 'web'
+export type PlatformShell = 'desktop' | 'web' | 'mobile'
 
 /** Host operating system, as far as the shell can tell. */
-export type PlatformOS = 'macos' | 'windows' | 'linux' | 'other'
+export type PlatformOS = 'macos' | 'windows' | 'linux' | 'ios' | 'android' | 'other'
 
 export interface PlatformCapabilities {
   readonly shell: PlatformShell
   readonly os: PlatformOS
+
+  /** XMPP can use the native WebSocket-to-TCP/TLS bridge. */
+  readonly nativeXmppProxy: boolean
 
   /** Credentials live in the OS keychain instead of browser storage. */
   readonly nativeKeychain: boolean
@@ -171,17 +174,20 @@ export interface PlatformCapabilities {
  */
 export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): PlatformCapabilities {
   const desktop = shell === 'desktop'
+  const native = desktop || shell === 'mobile'
+  const web = shell === 'web'
   return {
     shell,
     os,
+    nativeXmppProxy: desktop || (shell === 'mobile' && (os === 'ios' || os === 'android')),
     nativeKeychain: desktop,
     nativeDownloads: desktop,
     nativeMediaCache: desktop,
     nativeClipboardImages: desktop,
     nativeFileDrop: desktop,
     notificationsNeedFileUrls: desktop,
-    opensLinksInSystemBrowser: desktop,
-    interceptsInAppNavigation: desktop,
+    opensLinksInSystemBrowser: native,
+    interceptsInAppNavigation: native,
     nativeHttpFetch: desktop,
     // Windows is the only host with a taskbar attention request behind it.
     canRequestWindowAttention: desktop && os === 'windows',
@@ -190,7 +196,7 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     // Linux desktops update through the distro package manager.
     hasInAppUpdates: desktop && os !== 'linux',
     storageIsDurable: desktop,
-    hasStableInstallIdentity: desktop,
+    hasStableInstallIdentity: native,
 
     // Encryption. The key is in the OS keychain on desktop, so nothing has to
     // be unlocked per session there.
@@ -199,7 +205,7 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
 
     // Notifications.
     notificationsManagedByOS: desktop,
-    usesWebPush: !desktop,
+    usesWebPush: web,
 
     // Window and process. Only macOS overlays its window controls on the
     // content; Windows and Linux keep a native title bar.
@@ -207,7 +213,7 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     hasCommandLineFlags: desktop,
     hasNativeLogFiles: desktop,
     // Every browser tab is an instance sharing one origin.
-    needsTabCoordination: !desktop,
+    needsTabCoordination: web,
 
     // Connection.
     hasNativeConnectionKeepalive: desktop,

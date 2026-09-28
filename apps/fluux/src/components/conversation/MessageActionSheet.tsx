@@ -1,18 +1,10 @@
-/**
- * Touch action sheet for a single message.
- *
- * Long-pressing a message bubble on a touch device opens this bottom sheet — the
- * touch counterpart of the desktop hover toolbar (MessageToolbar), which can't be
- * reached without a pointer. It reuses the same building blocks as the rest of the
- * app: BottomSheet for the surface, TOOLBAR_REACTIONS + the lazy EmojiPicker for
- * reactions, and MenuButton/MenuDivider for the action rows (at a comfortable
- * touch height).
- */
-import { useState, Suspense, lazy } from 'react'
+/** Touch actions and quick reactions anchored to the selected message. */
+import { useState, useRef, Suspense, lazy } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Reply, Pencil, Trash2, Copy, SmilePlus, Link2 } from 'lucide-react'
-import { BottomSheet } from '../ui/BottomSheet'
-import { MenuButton, MenuDivider } from '../sidebar-components/SidebarListMenu'
+import { TouchMenu } from '../ui/TouchMenu'
+import { SelectedMessagePreview } from './SelectedMessagePreview'
+import { MenuButton } from '../sidebar-components/SidebarListMenu'
 import { TOOLBAR_REACTIONS } from './MessageToolbar'
 import { extractLinks } from '../../utils/messageStyles'
 import { copyToClipboard } from '@/utils/clipboard'
@@ -22,6 +14,7 @@ const EmojiPicker = lazy(() => import('../EmojiPicker').then((m) => ({ default: 
 
 export interface MessageActionSheetProps {
   open: boolean
+  anchor?: HTMLElement | null
   onClose: () => void
   /** Reaction handler. When undefined, the room lacks stable identity so the reaction row is hidden. */
   onReaction?: (emoji: string) => void
@@ -39,6 +32,7 @@ export interface MessageActionSheetProps {
 
 export function MessageActionSheet({
   open,
+  anchor,
   onClose,
   onReaction,
   myReactions,
@@ -51,13 +45,19 @@ export function MessageActionSheet({
   canDelete,
 }: MessageActionSheetProps) {
   const { t } = useTranslation()
+  const emojiButtonRef = useRef<HTMLButtonElement>(null)
+  const linkButtonRef = useRef<HTMLButtonElement>(null)
+  const [lastSubmenu, setLastSubmenu] = useState<'links' | 'emoji' | null>(null)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [showLinkPicker, setShowLinkPicker] = useState(false)
 
-  // Always reset the inner picker on close so the sheet reopens on the actions view.
+  const back = () => { setShowEmojiPicker(false); setShowLinkPicker(false) }
+
+  // Always reset the inner picker on close so the menu reopens on the actions view.
   const close = () => {
     setShowEmojiPicker(false)
     setShowLinkPicker(false)
+    setLastSubmenu(null)
     onClose()
   }
 
@@ -85,14 +85,52 @@ export function MessageActionSheet({
   }
   const onCopyLinkClick = () => {
     if (links.length === 1) copyLink(links[0])
-    else setShowLinkPicker(true)
+    else { setLastSubmenu('links'); setShowLinkPicker(true) }
   }
 
+  const reactions = onReaction && !showEmojiPicker && !showLinkPicker ? (
+    <div className="flex items-center gap-1 px-2 pb-1">
+      {TOOLBAR_REACTIONS.map((emoji) => (
+        <button
+          type="button"
+          key={emoji}
+          onClick={() => react(emoji)}
+          className={`flex h-12 flex-1 items-center justify-center rounded-lg text-2xl transition-colors hover:bg-fluux-hover ${
+            myReactions.includes(emoji) ? 'bg-fluux-brand/20' : ''
+          }`}
+          aria-label={t('chat.reactWith', { emoji })}
+        >
+          {emoji}
+        </button>
+      ))}
+      <button
+        type="button"
+        ref={emojiButtonRef}
+        onClick={() => { setLastSubmenu('emoji'); setShowEmojiPicker(true) }}
+        className="flex h-12 flex-1 items-center justify-center rounded-lg transition-colors hover:bg-fluux-hover"
+        aria-label={t('chat.moreReactions')}
+      >
+        <SmilePlus className="size-6 text-fluux-muted" />
+      </button>
+    </div>
+  ) : null
+
   return (
-    <BottomSheet open={open} onClose={close} ariaLabel={t('chat.moreOptions')}>
+    <TouchMenu
+      open={open}
+      onClose={close}
+      anchor={anchor}
+      expanded={showEmojiPicker}
+      viewKey={showEmojiPicker ? 'emoji' : showLinkPicker ? 'links' : 'actions'}
+      onBack={showEmojiPicker || showLinkPicker ? back : undefined}
+      returnFocusRef={lastSubmenu === 'links' ? linkButtonRef : lastSubmenu === 'emoji' ? emojiButtonRef : undefined}
+      title={showLinkPicker ? t('chat.copyLinkChoose') : showEmojiPicker ? t('chat.moreReactions') : undefined}
+      reactions={reactions}
+      preview={<SelectedMessagePreview source={anchor} body={body} />}
+      ariaLabel={t('chat.moreOptions')}
+    >
       {showLinkPicker ? (
         <div className="pb-1">
-          <div className="px-3 py-2 text-sm text-fluux-muted">{t('chat.copyLinkChoose')}</div>
           {links.map((url) => (
             <MenuButton
               key={url}
@@ -106,41 +144,11 @@ export function MessageActionSheet({
       ) : showEmojiPicker ? (
         <div className="flex justify-center px-2 pb-2">
           <Suspense fallback={null}>
-            <EmojiPicker onSelect={react} onClose={() => setShowEmojiPicker(false)} />
+            <EmojiPicker closeOnEscape={false} dynamicWidth onSelect={react} onClose={() => setShowEmojiPicker(false)} />
           </Suspense>
         </div>
       ) : (
         <>
-          {/* Quick reactions (hidden when reactions are disabled for this room) */}
-          {onReaction && (
-            <>
-              <div className="flex items-center gap-1 px-2 pb-1">
-                {TOOLBAR_REACTIONS.map((emoji) => (
-                  <button
-                    type="button"
-                    key={emoji}
-                    onClick={() => react(emoji)}
-                    className={`flex h-12 flex-1 items-center justify-center rounded-lg text-2xl transition-colors hover:bg-fluux-hover ${
-                      myReactions.includes(emoji) ? 'bg-fluux-brand/20' : ''
-                    }`}
-                    aria-label={t('chat.reactWith', { emoji })}
-                  >
-                    {emoji}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setShowEmojiPicker(true)}
-                  className="flex h-12 flex-1 items-center justify-center rounded-lg transition-colors hover:bg-fluux-hover"
-                  aria-label={t('chat.moreReactions')}
-                >
-                  <SmilePlus className="size-6 text-fluux-muted" />
-                </button>
-              </div>
-              <MenuDivider />
-            </>
-          )}
-
           {/* Action rows — py-3 gives a comfortable >=44px touch target */}
           <div className="pb-1">
             {canReply && (
@@ -161,6 +169,7 @@ export function MessageActionSheet({
             )}
             {links.length > 0 && (
               <MenuButton
+                buttonRef={linkButtonRef}
                 onClick={onCopyLinkClick}
                 icon={<Link2 className="size-5" />}
                 label={t('chat.copyLink')}
@@ -187,6 +196,6 @@ export function MessageActionSheet({
           </div>
         </>
       )}
-    </BottomSheet>
+    </TouchMenu>
   )
 }

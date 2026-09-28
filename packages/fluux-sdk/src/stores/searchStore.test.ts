@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, expectTypeOf } from 'vitest'
 import { searchStore, setSearchClient, deduplicateMAMResults, parseInPrefix, getInPrefixSuggestions, type SearchResult } from './searchStore'
 import { chatStore } from './chatStore'
 import { roomStore } from './roomStore'
@@ -6,7 +6,7 @@ import { connectionStore } from './connectionStore'
 import * as searchIndex from '../utils/searchIndex'
 import type { SearchIndexResult } from '../utils/searchIndex'
 import * as messageCache from '../utils/messageCache'
-import type { RoomMessage } from '../core/types'
+import type { Message, RoomMessage } from '../core/types'
 
 // Mock the search index to avoid IDB dependency in store tests
 vi.mock('../utils/searchIndex', async () => {
@@ -353,6 +353,7 @@ describe('searchStore', () => {
       chatStore.setState({
         messages: new Map([['alice@example.com', [{
           id: 'resident-retraction',
+          stanzaId: undefined, originId: undefined,
           conversationId: 'alice@example.com',
           from: 'alice@example.com',
           body: 'launchcode',
@@ -393,8 +394,9 @@ describe('searchStore', () => {
     it('scopes colliding room message ids by sender', async () => {
       const roomJid = 'team@conference.example.com'
       const timestamp = new Date()
-      const aliceMessage = {
+      const aliceMessage: RoomMessage = {
         id: 'shared-id',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/Alice`,
         nick: 'Alice',
@@ -404,8 +406,9 @@ describe('searchStore', () => {
         type: 'groupchat' as const,
         isRetracted: true,
       }
-      const bobMessage = {
+      const bobMessage: RoomMessage = {
         id: 'shared-id',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/Bob`,
         nick: 'Bob',
@@ -450,8 +453,9 @@ describe('searchStore', () => {
     it('batches mixed cache verdicts without weakening retraction checks', async () => {
       const roomJid = 'team@conference.example.com'
       const timestamp = new Date()
-      const cachedRetracted = {
+      const cachedRetracted: Message = {
         id: 'cached-retracted',
+        stanzaId: undefined, originId: undefined,
         conversationId: 'alice@example.com',
         from: 'alice@example.com',
         body: 'launchcode deleted',
@@ -460,8 +464,9 @@ describe('searchStore', () => {
         type: 'chat' as const,
         isRetracted: true,
       }
-      const cachedOrdinary = {
+      const cachedOrdinary: Message = {
         id: 'cached-ordinary',
+        stanzaId: undefined, originId: undefined,
         conversationId: 'bob@example.com',
         from: 'bob@example.com',
         body: 'launchcode ordinary',
@@ -469,8 +474,9 @@ describe('searchStore', () => {
         isOutgoing: false,
         type: 'chat' as const,
       }
-      const aliceRoomMessage = {
+      const aliceRoomMessage: RoomMessage = {
         id: 'shared-id',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/Alice`,
         nick: 'Alice',
@@ -480,8 +486,9 @@ describe('searchStore', () => {
         type: 'groupchat' as const,
         isRetracted: true,
       }
-      const bobRoomMessage = {
+      const bobRoomMessage: RoomMessage = {
         id: 'shared-id',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/Bob`,
         nick: 'Bob',
@@ -742,6 +749,45 @@ describe('searchStore', () => {
       expect(deduplicateMAMResults(local, mam)).toEqual(mam)
     })
 
+    it('projects the delivery evidence into search results', () => {
+      expectTypeOf<SearchResult>().toHaveProperty('receivedAt')
+      expectTypeOf<SearchResult>().toHaveProperty('isDelayed')
+      expectTypeOf<SearchResult>().toHaveProperty('isOutgoing')
+    })
+
+    // Neither occupant ids nor archive ids: only the delivery channel tells a
+    // live result from its archive copy (docs/MESSAGE_IDENTIFIERS.md §3).
+    describe('a room result with only the from+id rung', () => {
+      // A live result's receipt instant is its timestamp; an archive copy is
+      // received later than the stamp it carries.
+      const room = (source: 'local' | 'mam', timestamp: number, isDelayed?: boolean): SearchResult => ({
+        ...makeResult('shared', source),
+        conversationId: 'room@conference.example.com',
+        isRoom: true,
+        from: 'room@conference.example.com/Alice',
+        timestamp,
+        receivedAt: isDelayed ? timestamp + 5_000 : timestamp,
+        ...(isDelayed ? { isDelayed } : {}),
+      })
+
+      it('keeps an equidistant delayed result separate from two first deliveries', () => {
+        const local = [room('local', 1000), room('local', 2000)]
+        const delayed = { ...room('mam', 1500, true), receivedAt: 3000 }
+        expect(deduplicateMAMResults(local, [delayed])).toEqual([delayed])
+        expect(deduplicateMAMResults([...local].reverse(), [delayed])).toEqual([delayed])
+        expect(deduplicateMAMResults(local, [{ ...delayed, timestamp: 1900 }])).toEqual([])
+      })
+
+      it('dedups the archive copy of a live result', () => {
+        expect(deduplicateMAMResults([room('local', 1_000)], [room('mam', 1_200, true)])).toEqual([])
+      })
+
+      it('keeps a second live result received at another instant', () => {
+        const other = room('mam', 2_000)
+        expect(deduplicateMAMResults([room('local', 1_000)], [other])).toEqual([other])
+      })
+    })
+
     // F3: the dedup is now strictly NARROWER than the old messageId-only Set —
     // it also requires the ladder to agree. That is right for occupant
     // collisions, but it means any disagreement between the local and MAM
@@ -859,10 +905,10 @@ describe('searchStore', () => {
       // Set up messageCache to return context messages
       vi.mocked(messageCache.getMessages)
         .mockResolvedValueOnce([
-          { id: 'msg-1', conversationId: 'alice@example.com', from: 'alice@example.com', body: 'Previous message', timestamp: new Date(now - 5000), isOutgoing: false, type: 'chat' as const },
+          { id: 'msg-1', stanzaId: undefined, originId: undefined, conversationId: 'alice@example.com', from: 'alice@example.com', body: 'Previous message', timestamp: new Date(now - 5000), isOutgoing: false, type: 'chat' as const },
         ]) // before
         .mockResolvedValueOnce([
-          { id: 'msg-3', conversationId: 'alice@example.com', from: 'bob@example.com', body: 'Next message', timestamp: new Date(now + 5000), isOutgoing: false, type: 'chat' as const },
+          { id: 'msg-3', stanzaId: undefined, originId: undefined, conversationId: 'alice@example.com', from: 'bob@example.com', body: 'Next message', timestamp: new Date(now + 5000), isOutgoing: false, type: 'chat' as const },
         ]) // after
 
       searchStore.getState().search('hello')
@@ -900,8 +946,8 @@ describe('searchStore', () => {
       vi.mocked(messageCache.getMessages)
         .mockResolvedValueOnce([]) // before: nothing
         .mockResolvedValueOnce([
-          { id: 'msg-2', conversationId: 'alice@example.com', from: 'alice@example.com', body: 'Hello from Alice', timestamp: new Date(now), isOutgoing: false, type: 'chat' as const },
-          { id: 'msg-3', conversationId: 'alice@example.com', from: 'bob@example.com', body: 'Reply', timestamp: new Date(now + 5000), isOutgoing: false, type: 'chat' as const },
+          { id: 'msg-2', stanzaId: undefined, originId: undefined, conversationId: 'alice@example.com', from: 'alice@example.com', body: 'Hello from Alice', timestamp: new Date(now), isOutgoing: false, type: 'chat' as const },
+          { id: 'msg-3', stanzaId: undefined, originId: undefined, conversationId: 'alice@example.com', from: 'bob@example.com', body: 'Reply', timestamp: new Date(now + 5000), isOutgoing: false, type: 'chat' as const },
         ]) // after: includes matched msg + next
 
       searchStore.getState().search('hello')
@@ -914,6 +960,65 @@ describe('searchStore', () => {
       const ctx = searchStore.getState().resultContext.get('chat:msg-2')
       expect(ctx!.after).toHaveLength(1)
       expect(ctx!.after[0].body).toBe('Reply')
+    })
+
+    // A reused nick in a room with neither occupant ids nor archive ids: Alice's
+    // tombstone and Bob's live row share from+id. Bob's archive copy is about
+    // Bob's row, the one closest in time, never Alice's.
+    it('resolves Bob\'s archive copy to Bob\'s row, as a result and as context', async () => {
+      const roomJid = 'team@conference.example.com'
+      const from = `${roomJid}/alice`
+      const shared = { id: 'reused', from, nick: 'alice', roomJid, type: 'groupchat' as const, isOutgoing: false,
+        stanzaId: undefined, originId: undefined, occupantId: undefined }
+      const alice: RoomMessage = { ...shared, body: '', timestamp: new Date(now - 60_000), receivedAt: new Date(now - 60_000), isRetracted: true }
+      const bob: RoomMessage = { ...shared, body: 'bob launchcode', timestamp: new Date(now), receivedAt: new Date(now) }
+      const bobArchived: RoomMessage = { ...bob, timestamp: new Date(now + 250), receivedAt: new Date(now + 500), isDelayed: true }
+      roomStore.setState({ messages: new Map([[roomJid, [alice, bob]]]) })
+      vi.mocked(searchIndex.search).mockResolvedValueOnce([
+        {
+          indexId: 'room:bob', stanzaId: undefined, originId: undefined, occupantId: undefined,
+          messageId: 'reused', conversationId: roomJid, from, nick: 'alice',
+          timestamp: now + 250, isRoom: true, body: 'bob launchcode', isDelayed: true, receivedAt: now + 500,
+        },
+        {
+          indexId: 'room:carol', stanzaId: undefined, originId: undefined, occupantId: undefined,
+          messageId: 'carol-1', conversationId: roomJid, from: `${roomJid}/carol`, nick: 'carol',
+          timestamp: now + 5_000, isRoom: true, body: 'carol launchcode',
+        },
+      ])
+      vi.mocked(messageCache.getRoomMessages).mockImplementation(async (_jid, options) =>
+        options?.before && +options.before === now + 5_000 ? [bobArchived] : [])
+
+      searchStore.getState().search('launchcode')
+      await vi.runAllTimersAsync()
+
+      expect(searchStore.getState().results.map((result) => result.body).sort()).toEqual(['bob launchcode', 'carol launchcode'])
+      await vi.waitFor(() => {
+        expect(searchStore.getState().resultContext.get('room:carol')?.before).toEqual([
+          expect.objectContaining({ body: 'bob launchcode', isRetracted: undefined }),
+        ])
+      })
+    })
+
+    it.each([1500, 1900])('selects context exclusions across both buckets for stamp %i', async (stamp) => {
+      const roomJid = 'team@conference.example.com'
+      const from = `${roomJid}/alice`
+      const shared = { id: 'reused', roomJid, from, nick: 'alice', type: 'groupchat' as const,
+        isOutgoing: false, stanzaId: undefined, originId: undefined, occupantId: undefined }
+      const alice: RoomMessage = { ...shared, body: 'first launchcode', timestamp: new Date(1000), receivedAt: new Date(1000) }
+      const bob: RoomMessage = { ...shared, body: 'second launchcode', timestamp: new Date(2000), receivedAt: new Date(2000) }
+      vi.mocked(searchIndex.search).mockResolvedValueOnce([{
+        indexId: 'room:delayed', messageId: 'reused', conversationId: roomJid, from, nick: 'alice',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
+        timestamp: stamp, receivedAt: 3000, isDelayed: true, isRoom: true, body: 'delayed launchcode',
+      }])
+      vi.mocked(messageCache.getRoomMessages).mockImplementation(async (_jid, options) =>
+        options?.before ? [alice] : [bob])
+      searchStore.getState().search('launchcode')
+      await vi.runAllTimersAsync()
+      const context = searchStore.getState().resultContext.get('room:delayed')
+      expect(context?.before.map(row => row.body)).toEqual(['first launchcode'])
+      expect(context?.after.map(row => row.body)).toEqual(stamp === 1500 ? ['second launchcode'] : [])
     })
 
     it('keeps an occupant-conflicting same-id room row in context', async () => {
@@ -934,6 +1039,7 @@ describe('searchStore', () => {
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{
           id: 'shared',
+          stanzaId: undefined, originId: undefined,
           roomJid: 'room@conference.example.com',
           from: 'room@conference.example.com/Alice',
           nick: 'Alice',
@@ -970,6 +1076,7 @@ describe('searchStore', () => {
       vi.mocked(messageCache.getMessages)
         .mockResolvedValueOnce([{
           id: 'msg-1',
+          stanzaId: undefined, originId: undefined,
           conversationId: 'alice@example.com',
           from: 'alice@example.com',
           body: 'launchcode',
@@ -1014,6 +1121,7 @@ describe('searchStore', () => {
       vi.mocked(messageCache.getMessages)
         .mockResolvedValueOnce([{
           id: 'cached-tombstone',
+          stanzaId: undefined, originId: undefined,
           conversationId: 'alice@example.com',
           from: 'alice@example.com',
           body: 'launchcode',
@@ -1038,7 +1146,7 @@ describe('searchStore', () => {
     it.each(['cache', 'resident', 'pending'])('preserves Spam moderation in both room context projections from %s', async source => {
       const roomJid = 'room@conference.example.com'
       const metadata = { isModerated: true as const, moderationReason: 'Spam', moderatedBy: `${roomJid}/Moderator` }
-      const before = { type: 'groupchat' as const, roomJid, id: 'spam-before', stanzaId: 'archive-before',
+      const before = { type: 'groupchat' as const, roomJid, id: 'spam-before', stanzaId: 'archive-before', originId: undefined,
         from: `${roomJid}/Spammer`, nick: 'Spammer', occupantId: 'spammer', body: 'spam before', timestamp: new Date(now - 5000), isOutgoing: false }
       const after = { ...before, id: 'spam-after', stanzaId: 'archive-after', body: 'spam after', timestamp: new Date(now + 5000) }
 
@@ -1089,9 +1197,37 @@ describe('searchStore', () => {
   // ===========================================================================
 
   describe('searchMAM', () => {
+    it.each(['stanzaId', 'originId'] as const)('resolves rewritten client IDs by %s in local and archive search', async (tier) => {
+      const roomJid = 'team@conference.example.com'
+      const shared = { roomJid, from: `${roomJid}/alice`, nick: 'alice', type: 'groupchat' as const,
+        isOutgoing: false, stanzaId: undefined, originId: undefined, occupantId: undefined }
+      const alice: RoomMessage = { ...shared, id: 'i', body: '', timestamp: new Date(1000), receivedAt: new Date(1000), isRetracted: true }
+      const bob: RoomMessage = { ...shared, id: 'j', [tier]: 'S', body: 'bob launchcode', timestamp: new Date(2000), receivedAt: new Date(2000) }
+      const archived: RoomMessage = { ...bob, id: 'i', receivedAt: new Date(3000), isDelayed: true }
+      roomStore.setState({ rooms: new Map([[roomJid, { jid: roomJid } as any]]), messages: new Map([[roomJid, [alice, bob]]]) })
+      vi.mocked(searchIndex.search).mockResolvedValueOnce([{
+        indexId: 'room:bob', messageId: archived.id, conversationId: roomJid, from: archived.from,
+        nick: archived.nick, stanzaId: archived.stanzaId, originId: archived.originId, occupantId: undefined,
+        timestamp: 2000, receivedAt: 3000, isDelayed: true, isRoom: true, body: archived.body,
+      }])
+      searchStore.getState().search('launchcode')
+      await vi.runAllTimersAsync()
+      expect(searchStore.getState().results).toEqual([expect.objectContaining({ body: 'bob launchcode', [tier]: 'S' })])
+
+      const client = createMockMAMClient({ searchRoomArchiveResults: [archived] })
+      setSearchClient(client as any)
+      connectionStore.getState().setMAMFulltextSearch(true)
+      searchStore.setState({ query: 'launchcode', searchScope: roomJid, results: [], mamResults: [] })
+      searchStore.getState().searchMAM()
+      await vi.runAllTimersAsync()
+      expect(searchStore.getState().mamResults).toEqual([expect.objectContaining({ body: 'bob launchcode', [tier]: 'S' })])
+      expect(roomStore.getState().messages.get(roomJid)).toEqual([alice, bob])
+      expect(bob.isRetracted).toBeUndefined()
+    })
+
     it('projects separate room-scoped keys for confirmed messages with reused client IDs', async () => {
       const roomJid = 'team@conference.example.com'
-      const message: RoomMessage = { type: 'groupchat', roomJid, id: 'reused', occupantId: 'same-author',
+      const message: RoomMessage = { type: 'groupchat', roomJid, id: 'reused', stanzaId: undefined, originId: undefined, occupantId: 'same-author',
         from: `${roomJid}/Alice`, nick: 'Alice', body: 'hello first', timestamp: new Date(1000), isOutgoing: false }
       const rows = ['archive-a', 'archive-b'].map((stanzaId, index) => {
         const row = { ...message, stanzaId, body: `hello ${index}`, timestamp: new Date(1000 + index) }
@@ -1342,8 +1478,9 @@ describe('searchStore', () => {
     it('does not inherit a departed occupant resident tombstone', async () => {
       const roomJid = 'team@conference.example.com'
       const timestamp = new Date()
-      const shared = {
+      const shared: RoomMessage = {
         id: 'colliding-room-result',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/Alice`,
         nick: 'Alice',
@@ -1541,8 +1678,9 @@ describe('searchStore', () => {
     it('uses local index occupant identity to recognize a resident tombstone', async () => {
       const roomJid = 'team@conference.example.com'
       const timestamp = Date.now()
-      const shared = {
+      const shared: RoomMessage = {
         id: 'colliding-local-result',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/Alice`,
         nick: 'Alice',
@@ -1589,8 +1727,9 @@ describe('searchStore', () => {
     it('continues to a stronger resident reference after an ambiguous client id', async () => {
       const roomJid = 'team@conference.example.com'
       const timestamp = Date.now()
-      const shared = {
+      const shared: RoomMessage = {
         id: 'reused-client-id',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/Alice`,
         nick: 'Alice',
@@ -1646,6 +1785,7 @@ describe('searchStore', () => {
           isOutgoing: false,
           type: 'chat' as const,
           stanzaId: 'ARCHIVE-OTHER',
+          originId: undefined,
         }]]]),
       })
       vi.mocked(searchIndex.search).mockResolvedValueOnce([{

@@ -84,6 +84,7 @@ vi.mock('./tanstackMessageVirtualizer', () => ({
 function makeMessages(count: number): BaseMessage[] {
   return Array.from({ length: count }, (_, i) => ({
     id: `msg-${i}`,
+    stanzaId: undefined, originId: undefined,
     from: 'user@example.com',
     body: `Body ${i}`,
     timestamp: new Date(2024, 0, 1, 12, i),
@@ -94,7 +95,7 @@ function makeMessages(count: number): BaseMessage[] {
 
 describe('MessageList — virtualized render path (flag ON)', () => {
   it('deduplicates direct-chat IDs and preserves mounted row state during archive backfill', () => {
-    const first: BaseMessage = { type: 'chat', id: 'direct', from: 'peer@example.com',
+    const first: BaseMessage = { type: 'chat', id: 'direct', stanzaId: undefined, originId: undefined, from: 'peer@example.com',
       body: 'Direct message', timestamp: new Date(1000), isOutgoing: false }
     const renderMessage = (msg: BaseMessage) => <input aria-label={msg.body} defaultValue="Local row state" />
     const { container, rerender } = render(<MessageList messages={[first]} conversationId="peer@example.com" renderMessage={renderMessage} />)
@@ -113,7 +114,7 @@ describe('MessageList — virtualized render path (flag ON)', () => {
 
   it.each(['body', 'timestamp'])('renders uncertain and confirmed rows with reused client IDs when %s differs', difference => {
     const first: RoomMessage = { type: 'groupchat', roomJid: 'room@example.com', from: 'room@example.com/Peer', nick: 'Peer',
-      id: 'shared', occupantId: 'peer', stanzaId: 'same', body: 'Uncertain row', timestamp: new Date(1000), isOutgoing: false }
+      id: 'shared', originId: undefined, occupantId: 'peer', stanzaId: 'same', body: 'Uncertain row', timestamp: new Date(1000), isOutgoing: false }
     const second = roomMessageFixture({ ...first, stanzaId: 'later-archive',
       ...(difference === 'body' ? { body: 'Confirmed row' } : { timestamp: new Date(2000) }) })
     const { container, rerender } = render(<MessageList messages={[first, second]}
@@ -157,6 +158,23 @@ describe('MessageList — virtualized render path (flag ON)', () => {
     expect(rows).toHaveLength(2)
     expect(new Set(rows.map(row => row.dataset.messageRowId)).size).toBe(2)
     expect(container.textContent).toContain('Second archive row')
+    const keys = _capturedAdapterArgs.items!.map(item => item.key)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  // Two first deliveries sharing a client id with no occupant id and no archive
+  // id share one row HANDLE (the delivery-channel clause in
+  // docs/MESSAGE_IDENTIFIERS.md keeps them as two rows). The virtualizer keys
+  // rows, measures them and positions them by item key, so that key must still
+  // tell them apart or both rows land on one slot.
+  it('keys two occupant-less, archive-less rows sharing a client id separately', () => {
+    const departed = { ...makeMessages(1)[0], type: 'groupchat' as const, body: 'departed' }
+    const newcomer = { ...departed, body: 'newcomer', timestamp: new Date(2024, 0, 1, 12, 1) }
+    const { container } = render(<MessageList messages={[departed, newcomer]}
+      conversationId="room@example.com" renderMessage={msg => <div>{msg.body}</div>} />)
+    const rows = [...container.querySelectorAll<HTMLElement>('.message-row')]
+    expect(rows.map(row => row.textContent)).toEqual(['departed', 'newcomer'])
+    expect(rows.map(row => row.dataset.messageRowId)).toEqual(['msg-0', 'msg-0'])
     const keys = _capturedAdapterArgs.items!.map(item => item.key)
     expect(new Set(keys).size).toBe(keys.length)
   })

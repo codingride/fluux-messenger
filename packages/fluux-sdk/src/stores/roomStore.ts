@@ -23,6 +23,8 @@ import {
   findMessageRowIndex,
   identityKeys,
   mergeableOccupantCandidates,
+  adoptDeliveryEvidence,
+  selectRoomMergeTargets,
   resolveMessageReference,
   messageReferences,
   correctionReferences,
@@ -86,14 +88,14 @@ import { sortMessagesByTimestamp } from './shared/messageArrayUtils'
 /**
  * Carry a previously-resolved avatar across a presence update.
  *
- * Presence stanzas only carry the XEP-0153 avatar *hash*; the resolved blob URL
+ * Presence stanzas only carry the XEP-0153 avatar *hash*; the resolved avatar URL
  * arrives asynchronously and is written via `updateOccupantAvatar`. Without this,
  * every plain presence refresh (status/role change) would overwrite the occupant
- * with the freshly-parsed, blob-less object — silently dropping the avatar. Message
- * rows survive via `nickToAvatarCache`, but the members panel reads `occupant.avatar`
- * directly, so the avatar would vanish there until the hash next changes.
+ * with the freshly-parsed object lacking an avatar. Message rows survive via
+ * `nickToAvatarCache`, but the members panel reads `occupant.avatar` directly,
+ * so the avatar would vanish there until the hash next changes.
  *
- * Keep the existing blob when the incoming presence has no blob and its hash is
+ * Keep the existing avatar URL when the incoming presence has no URL and its hash is
  * unchanged or absent. Drop it only when the hash actually changed, so the async
  * XEP-0398 fetch repopulates a fresh one.
  */
@@ -653,7 +655,10 @@ function roomTimelineConfig(): timeline.TimelineConfig<RoomMessage> {
   return {
     getKeys: getRoomMessageKeys,
     sameMessage: (a, b) => sameLogicalMessage(roomScope(a.roomJid), a, b) && roomStanzaIdsMergeable(a, b),
-    getMergeCandidates: (incoming, candidates) => mergeableOccupantCandidates(incoming, candidates).filter(candidate => roomStanzaIdsMergeable(incoming, candidate)),
+    getMergeCandidates: (incoming, candidates) => {
+      const mergeable = mergeableOccupantCandidates(incoming, candidates).filter(candidate => roomStanzaIdsMergeable(incoming, candidate))
+      return selectRoomMergeTargets(roomScope(incoming.roomJid), incoming, mergeable)
+    },
     mergeIdentity: (current, donor) => {
       const identified = backfillRoomStanzaId(current, donor)
       return donor.isRetracted
@@ -1599,7 +1604,6 @@ export const roomStore = createStore<RoomState>()(
       if (!existing) return state
 
       const newOccupants = new Map(existing.occupants)
-      // Presence carries only the avatar hash — keep an already-fetched blob alive.
       const previousAtNick = existing.occupants.get(occupant.nick)
       const merged = preserveOccupantAvatar(previousAtNick, occupant)
       newOccupants.set(merged.nick, merged)
@@ -1686,7 +1690,6 @@ export const roomStore = createStore<RoomState>()(
 
       // Add all occupants in a single update
       for (const occupant of occupants) {
-        // Presence carries only the avatar hash — keep an already-fetched blob alive.
         const previousAtNick = newOccupants.get(occupant.nick)
         const merged = preserveOccupantAvatar(previousAtNick, occupant)
         newOccupants.set(merged.nick, merged)
@@ -2110,11 +2113,14 @@ export const roomStore = createStore<RoomState>()(
         finish()
       }
     }
-    for (const current of get().messages.get(roomJid) ?? []) {
-      if (roomStanzaIdsMergeable(incoming, current) && sameLogicalMessage(roomScope(roomJid), incoming, current)) {
-        incoming = backfillRoomStanzaId(incoming, current)
-      }
-    }
+    // A copy attaches to at most one held row (docs/MESSAGE_IDENTIFIERS.md §3):
+    // resolve it once, take that row's archive ids and delivery evidence, and only
+    // then let the pending and ledger retraction checks below judge it as the
+    // message the client first received rather than as the channel it came by.
+    const scope = roomScope(roomJid)
+    const held = selectRoomMergeTargets(scope, incoming, (get().messages.get(roomJid) ?? []).filter((current) =>
+      roomStanzaIdsMergeable(incoming, current) && sameLogicalMessage(scope, incoming, current)))[0]
+    if (held) incoming = adoptDeliveryEvidence(backfillRoomStanzaId(incoming, held), held)
 
     // XEP-0424: a retraction can outrun its target (live retraction against a
     // non-resident message, out-of-order delivery). Tombstone BEFORE the save
@@ -2591,7 +2597,7 @@ export const roomStore = createStore<RoomState>()(
       if (targetIdx === -1) return state
 
       const newMessages = [...resident]
-      const { stanzaId: _staleStanzaId, ...updatedMessage } = resident[targetIdx]
+      const updatedMessage = { ...resident[targetIdx], stanzaId: undefined }
       newMessages[targetIdx] = updatedMessage
 
       void messageCache.updateRoomMessage(
@@ -2680,22 +2686,40 @@ export const roomStore = createStore<RoomState>()(
     // where its identity is still canonical. Resolve and tombstone it there now,
     // instead of leaving the body readable until something reloads the message.
     void retractUnresidentRoomTarget(roomJid, record, storageScopeAtStart).then((outcome) => {
-      // Switching accounts during this probe leaves a consumed authoritative
-      // record persisted for the old account. After switching back, if the
-      // authoritative row is not resident, an unrelated lower-tier match can
-      // consume the stale record. This window is bounded to the in-flight
-      // account switch; closing it requires account-scoped durable mutation
-      // after the active scope changes.
-      if (outcome === 'pending' || getStorageScopeJid() !== storageScopeAtStart) return
+      if (outcome === 'pending') return
+      if (getStorageScopeJid() !== storageScopeAtStart) {
+        // The account switched during the probe, so the live state is another
+        // account's. The settled record is removed from the starting account's
+        // persisted list directly: left there, it would be replayed on the next
+        // switch back, where a lower-tier match by the same author could consume
+        // it. Synchronous, so it cannot interleave with a switch back.
+        if (storageScopeAtStart === null) return
+        const stored = loadPendingRetractionsFromStorage(storageScopeAtStart)
+        const existing = stored.get(roomJid) ?? []
+        const remaining = removePendingRetraction(existing, record)
+        if (remaining === existing) return
+        if (remaining.length === 0) stored.delete(roomJid)
+        else stored.set(roomJid, remaining)
+        savePendingRetractionsToStorage(stored, storageScopeAtStart)
+        return
+      }
       set((state) => {
+        const entry = state.firstNewMessageCounts.get(roomJid)
+        const updated = entry && typeof outcome !== 'string' && isSpamModerated(outcome.message)
+          ? notifState.updateRowsUnderDivider(entry, [outcome.message], { kind: 'room', roomJid }, 'room')
+          : entry
+        const firstNewMessageCounts = updated && updated !== entry
+          ? new Map(state.firstNewMessageCounts).set(roomJid, updated)
+          : state.firstNewMessageCounts
         const existing = state.pendingRetractions.get(roomJid) ?? []
         const remaining = removePendingRetraction(existing, record)
-        if (remaining === existing) return state
+        if (remaining === existing) return firstNewMessageCounts === state.firstNewMessageCounts
+          ? state : { firstNewMessageCounts }
         const nextPending = new Map(state.pendingRetractions)
         if (remaining.length === 0) nextPending.delete(roomJid)
         else nextPending.set(roomJid, remaining)
         savePendingRetractionsToStorage(nextPending)
-        return { pendingRetractions: nextPending }
+        return { pendingRetractions: nextPending, firstNewMessageCounts }
       })
     })
   },

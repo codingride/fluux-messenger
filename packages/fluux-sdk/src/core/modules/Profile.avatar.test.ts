@@ -25,6 +25,9 @@ const WEBP_BASE64 = toBase64([
   0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
 ]) // "RIFF....WEBP"
 
+const VCARD_BASE64 = 'aW1hZ2U='
+const VCARD_HASH = '0e76292794888d4f1fa75fb3aff4ca27c58f56a6' // SHA-1 of decoded VCARD_BASE64
+
 let mockXmppClientInstance: MockXmppClient
 
 // Use vi.hoisted to create the mock factory at hoist time
@@ -62,6 +65,7 @@ vi.mock('../../utils/avatarCache', () => ({
   getCachedAvatar: vi.fn().mockResolvedValue(null),
   cacheAvatar: vi.fn().mockResolvedValue('blob:cached-url'),
   saveAvatarHash: vi.fn().mockResolvedValue(undefined),
+  deleteAvatarHash: vi.fn().mockResolvedValue(undefined),
   getAvatarHash: vi.fn().mockResolvedValue(null),
   getAllAvatarHashes: vi.fn().mockResolvedValue([]),
   tryGetAllAvatarHashes: vi.fn().mockResolvedValue([]),
@@ -770,7 +774,7 @@ describe('XMPPClient Own Avatar', () => {
               name: 'PHOTO',
               children: [
                 { name: 'TYPE', text: 'image/jpeg' },
-                { name: 'BINVAL', text: 'base64roomavatardata' },
+                { name: 'BINVAL', text: VCARD_BASE64 },
               ],
             },
           ],
@@ -779,18 +783,18 @@ describe('XMPPClient Own Avatar', () => {
 
       mockXmppClientInstance.iqCaller.request.mockResolvedValue(vcardResponse)
 
-      await xmppClient.profile.fetchRoomAvatar('room@conference.example.com', 'known-hash-123')
+      await xmppClient.profile.fetchRoomAvatar('room@conference.example.com', VCARD_HASH)
 
       // Should cache the avatar
-      expect(cacheAvatar).toHaveBeenCalledWith('known-hash-123', 'base64roomavatardata', 'image/jpeg')
+      expect(cacheAvatar).toHaveBeenCalledWith(VCARD_HASH, VCARD_BASE64, 'image/jpeg')
 
       // Should save the hash mapping
-      expect(saveAvatarHash).toHaveBeenCalledWith('room@conference.example.com', 'known-hash-123', 'room')
+      expect(saveAvatarHash).toHaveBeenCalledWith('room@conference.example.com', VCARD_HASH, 'room')
 
       // Should emit room:updated with avatar
       expect(emitSDKSpy).toHaveBeenCalledWith('room:updated', {
         roomJid: 'room@conference.example.com',
-        updates: { avatar: 'blob:room-avatar-cached', avatarHash: 'known-hash-123' },
+        updates: { avatar: 'blob:room-avatar-cached', avatarHash: VCARD_HASH },
       })
     })
 
@@ -994,7 +998,7 @@ describe('XMPPClient Own Avatar', () => {
     it('should refresh stale blob URLs for contacts and rooms', async () => {
       emitSDKSpy.mockClear()
 
-      const { refreshAllBlobUrls, tryGetAllAvatarHashes } = await import('../../utils/avatarCache')
+      const { refreshAllBlobUrls, tryGetAllAvatarHashes, getAvatarHash } = await import('../../utils/avatarCache')
       vi.mocked(refreshAllBlobUrls).mockResolvedValue(new Map([
         ['hash-c1', 'blob:fresh-contact1'],
         ['hash-r1', 'blob:fresh-room1'],
@@ -1003,6 +1007,7 @@ describe('XMPPClient Own Avatar', () => {
         { jid: 'alice@example.com', hash: 'hash-c1', type: 'contact' },
         { jid: 'room@conference.example.com', hash: 'hash-r1', type: 'room' },
       ])
+      vi.mocked(getAvatarHash).mockResolvedValue('hash-c1')
 
       mockStores.roster.getContact.mockReturnValue({ jid: 'alice@example.com', name: 'Alice', presence: 'offline', subscription: 'both', avatarHash: 'hash-c1' })
       mockStores.room.getRoom.mockReturnValue({
@@ -1174,6 +1179,7 @@ describe('XMPPClient Own Avatar', () => {
       mockStores.roster.sortedContacts.mockReturnValue([
         { jid: 'seb@example.com', name: 'Seb', presence: 'online', subscription: 'both', avatar: 'blob:dead-seb', avatarHash: 'hash-seb' },
       ])
+      mockStores.roster.getContact.mockImplementation(jid => mockStores.roster.sortedContacts().find(contact => contact.jid === jid))
 
       await xmppClient.profile.refreshAllAvatarBlobUrls()
 
@@ -1195,6 +1201,7 @@ describe('XMPPClient Own Avatar', () => {
       mockStores.roster.sortedContacts.mockReturnValue([
         { jid: 'seb@example.com', name: 'Seb', presence: 'online', subscription: 'both', avatar: 'blob:dead-seb', avatarHash: 'hash-seb' },
       ])
+      mockStores.roster.getContact.mockImplementation(jid => mockStores.roster.sortedContacts().find(contact => contact.jid === jid))
 
       await xmppClient.profile.refreshAllAvatarBlobUrls()
 
@@ -1660,7 +1667,7 @@ describe('XMPPClient Own Avatar', () => {
                 name: 'PHOTO',
                 children: [
                   { name: 'TYPE', text: 'image/png' },
-                  { name: 'BINVAL', text: 'base64avatardata' },
+                  { name: 'BINVAL', text: VCARD_BASE64 },
                 ],
               },
             ],
@@ -1674,7 +1681,7 @@ describe('XMPPClient Own Avatar', () => {
         await xmppClient.profile.fetchOccupantAvatar(
           'room@conference.example.com',
           'HasAvatar',
-          'avatar-hash',
+          VCARD_HASH,
           'hasavatar@example.com'
         )
 
@@ -1684,7 +1691,7 @@ describe('XMPPClient Own Avatar', () => {
           roomJid: 'room@conference.example.com',
           nick: 'HasAvatar',
           avatar: 'blob:occupant-avatar',
-          avatarHash: 'avatar-hash',
+          avatarHash: VCARD_HASH,
         })
       })
 

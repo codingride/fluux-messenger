@@ -1,3 +1,6 @@
+pub(crate) mod commands;
+#[cfg(target_os = "android")]
+mod android;
 mod dns;
 mod framing;
 mod happy_eyeballs;
@@ -23,7 +26,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio_rustls::rustls::pki_types::ServerName;
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::rustls::ClientConfig;
+#[cfg(not(target_os = "ios"))]
+use tokio_rustls::rustls::RootCertStore;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -305,7 +310,7 @@ impl rustls::client::danger::ServerCertVerifier for InsecureCertVerifier {
     }
 }
 
-/// Create a TLS connector using the system's native root certificates.
+/// Create a TLS connector using system trust, or bundled Mozilla roots on Android.
 ///
 /// Used by both `DirectTls` connections and `STARTTLS` upgrades to avoid
 /// duplicating the TLS setup logic.
@@ -324,24 +329,46 @@ fn create_tls_connector() -> Result<TlsConnector, String> {
         return Ok(TlsConnector::from(Arc::new(config)));
     }
 
-    let mut root_store = RootCertStore::empty();
-    let native_certs = rustls_native_certs::load_native_certs();
-    if native_certs.certs.is_empty() {
-        return Err(
-            "No system root certificates found. TLS connections will fail. \
-            Ensure CA certificates are installed (e.g., ca-certificates package on Linux)."
-                .to_string(),
-        );
-    }
-    for cert in native_certs.certs {
-        root_store
-            .add(cert)
-            .map_err(|e| format!("Failed to add cert: {}", e))?;
-    }
+    #[cfg(target_os = "ios")]
+    let config = {
+        // iOS does not expose a Unix CA bundle. Validate against Apple's trust
+        // policy, including the reference name already selected by the proxy.
+        use rustls_platform_verifier::BuilderVerifierExt;
+        ClientConfig::builder()
+            .with_platform_verifier()
+            .map_err(|e| format!("Failed to initialize iOS TLS verifier: {e}"))?
+            .with_no_client_auth()
+    };
+    #[cfg(target_os = "android")]
+    let config = {
+        // No Unix CA bundle or Java verifier initialization is required. Private
+        // roots installed on the device are not included in this trust policy.
+        let root_store = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth()
+    };
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let config = {
+        let mut root_store = RootCertStore::empty();
+        let native_certs = rustls_native_certs::load_native_certs();
+        if native_certs.certs.is_empty() {
+            return Err(
+                "No system root certificates found. TLS connections will fail. \
+                Ensure CA certificates are installed (e.g., ca-certificates package on Linux)."
+                    .to_string(),
+            );
+        }
+        for cert in native_certs.certs {
+            root_store
+                .add(cert)
+                .map_err(|e| format!("Failed to add cert: {}", e))?;
+        }
 
-    let config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+        ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth()
+    };
 
     Ok(TlsConnector::from(Arc::new(config)))
 }

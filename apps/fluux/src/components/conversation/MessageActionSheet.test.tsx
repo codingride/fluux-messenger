@@ -40,6 +40,20 @@ const baseProps = {
 }
 
 describe('MessageActionSheet', () => {
+  it('shows the selected message between separate reactions and actions', () => {
+    const anchor = document.createElement('div')
+    anchor.textContent = 'The selected message'
+    render(<MessageActionSheet {...baseProps} anchor={anchor} />)
+    const dialog = screen.getByRole('dialog')
+    const preview = dialog.querySelector('[data-message-preview]')
+    expect(preview).not.toBeNull()
+    expect(preview).toHaveTextContent('The selected message')
+    const reactions = screen.getByLabelText('React with 👍').closest('[data-touch-menu-reactions]')!
+    const actions = screen.getByText('Reply').closest('[data-touch-menu-actions]')!
+    expect(reactions.compareDocumentPosition(preview!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(preview!.compareDocumentPosition(actions)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+
   it('renders nothing when closed', () => {
     render(<MessageActionSheet {...baseProps} open={false} />)
     expect(screen.queryByText('Reply')).toBeNull()
@@ -121,5 +135,22 @@ describe('MessageActionSheet copy-link', () => {
     expect(screen.getByText('Copy which link?')).toBeInTheDocument()
     fireEvent.click(screen.getByText('https://b.com'))
     expect(copyMock).toHaveBeenCalledWith('https://b.com')
+  })
+})
+
+describe('MessageActionSheet submenu navigation', () => {
+  it('keeps focus in the link chooser and returns to its opener before closing on Escape', () => {
+    const onClose = vi.fn()
+    render(<MessageActionSheet {...linkBaseProps} onClose={onClose} body="https://a.com and https://b.com" />)
+    const copyLink = screen.getByRole('button', { name: 'Copy link' })
+    copyLink.focus()
+    fireEvent.click(copyLink)
+    const back = screen.getByRole('button', { name: 'common.back' })
+    expect(back).toHaveFocus()
+    fireEvent.keyDown(back, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Copy link' })).toHaveFocus()
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledOnce()
   })
 })

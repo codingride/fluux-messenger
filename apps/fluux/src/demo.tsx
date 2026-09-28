@@ -1,3 +1,5 @@
+import { ShareInbox } from './components/ShareInbox'
+import { demoShareInbox } from './demo/shareInbox'
 /**
  * Demo entry point — renders the full Fluux UI with realistic fake data.
  *
@@ -32,6 +34,11 @@ import { installDemoLoadOlder, seedStressConversation } from './demo/demoLoadOld
 import App from './App'
 import i18n from './i18n'
 import './index.css'
+import { installMobileViewport } from './utils/mobileViewport'
+import { installMobilePageZoom } from './utils/mobilePageZoom'
+
+installMobileViewport()
+installMobilePageZoom()
 
 // Parse URL parameters
 const params = new URLSearchParams(window.location.search)
@@ -284,6 +291,7 @@ const application = (
     <DemoTutorialProvider enabled={tutorialEnabled} client={demoClient} animation={demoAnimation}>
       <HashRouter useTransitions={ROUTER_USE_TRANSITIONS}>
         <App />
+        {params.get('share') === '1' && <ShareInbox api={demoShareInbox} />}
       </HashRouter>
     </DemoTutorialProvider>
   </ThemeProvider>

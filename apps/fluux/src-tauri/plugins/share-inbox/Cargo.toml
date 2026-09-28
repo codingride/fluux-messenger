@@ -1,0 +1,17 @@
+[package]
+name = "tauri-plugin-share-inbox"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-share-inbox"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.23"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3", features = ["NSBundle", "NSFileManager", "NSString", "NSURL"] }

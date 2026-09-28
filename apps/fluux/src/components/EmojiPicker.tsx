@@ -8,6 +8,10 @@ import { Picker } from 'emoji-mart'
 interface EmojiPickerProps {
   onSelect: (emoji: string) => void
   onClose: () => void
+  /** Fit a constrained touch menu, adapting the number of emoji columns. */
+  dynamicWidth?: boolean
+  /** The enclosing menu can own Escape to return to its parent view. */
+  closeOnEscape?: boolean
 }
 
 function resolveTheme(mode: ThemeMode): 'light' | 'dark' {
@@ -17,7 +21,7 @@ function resolveTheme(mode: ThemeMode): 'light' | 'dark' {
   return mode
 }
 
-export function EmojiPicker({ onSelect, onClose }: EmojiPickerProps) {
+export function EmojiPicker({ onSelect, onClose, dynamicWidth = false, closeOnEscape = true }: EmojiPickerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const pickerRef = useRef<InstanceType<typeof Picker> | null>(null)
   const { i18n } = useTranslation()
@@ -53,6 +57,7 @@ export function EmojiPicker({ onSelect, onClose }: EmojiPickerProps) {
       previewPosition: 'none',
       skinTonePosition: 'search',
       perLine: 8,
+      dynamicWidth,
       maxFrequentRows: 1,
       locale: i18n.language.split('-')[0], // e.g. 'en' from 'en-US'
       autoFocus: hasHover,
@@ -60,6 +65,7 @@ export function EmojiPicker({ onSelect, onClose }: EmojiPickerProps) {
 
     pickerRef.current = picker
     const container = containerRef.current
+    if (dynamicWidth) (picker as unknown as HTMLElement).style.width = '100%'
     container.appendChild(picker as unknown as Node)
 
     return () => {
@@ -69,10 +75,11 @@ export function EmojiPicker({ onSelect, onClose }: EmojiPickerProps) {
     }
     // Re-create picker only when theme, locale, or hover capability changes —
     // never on callback identity (see the ref indirection above).
-  }, [theme, i18n.language, hasHover])
+  }, [theme, i18n.language, hasHover, dynamicWidth])
 
   // Close on Escape key
   useEffect(() => {
+    if (!closeOnEscape) return
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
@@ -81,7 +88,7 @@ export function EmojiPicker({ onSelect, onClose }: EmojiPickerProps) {
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  }, [closeOnEscape])
 
-  return <div ref={containerRef} />
+  return <div ref={containerRef} className={dynamicWidth ? 'w-full min-w-0' : undefined} />
 }

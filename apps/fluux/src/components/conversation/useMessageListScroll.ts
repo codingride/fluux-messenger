@@ -34,7 +34,7 @@ import {
   decideMarkerClear,
   isMarkerAboveViewport,
   planScrollEvent,
-  planWheelEvent,
+  planDirectionalInput,
 } from './scrollEventDecisions'
 import { findBottomAnchor, readViewportGeometry } from './bottomAnchor'
 import { createPinLoopClaim, type PinLoopClaim } from './pinLoopClaim'
@@ -48,6 +48,8 @@ import { ViewportSession, type ViewportGeometry } from './viewportSession'
 import { ScrollPersistenceAdapter } from './scrollPersistenceAdapter'
 import { DirectionalHistoryWindowCoordinator } from './directionalHistoryWindowCoordinator'
 import { TARGET_HIGHLIGHT_MS } from './explicitTargetBrowserAdapter'
+import { decideOnNewMessage } from './newMessageDecision'
+import { createArrivalBaseline } from './arrivalBaseline'
 import { useScrollExecutors } from './useScrollExecutors'
 import { PositioningController, type UserScrollInput } from './positioningController'
 import {
@@ -213,19 +215,15 @@ export interface UseMessageListScrollOptions {
    *  DOM-based behavior. */
   virtualizer?: MessageVirtualizer
   /**
-   * Reports whether the viewport is genuinely at the
-   * live edge, invoked EVERY time `isAtBottomRef.current` is assigned from a
-   * REAL measured geometry read (a `scrollHeight - scrollTop - clientHeight`
-   * comparison against `AT_BOTTOM_THRESHOLD`, taken after the scroll write it
-   * describes has already landed) — never from an assumed/decided default.
+   * Reports whether the viewport is genuinely at the live edge, invoked from
+   * `setMeasuredAtBottom` and nowhere else: a `scrollHeight - scrollTop - clientHeight`
+   * comparison against `AT_BOTTOM_THRESHOLD`, taken after the scroll write it describes has
+   * landed.
    *
-   * Deliberately NOT invoked from `rememberBottomIntent` (which sets
-   * `isAtBottomRef.current = true` unconditionally on a deliberate
-   * scroll-to-bottom action) or from the conversation-switch entry effect's
-   * pre-measurement guesses (`isAtBottomRef.current = true/false` before the
-   * positioning executor has actually run) — those are exactly the unsafe
-   * stale defaults this option exists to avoid feeding to the SDK: evidence
-   * must stay `unknown` until the geometry has actually been read.
+   * The decided transitions — `assumeAtBottom`, `assumeAwayFromBottom`, `assumeEntryPosition` —
+   * report nothing. A deliberate scroll-to-bottom and the entry arbitration's branch both move
+   * the window before any geometry has been read, and feeding those to the SDK would claim the
+   * reader saw something. Evidence stays unknown until it has been measured.
    */
   onLiveEdgeMeasured?: (atEdge: boolean) => void
 }
@@ -348,15 +346,16 @@ export function useMessageListScroll({
   const onLiveEdgeMeasuredRef = useRef(onLiveEdgeMeasured)
   onLiveEdgeMeasuredRef.current = onLiveEdgeMeasured
 
-  // Set `isAtBottomRef` from a REAL measured geometry read, AND report that same
-  // measurement to the SDK's viewport-evidence channel. Every call site
-  // below has just read `scrollHeight - scrollTop - clientHeight` (or an equivalent
-  // virtualizer-aware distance) against `AT_BOTTOM_THRESHOLD` — never an
-  // assumed/decided default. Must NOT be used for: `rememberBottomIntent` (sets
-  // `true` unconditionally on a deliberate scroll-to-bottom action) or the
-  // conversation-switch entry effect's pre-measurement guesses — see
-  // `UseMessageListScrollOptions.onLiveEdgeMeasured`'s doc for why those stay raw
-  // `isAtBottomRef.current = ...` assignments.
+  // Where the window sits relative to the live edge is written two ways, and they must not be
+  // confused. `setMeasuredAtBottom` carries a REAL geometry read — the caller has just compared
+  // `scrollHeight - scrollTop - clientHeight` (or the virtualizer's equivalent distance) against
+  // `AT_BOTTOM_THRESHOLD` — and reports it to the SDK's viewport-evidence channel, which feeds
+  // the read pointer. That pointer only moves forward, so evidence taken from anything other
+  // than a measurement cannot be taken back.
+  //
+  // `assumeAtBottom` / `assumeAwayFromBottom` carry a DECISION instead: entry arbitration, a
+  // deliberate scroll-to-bottom, a jump aiming elsewhere. They move the same state and report
+  // nothing, which is the whole distinction. Nothing in this hook assigns the ref directly.
   const setMeasuredAtBottom = useCallback((atEdge: boolean) => {
     isAtBottomRef.current = atEdge
     viewportSessionRef.current?.recordMeasuredLiveEdge(
@@ -365,6 +364,29 @@ export function useMessageListScroll({
     )
     onLiveEdgeMeasuredRef.current?.(atEdge)
   }, [isAtBottomRef])
+
+  /**
+   * The rows changed, but nobody sent anything: entering a conversation, or a saved position
+   * reloading the rows under the reader. Measure the next arrival from here, so the change this
+   * commit carries is not mistaken for a message landing at the bottom.
+   */
+  const rebaseArrivalBaseline = useCallback(() => {
+    arrivalBaselineRef.current.rebase({ count: messageCountRef.current, lastMessageId: lastMessageIdRef.current })
+  }, [])
+
+  /**
+   * Older history landed ABOVE the reader. The count grew and the bottom row did not move, so
+   * only the count is re-based — widening this to the bottom row would swallow a message that
+   * genuinely arrived while the prepend was landing.
+   */
+  const rebaseArrivalCountAfterPrepend = useCallback(() => {
+    arrivalBaselineRef.current.rebaseCountOnly(messageCountRef.current)
+  }, [])
+
+  const assumeAtBottom = useCallback(() => { isAtBottomRef.current = true }, [isAtBottomRef])
+  const assumeAwayFromBottom = useCallback(() => { isAtBottomRef.current = false }, [isAtBottomRef])
+  /** Entry decides both ways from one arbitration; the branch, not a measurement, is the source. */
+  const assumeEntryPosition = useCallback((atBottom: boolean) => { isAtBottomRef.current = atBottom }, [isAtBottomRef])
 
   // Virtualizer ref updated synchronously in the render body (before any effects).
   // This ensures useLayoutEffect sees the CURRENT render's virtualizer (with updated
@@ -395,10 +417,12 @@ export function useMessageListScroll({
   const activeConversationIdRef = useRef(conversationId)
   activeConversationIdRef.current = conversationId
   const prevConversationRef = useRef<string | null>(null)
-  const prevMessageCountRef = useRef(0)
   const messageCountRef = useRef(messageCount)
   messageCountRef.current = messageCount
-  const prevLastMessageIdRef = useRef<string | undefined>(lastMessageId)
+  const lastMessageIdRef = useRef(lastMessageId)
+  lastMessageIdRef.current = lastMessageId
+  // What an arrival is measured against; see the module for why it is not "the previous commit".
+  const arrivalBaselineRef = useRef(createArrivalBaseline(lastMessageId))
   const hasInitializedRef = useRef(false)
   const pendingSyncedLiveEdgeRef = useRef<{
     conversationId: string
@@ -581,13 +605,13 @@ export function useMessageListScroll({
       },
       bottomAnchor,
     )
-    isAtBottomRef.current = true
+    assumeAtBottom()
     setShowScrollToBottom(false)
     setMarkerAboveViewport(false)
     // At the bottom the newest message is visible → 0 new below the fold (anchor is the last row).
     setBottomVisibleMessageId(bottomAnchor?.messageId ?? null)
     scrollPersistenceRef.current?.clearSavedPosition(conversationId)
-  }, [conversationId, isAtBottomRef])
+  }, [assumeAtBottom, conversationId])
 
   // ==========================================================================
   // CALLBACK REFS: scroll container + content wrapper
@@ -648,9 +672,7 @@ export function useMessageListScroll({
         }
       },
       getDirectionalWindow: () => directionalWindowRef.current,
-      syncPrevMessageCount: () => {
-        prevMessageCountRef.current = messageCountRef.current
-      },
+      rebaseArrivalCountAfterPrepend,
       pinBottomClaim,
       reassertLoopRegistry: reassertLoopRef,
       log: debugLog,
@@ -799,16 +821,16 @@ export function useMessageListScroll({
       setTimeout(() => element.classList.remove('message-highlight'), TARGET_HIGHLIGHT_MS)
       return
     }
-    isAtBottomRef.current = false
+    assumeAwayFromBottom()
     positioningControllerRef.current?.beginExplicitTarget({
       conversationId,
       messageId: messageReference,
       executor: buildExplicitTargetExecutor(messageReference, false),
     })
   }, [
+    assumeAwayFromBottom,
     conversationId,
     buildExplicitTargetExecutor,
-    isAtBottomRef,
     staticMode,
   ])
   // Published to every message row through MessageTargetProvider and to the active-list registry,
@@ -1044,11 +1066,29 @@ export function useMessageListScroll({
     return () => instance?.setScrollWriteObserver?.(undefined)
   }, [virtualizer?.setScrollWriteObserver])
 
+  const applyDirectionalInput = (id: string, input: UserScrollInput) => {
+    const { top, height, client } = input.geometry
+    const plan = planDirectionalInput({
+      scrollTop: top,
+      distanceFromBottom: height - top - client,
+      deltaY: input.deltaY,
+      staticMode,
+      loadNewerThreshold: LOAD_NEWER_THRESHOLD,
+    })
+    if (plan.markTravelAwayFromTop) viewportSessionRef.current?.markTravelAway(id, 'top')
+    if (plan.markTravelAwayFromBottom) viewportSessionRef.current?.markTravelAway(id, 'bottom')
+    if (plan.loadOlder) triggerLoadOlder()
+    if (plan.loadNewer) triggerLoadNewer()
+  }
+
   const observeUserInput = (id: string, input: UserScrollInput) => {
     const movement = observeViewportGeometry(id, input)
     const controller = positioningControllerRef.current
     if (input.deltaY < 0 && controller?.ownsMessageTarget()) cancelMediaBatch()
     controller?.observeUserInput(id, input, movement?.userDelta ?? 0)
+    // A touch/scrollbar gesture at an edge may not move scrollTop or emit a scroll event.
+    // Wheel pagination runs in the React handler so native + React delivery starts only one load.
+    if (input.source === 'gesture') applyDirectionalInput(id, input)
   }
 
   const {
@@ -1257,22 +1297,7 @@ export function useMessageListScroll({
     // native wheel listener; kept here so it fires even when wheel arrives via the React handler.
     const input = readUserScrollInput(e.currentTarget, e.deltaY)
     observeUserInput(conversationId, input)
-    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
-    const wheelPlan = planWheelEvent({
-      scrollTop,
-      distanceFromBottom: scrollHeight - scrollTop - clientHeight,
-      deltaY: e.deltaY,
-      staticMode,
-      loadNewerThreshold: LOAD_NEWER_THRESHOLD,
-    })
-    if (wheelPlan.markTravelAwayFromTop) {
-      viewportSessionRef.current?.markTravelAway(conversationId, 'top')
-    }
-    if (wheelPlan.markTravelAwayFromBottom) {
-      viewportSessionRef.current?.markTravelAway(conversationId, 'bottom')
-    }
-    if (wheelPlan.loadOlder) triggerLoadOlder()
-    if (wheelPlan.loadNewer) triggerLoadNewer()
+    applyDirectionalInput(conversationId, input)
   }
 
   // Mount marker (diagnostic). Fires once when the message view is freshly created — i.e. after a
@@ -1362,7 +1387,7 @@ export function useMessageListScroll({
     // In static mode (read-only previews), skip all scroll positioning.
     // The parent component handles its own scroll-to-target.
     if (staticMode) {
-      isAtBottomRef.current = false
+      assumeAwayFromBottom()
       debugLog('CONVERSATION SWITCH: static mode, skipping scroll')
     } else {
       // Diagnostic only: is this the FIRST open of this conversation this session? The persistence
@@ -1442,7 +1467,7 @@ export function useMessageListScroll({
       })
 
       if (arbitration.branch === 'saved-position') {
-        isAtBottomRef.current = false
+        assumeAwayFromBottom()
         const request = entryExecutionFacts
           ? positioningControllerRef.current?.beginSavedPositionEntry({
               conversationId,
@@ -1454,7 +1479,7 @@ export function useMessageListScroll({
           // Controller construction/instrumentation failure must degrade safely instead of leaving
           // entry half-positioned. This is the only saved-position write outside the controller and
           // exists solely as its failure boundary.
-          isAtBottomRef.current = true
+          assumeAtBottom()
           emergencyLiveEdgeWrite()
         }
       } else if (arbitration.branch === 'unread-marker') {
@@ -1463,7 +1488,7 @@ export function useMessageListScroll({
         // targetMessageId branch) so the content-growth ResizeObserver doesn't auto-pin to the
         // bottom while we're still aiming for the marker.
         debugLog('CONVERSATION SWITCH: has unread, will scroll to marker', { firstNewMessageId })
-        isAtBottomRef.current = false
+        assumeAwayFromBottom()
 
         const request = entryExecutionFacts
           ? positioningControllerRef.current?.beginUnreadMarkerEntry({
@@ -1475,7 +1500,7 @@ export function useMessageListScroll({
         if (!request) {
           // Keep instrumentation/controller failures from stranding entry above an unresolved
           // divider. Normal marker unavailability is promoted by the controller itself.
-          isAtBottomRef.current = true
+          assumeAtBottom()
           emergencyLiveEdgeWrite()
         }
       } else if (arbitration.branch === 'defer-to-target') {
@@ -1483,7 +1508,7 @@ export function useMessageListScroll({
         // The targetMessageId effect will handle scrolling.
         // Mark as NOT at bottom so the ResizeObserver doesn't auto-scroll
         // to bottom when content grows (messages loading from IndexedDB).
-        isAtBottomRef.current = false
+        assumeAwayFromBottom()
         debugLog('CONVERSATION SWITCH: has targetMessageId, deferring to target scroll', { targetMessageId })
         if (entryExecutionFacts) {
           positioningControllerRef.current?.observeEntry({
@@ -1506,7 +1531,7 @@ export function useMessageListScroll({
         //
         // Note: Async content loading (MAM) is handled by the separate "new message" effect
         // which triggers when messageCount changes.
-        isAtBottomRef.current = arbitration.entersAtBottom
+        assumeEntryPosition(arbitration.entersAtBottom)
         const request = entryFacts
           ? positioningControllerRef.current?.beginLiveEdgeEntry({
             conversationId,
@@ -1518,16 +1543,18 @@ export function useMessageListScroll({
       }
     }
 
-    // Update tracking. Sync prevLastMessageIdRef to the entered conversation's newest message so
-    // the new-message effect (which keys "did the bottom change?" off lastMessageId) does not
-    // mistake the switch itself for a fresh send and override the marker/restore positioning.
+    // The entered conversation's rows are not an arrival: without this the new-message effect
+    // would read the switch itself as a fresh send and override the marker/restore positioning.
     hasInitializedRef.current = true
     prevConversationRef.current = conversationId
-    prevMessageCountRef.current = messageCount
-    prevLastMessageIdRef.current = lastMessageId
+    rebaseArrivalBaseline()
     previousReadPositionRef.current = readPointerId
 
   }, [
+    rebaseArrivalBaseline,
+    assumeAtBottom,
+    assumeAwayFromBottom,
+    assumeEntryPosition,
     conversationId,
     createLiveEdgeExecutor,
     buildSavedPositionExecutor,
@@ -1569,7 +1596,7 @@ export function useMessageListScroll({
 
     pendingSyncedLiveEdgeRef.current = null
     scrollPersistenceRef.current?.clearSavedPosition(conversationId)
-    isAtBottomRef.current = true
+    assumeAtBottom()
     debugLog('MDS LIVE EDGE: late synced read supersedes restored position', {
       conversationId,
       savedReadPositionId: pending?.savedReadPositionId,
@@ -1585,6 +1612,7 @@ export function useMessageListScroll({
     })
     if (!request) emergencyLiveEdgeWrite()
   }, [
+    assumeAtBottom,
     conversationId,
     createLiveEdgeExecutor,
     emergencyLiveEdgeWrite,
@@ -1623,7 +1651,7 @@ export function useMessageListScroll({
       conversationId,
       prevMarker: prev.divider,
     })
-    isAtBottomRef.current = true
+    assumeAtBottom()
     const request = positioningControllerRef.current?.beginLiveEdgeRequest({
       conversationId,
       source: {
@@ -1634,6 +1662,7 @@ export function useMessageListScroll({
     })
     if (!request) emergencyLiveEdgeWrite()
   }, [
+    assumeAtBottom,
     conversationId,
     createLiveEdgeExecutor,
     emergencyLiveEdgeWrite,
@@ -1660,10 +1689,10 @@ export function useMessageListScroll({
       generation: status.request.generation,
       executor: buildSavedPositionExecutor(),
     })) {
-      prevMessageCountRef.current = messageCount
-      prevLastMessageIdRef.current = lastMessageId
+      rebaseArrivalBaseline()
     }
   }, [
+    rebaseArrivalBaseline,
     conversationId,
     buildSavedPositionExecutor,
     firstMessageId,
@@ -1771,7 +1800,7 @@ export function useMessageListScroll({
       return
     }
 
-    isAtBottomRef.current = false
+    assumeAwayFromBottom()
     const executor = buildExplicitTargetExecutor(targetMessageId, true)
     if (
       previous &&
@@ -1793,6 +1822,7 @@ export function useMessageListScroll({
     }) ?? null
     storeTargetRequestRef.current = request
   }, [
+    assumeAwayFromBottom,
     targetMessageId,
     messageCount,
     conversationId,
@@ -1902,109 +1932,87 @@ export function useMessageListScroll({
     const scroller = scrollerRef.current
     if (!scroller || !hasInitializedRef.current || staticMode) return
 
-    if (positioningControllerRef.current?.isSavedPositionPending(conversationId)) {
-      if (lastMessageIsOutgoing) {
-        positioningControllerRef.current?.beginLiveEdgeRequest({
-          conversationId,
-          source: { kind: 'live-update', reason: 'outgoing-message' },
-          executor: createLiveEdgeExecutor('new-message'),
-        })
-      }
-      debugLog('NEW MSG SKIP (restore pending)', {
-        messageCount,
-        prevCount: prevMessageCountRef.current,
-      })
-      isAtBottomRef.current = false
-      prevMessageCountRef.current = messageCount
-      prevLastMessageIdRef.current = lastMessageId
-      return
-    }
+    const atBottom = isAtBottomRef.current
+    const decision = decideOnNewMessage({
+      messageCount,
+      baselineMessageCount: arrivalBaselineRef.current.read().count,
+      lastMessageId,
+      baselineLastMessageId: arrivalBaselineRef.current.read().lastMessageId,
+      lastMessageIsOutgoing,
+      atBottom,
+      savedPositionPending: !!positioningControllerRef.current?.isSavedPositionPending(conversationId),
+      directionalHistoryPending:
+        !!positioningControllerRef.current?.isDirectionalHistoryPending(conversationId),
+    })
 
-    // Don't interfere while a controller-owned directional restore is still waiting to land.
-    // Once applied, allow new-message auto-scroll even during the snapshot cooldown period.
-    if (
-      positioningControllerRef.current?.isDirectionalHistoryPending(
+    const followOwnSend = () =>
+      positioningControllerRef.current?.beginLiveEdgeRequest({
         conversationId,
-      )
-    ) {
-      if (lastMessageIsOutgoing) {
-        positioningControllerRef.current?.beginLiveEdgeRequest({
-          conversationId,
-          source: { kind: 'live-update', reason: 'outgoing-message' },
-          executor: createLiveEdgeExecutor('new-message'),
-        })
-      }
-      debugLog('NEW MSG SKIP (prepend in progress)', {
-        messageCount,
-        prevCount: prevMessageCountRef.current,
+        source: { kind: 'live-update', reason: 'outgoing-message' },
+        executor: createLiveEdgeExecutor('new-message'),
       })
-      prevMessageCountRef.current = messageCount
-      prevLastMessageIdRef.current = lastMessageId
-      return
+
+    const trace = {
+      decision,
+      messageCount,
+      baselineCount: arrivalBaselineRef.current.read().count,
+      lastMessageId,
+      baselineLastMessageId: arrivalBaselineRef.current.read().lastMessageId,
+      outgoing: lastMessageIsOutgoing,
+      isAtBottom: atBottom,
     }
 
-    // "Did the bottom row change?" must key off the last message ID, not just messageCount: a
-    // send REPLACES the optimistic last row in place (reconciled to the server id) without growing
-    // the count, so a count-only check misses it and the just-sent message fails to stick to the
-    // bottom. Either a count increase OR a new last-message id is a fresh bottom row.
-    const countIncreased = messageCount > prevMessageCountRef.current
-    const lastMessageChanged = lastMessageId !== undefined && lastMessageId !== prevLastMessageIdRef.current
-    const newBottomRow = countIncreased || lastMessageChanged
-
-    // Scroll to the bottom when a new bottom row appears AND either we're already near the bottom
-    // (auto-follow) OR it's the user's own send — you always want to see what you just sent, even
-    // from a scrolled-up position. An incoming message while scrolled up does NOT yank the reader.
-    if (newBottomRow && (isAtBottomRef.current || lastMessageIsOutgoing)) {
-      if (lastMessageIsOutgoing) {
-        isAtBottomRef.current = true
-        const request = positioningControllerRef.current?.beginLiveEdgeRequest({
-          conversationId,
-          source: { kind: 'live-update', reason: 'outgoing-message' },
-          executor: createLiveEdgeExecutor('new-message'),
+    switch (decision) {
+      case 'outgoing-during-restore':
+        followOwnSend()
+        assumeAwayFromBottom()
+        debugLog('NEW MSG SKIP (restore pending)', trace)
+        break
+      case 'restore-pending':
+        assumeAwayFromBottom()
+        debugLog('NEW MSG SKIP (restore pending)', trace)
+        break
+      case 'outgoing-during-prepend':
+        followOwnSend()
+        debugLog('NEW MSG SKIP (prepend in progress)', trace)
+        break
+      case 'prepend-pending':
+        debugLog('NEW MSG SKIP (prepend in progress)', trace)
+        break
+      case 'follow-outgoing': {
+        assumeAtBottom()
+        if (!followOwnSend()) emergencyLiveEdgeWrite()
+        debugLog('NEW MSG SCROLL TO BOTTOM', {
+          ...trace,
+          scrollTopBefore: scroller.scrollTop,
+          distFromBottomBefore: scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight,
         })
-        if (!request) emergencyLiveEdgeWrite()
-      } else {
-        reconcileLiveEdge('new-message', isAtBottomRef.current)
+        break
       }
-      debugLog('NEW MSG SCROLL TO BOTTOM', {
-        messageCount,
-        prevCount: prevMessageCountRef.current,
-        countIncreased,
-        lastMessageChanged,
-        isAtBottom: isAtBottomRef.current,
-        outgoing: lastMessageIsOutgoing,
-        scrollTopBefore: scroller.scrollTop,
-        distFromBottomBefore:
-          scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight,
-      })
-    } else if (newBottomRow) {
-      debugLog('NEW MSG NO SCROLL (incoming, not at bottom)', {
-        messageCount,
-        prevCount: prevMessageCountRef.current,
-        countIncreased,
-        lastMessageChanged,
-        isAtBottom: isAtBottomRef.current,
-      })
-    } else {
-      // The effect ran but saw NO new bottom row (count unchanged AND lastMessageId unchanged).
-      // This is the blind spot behind "I sent a message but it didn't scroll to the bottom": if the
-      // just-sent row's props (lastMessageId / messageCount) haven't propagated by the time this
-      // effect fires — e.g. an optimistic row reconciled to its server id on a later commit — the
-      // send is never recognized here and (without this log) nothing is emitted at all. Logging the
-      // current-vs-previous identifiers makes a missed send visible in the trace.
-      debugLog('NEW MSG (no bottom-row change)', {
-        messageCount,
-        prevCount: prevMessageCountRef.current,
-        lastMessageId,
-        prevLastMessageId: prevLastMessageIdRef.current,
-        outgoing: lastMessageIsOutgoing,
-        isAtBottom: isAtBottomRef.current,
-      })
+      case 'follow-incoming':
+        reconcileLiveEdge('new-message', atBottom)
+        debugLog('NEW MSG SCROLL TO BOTTOM', {
+          ...trace,
+          scrollTopBefore: scroller.scrollTop,
+          distFromBottomBefore: scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight,
+        })
+        break
+      case 'hold-incoming':
+        debugLog('NEW MSG NO SCROLL (incoming, not at bottom)', trace)
+        break
+      case 'no-bottom-row':
+        // Logged rather than silent: this is the blind spot behind "I sent a message and it did
+        // not scroll", where the row's props had not propagated by the time this effect fired.
+        // A trace that says nothing cannot tell that apart from a decision.
+        debugLog('NEW MSG (no bottom-row change)', trace)
+        break
     }
 
-    prevMessageCountRef.current = messageCount
-    prevLastMessageIdRef.current = lastMessageId
+    rebaseArrivalBaseline()
   }, [
+    rebaseArrivalBaseline,
+    assumeAtBottom,
+    assumeAwayFromBottom,
     conversationId,
     createLiveEdgeExecutor,
     emergencyLiveEdgeWrite,

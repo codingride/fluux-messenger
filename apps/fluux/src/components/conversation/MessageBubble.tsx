@@ -365,11 +365,12 @@ export const MessageBubble = memo(function MessageBubble({
   const [showAvatarLightbox, setShowAvatarLightbox] = useState(false)
   const [showErrorDetails, setShowErrorDetails] = useState(false)
 
-  // Touch: long-press the message content opens the action sheet — the touch
+  // Touch: long-press the message content opens the action menu — the touch
   // counterpart of the hover-only MessageToolbar. Handlers are attached
   // unconditionally (a mouse never fires touch events); native text selection is
   // suppressed on touch via `touch:select-none` so the hold opens the sheet cleanly.
   const [showActionSheet, setShowActionSheet] = useState(false)
+  const actionAnchor = useRef<HTMLElement | null>(null)
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const longPressFired = useRef(false)
 
@@ -463,7 +464,7 @@ export const MessageBubble = memo(function MessageBubble({
     : `group flex gap-4 ${hoverClass} -mx-4 px-4 py-0.5 transition-colors ${showAvatar ? 'message-group-start' : ''}${isGroupEnd ? ' message-group-end' : ''}`
 
   // Action capabilities — shared by the hover toolbar (MessageToolbar) and the
-  // touch action sheet (MessageActionSheet) so the two surfaces stay in lock-step.
+  // touch action menu (MessageActionSheet) so the two surfaces stay in lock-step.
   // Own-message tint as a continuous surface across an avatar-group: `showAvatar`
   // marks the group start (round the top), `isGroupEnd` the last row (round the
   // bottom); interior rows stay square and the tint bridges the inter-row gap so
@@ -509,11 +510,12 @@ export const MessageBubble = memo(function MessageBubble({
   const canCopyBody = !!message.body && !message.isRetracted && !message.encryptedPayload && !message.unsupportedEncryption
   const hasMessageActions = !message.isRetracted && (actions.canReact || canReply || canEdit || canDelete || canCopyBody)
 
-  // Long-press (touch) → open the action sheet; scrolling (touchmove) or lifting
+  // Long-press (touch) → open the action menu; scrolling (touchmove) or lifting
   // before the threshold cancels it. longPressFired suppresses the click that a
   // tap-and-hold would otherwise dispatch to an inner control on release.
-  const handleContentTouchStart = () => {
+  const handleContentTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
     if (!hasMessageActions) return
+    actionAnchor.current = event.currentTarget
     longPressFired.current = false
     longPressTimer.current = setTimeout(() => {
       longPressFired.current = true
@@ -534,6 +536,7 @@ export const MessageBubble = memo(function MessageBubble({
     }
   }
 
+  const showSenderHeader = showAvatar && !isActionMessage(message.body)
   return (
     <div
       data-message-id={message.id}
@@ -612,16 +615,18 @@ export const MessageBubble = memo(function MessageBubble({
       <div className="relative flex-1 min-w-0">
       <div
         ref={ownGroupRef}
-        className={`relative ${contentWidthClass} min-w-0 touch:select-none touch:[-webkit-touch-callout:none] ${isSelected || showActionSheet ? 'bg-fluux-selection -my-0.5 py-0.5 -ms-2 ps-2 -me-4 pe-4 rounded-s' : ''}${inThread ? ` bg-fluux-private-soft border-x border-fluux-private-border px-2.5 py-1 ${threadStart ? 'border-t rounded-t-lg' : ''} ${threadEnd ? 'border-b rounded-b-lg' : ''}` : ''} ${ownTintClass}`}
+        // Opacity keeps the previous focus target available while the overlay captures and restores focus.
+        className={`relative ${showActionSheet ? 'opacity-0' : ''} ${contentWidthClass} min-w-0 touch:select-none touch:[-webkit-touch-callout:none] ${isSelected ? 'bg-fluux-selection -my-0.5 py-0.5 -ms-2 ps-2 -me-4 pe-4 rounded-s' : ''}${inThread ? ` bg-fluux-private-soft border-x border-fluux-private-border px-2.5 py-1 ${threadStart ? 'border-t rounded-t-lg' : ''} ${threadEnd ? 'border-b rounded-b-lg' : ''}` : ''} ${ownTintClass}`}
         data-msg-chrome={showAvatar ? 'header' : 'cont'}
         // Marks hug-width (w-fit) own bubbles so useRowMetrics never samples their text box
         // as the conversation's content width (it is only as wide as the text itself).
         data-msg-own={ownTint ? '' : undefined}
         // Selected/action-sheet state: hooks the CSS that keeps quote and reply-card
         // fills distinct from the selection tint (issue #1008).
-        data-msg-selected={isSelected || showActionSheet ? '' : undefined}
+        data-msg-selected={isSelected ? '' : undefined}
         onTouchStart={handleContentTouchStart}
         onTouchEnd={cancelLongPress}
+        onTouchCancel={cancelLongPress}
         onTouchMove={cancelLongPress}
         onClickCapture={swallowPostLongPressClick}
       >
@@ -644,49 +649,51 @@ export const MessageBubble = memo(function MessageBubble({
           </button>
         ))}
         {/* Nick header - hidden for /me action messages (nick is shown inline) */}
-        {showAvatar && !isActionMessage(message.body) && (
-          <div className="flex items-baseline gap-2 pb-1 flex-wrap">
-            <UserInfoPopover contact={senderContact} jid={senderJid} occupantJid={senderOccupantJid} role={senderRole} affiliation={senderAffiliation}>
-              <span
-                className="font-medium"
-                style={{ color: senderColor }}
-                onContextMenu={onNickContextMenu}
-                // Stop the long-press from bubbling to the content wrapper so a
-                // hold on the nick opens the occupant menu, not the message sheet.
-                onTouchStart={(e) => { e.stopPropagation(); onNickTouchStart?.(e) }}
-                onTouchEnd={onNickTouchEnd}
-              >
-                <NickText nick={senderName} />
-              </span>
-            </UserInfoPopover>
-            {nickExtras}
-            <span className="text-xs text-fluux-muted">
-              {formatTime(message.timestamp)}
-            </span>
-            {message.securityContext && (
-              <Tooltip content={formatSecurityTooltip(t, { ...message.securityContext, trust: displayTrust ?? message.securityContext.trust })} position="top" triggerMode="click">
+        {showSenderHeader && (
+          <div className="flex items-center gap-1 pb-1">
+            <div className="flex flex-1 min-w-0 items-baseline gap-2 flex-wrap">
+              <UserInfoPopover contact={senderContact} jid={senderJid} occupantJid={senderOccupantJid} role={senderRole} affiliation={senderAffiliation}>
                 <span
-                  className={`flex items-center ${trustVisual(
-                    displayTrust === 'verified'
-                      ? 'verified'
-                      : displayTrust === 'rejected'
-                      ? 'rejected'
-                      : displayTrust === 'untrusted'
-                      ? 'decryptFailed'
-                      : 'trusted'
-                  ).colorClass}`}
-                  aria-label={`Encrypted with ${message.securityContext.protocolId}, trust ${displayTrust}`}
+                  className="font-medium"
+                  style={{ color: senderColor }}
+                  onContextMenu={onNickContextMenu}
+                  // Stop the long-press from bubbling to the content wrapper so a
+                  // hold on the nick opens the occupant menu, not the message sheet.
+                  onTouchStart={(e) => { e.stopPropagation(); onNickTouchStart?.(e) }}
+                  onTouchEnd={onNickTouchEnd}
                 >
-                  {displayTrust === 'verified'
-                    ? <ShieldCheck className="size-3" />
-                    : displayTrust === 'rejected'
-                    ? <ShieldX className="size-3" />
-                    : displayTrust === 'untrusted'
-                    ? <ShieldAlert className="size-3" />
-                    : <Shield className="size-3" />}
+                  <NickText nick={senderName} />
                 </span>
-              </Tooltip>
-            )}
+              </UserInfoPopover>
+              {nickExtras}
+              <span className="text-xs text-fluux-muted">
+                {formatTime(message.timestamp)}
+              </span>
+              {message.securityContext && (
+                <Tooltip content={formatSecurityTooltip(t, { ...message.securityContext, trust: displayTrust ?? message.securityContext.trust })} position="top" triggerMode="click">
+                  <span
+                    className={`flex items-center ${trustVisual(
+                      displayTrust === 'verified'
+                        ? 'verified'
+                        : displayTrust === 'rejected'
+                        ? 'rejected'
+                        : displayTrust === 'untrusted'
+                        ? 'decryptFailed'
+                        : 'trusted'
+                    ).colorClass}`}
+                    aria-label={`Encrypted with ${message.securityContext.protocolId}, trust ${displayTrust}`}
+                  >
+                    {displayTrust === 'verified'
+                      ? <ShieldCheck className="size-3" />
+                      : displayTrust === 'rejected'
+                      ? <ShieldX className="size-3" />
+                      : displayTrust === 'untrusted'
+                      ? <ShieldAlert className="size-3" />
+                      : <Shield className="size-3" />}
+                  </span>
+                </Tooltip>
+              )}
+            </div>
           </div>
         )}
 
@@ -697,7 +704,7 @@ export const MessageBubble = memo(function MessageBubble({
             onClick={() => requestMessageTarget(replyContext.messageId)}
             className="reply-quote-card flex items-start gap-1.5 py-1 pe-2 ps-2 mb-1.5 border-s-2 text-start min-w-0 bg-fluux-bg-secondary hover:bg-fluux-hover/50 rounded-e transition-colors cursor-pointer select-none"
             // CSS applies the selected-state frame because selection can live on
-            // this message chrome (keyboard/action sheet) or the outer MessageList
+            // this message chrome (keyboard/action menu) or the outer MessageList
             // row (bulk copy). Expose the sender hue once so both paths stay equal.
             style={replyQuoteCardStyle(replyContext.senderColor)}
           >
@@ -838,12 +845,16 @@ export const MessageBubble = memo(function MessageBubble({
         />
       )}
 
-      {/* Touch action sheet — opened by long-pressing the message content.
-          Mounted only while open so the list never carries one sheet per row. */}
+      {/* Touch action menu — opened by a long press.
+          Mounted only while open so the list never carries one menu per row. */}
       {showActionSheet && (
         <MessageActionSheet
           open
-          onClose={() => setShowActionSheet(false)}
+          anchor={actionAnchor.current}
+          onClose={() => {
+            longPressFired.current = false
+            setShowActionSheet(false)
+          }}
           onReaction={handleReaction}
           myReactions={reactionsEnabled ? myReactions : []}
           body={message.body}

@@ -24,6 +24,72 @@ import { bootDemo } from './harness/demoBoot'
 
 const DEMO_URL = '/demo.html?tutorial=false'
 
+test.describe('touch message actions', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } })
+
+  for (const { outgoing, header } of [
+    { outgoing: false, header: true },
+    { outgoing: false, header: false },
+    { outgoing: true, header: true },
+    { outgoing: true, header: false },
+  ]) {
+    test(`opens and dismisses actions for an ${outgoing ? 'outgoing' : 'incoming'} ${header ? 'group header' : 'continuation'} by long press`, async ({ page }) => {
+      await bootDemo(page, DEMO_URL)
+      await page.evaluate(() => {
+        const demo = window as Window & { __demoClient?: { stopAnimation(): void } }
+        demo.__demoClient?.stopAnimation()
+      })
+      await page.getByText('Emma Wilson', { exact: true }).first().click()
+      if (outgoing) {
+        // The seeded conversation has no consecutive outgoing messages.
+        const composer = page.locator('textarea.message-input')
+        for (const body of ['Mobile action group start', 'Mobile action continuation']) {
+          await composer.fill(body)
+          await composer.press('Enter')
+          await expect(composer).toHaveValue(`${body}\n`)
+          await page.getByRole('button', { name: 'Send', exact: true }).click()
+          await expect(composer).toHaveValue('')
+        }
+        await composer.blur()
+      }
+      const rows = page.locator('[data-message-id]').filter({
+        has: page.locator(`[data-msg-chrome="${header ? 'header' : 'cont'}"]`),
+      })
+      const own = page.locator('[data-msg-own]')
+      const row = (outgoing ? rows.filter({ has: own }) : rows.filter({ hasNot: own })).last()
+      const content = row.locator('[data-msg-chrome]')
+      await content.scrollIntoViewIfNeeded()
+      await expect(content).toBeVisible()
+      await expect(row.locator('button[aria-haspopup="dialog"]')).toHaveCount(0)
+      const box = (await content.boundingBox())!
+      expect(box.x).toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width).toBeLessThanOrEqual(390)
+      if (!outgoing) {
+        const rowBox = (await row.boundingBox())!
+        // Only the row's normal 16px edge padding may separate the text column
+        // from the viewport edge; the menu must not reserve a second column.
+        expect(rowBox.x + rowBox.width - (box.x + box.width)).toBeCloseTo(16, 0)
+      }
+      await expect(row.locator('[data-message-toolbar]')).toBeHidden()
+      const sheet = page.getByRole('dialog', { name: 'More options', exact: true })
+      await content.dispatchEvent('touchstart')
+      await expect(sheet).toBeVisible()
+      await content.dispatchEvent('touchend')
+      await expect(sheet.getByRole('button', { name: 'Copy text', exact: true })).toBeVisible()
+      await expect(row.locator('[data-msg-chrome]')).toHaveCSS('opacity', '0')
+      await expect(sheet.locator('[data-message-preview] [data-msg-chrome]')).toHaveCSS('opacity', '1')
+      await page.keyboard.press('Escape')
+      await expect(sheet).toBeHidden()
+      await content.dispatchEvent('touchstart')
+      await expect(sheet).toBeVisible()
+      await content.dispatchEvent('touchend')
+      await sheet.getByRole('button', { name: 'React with ❤️', exact: true }).tap()
+      await expect(sheet).toBeHidden()
+      await expect(row).toContainText('❤️')
+    })
+  }
+})
+
 /** Accessible name of the sidebar button that opens the dialog under test. */
 const NEW_MESSAGE = 'New message'
 
@@ -276,4 +342,48 @@ test.describe('message toolbar alignment', () => {
       })
     }
   }
+})
+
+test.describe('touch submenu focus', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } })
+
+  test('keeps keyboard focus in link and emoji views and returns one level at a time', async ({ page }) => {
+    await bootDemo(page, DEMO_URL)
+    await page.evaluate(() => {
+      const demo = window as Window & { __demoClient?: { stopAnimation(): void } }
+      demo.__demoClient?.stopAnimation()
+    })
+    await page.getByText('Emma Wilson', { exact: true }).first().click()
+    const composer = page.locator('textarea.message-input')
+    await composer.fill('Review https://example.com/one and https://example.org/two')
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
+    await composer.blur()
+    const content = page.locator('[data-message-id] [data-msg-chrome]').last()
+    await content.dispatchEvent('touchstart')
+    const menu = page.getByRole('dialog', { name: 'More options', exact: true })
+    await expect(menu).toBeVisible()
+    await content.dispatchEvent('touchend')
+
+    const back = menu.getByRole('button', { name: 'Back', exact: true })
+    await menu.getByRole('button', { name: 'Copy link', exact: true }).tap()
+    await expect(back).toBeFocused()
+    for (let i = 0; i < 5; i++) {
+      await page.keyboard.press('Tab')
+      await expect.poll(() => menu.evaluate((el) => el.contains(document.activeElement))).toBe(true)
+    }
+    await page.keyboard.press('Escape')
+    await expect(menu.getByRole('button', { name: 'Copy link', exact: true })).toBeFocused()
+
+    await menu.getByRole('button', { name: 'More reactions', exact: true }).tap()
+    await expect(menu.locator('em-emoji-picker')).toBeVisible()
+    await expect(back).toBeFocused()
+    await page.keyboard.press('Shift+Tab')
+    await expect.poll(() => menu.evaluate((el) => el.contains(document.activeElement))).toBe(true)
+    await page.keyboard.press('Tab')
+    await expect(back).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(menu.getByRole('button', { name: 'More reactions', exact: true })).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+  })
 })

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Fluux Messenger iOS Dev",
+  "identifier": "com.processone.fluux.ios.dev",
+  "build": {
+    "features": [],
+    "beforeDevCommand": "npm run dev -- --host 0.0.0.0"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Fluux Messenger iOS Dev",
+        "disableInputAccessoryView": true
+      }
+    ],
+    "security": {
+      "capabilities": [
+        "ios"
+      ]
+    }
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "iOS": {
+      "minimumSystemVersion": "15.0",
+      "frameworks": [
+        "SystemConfiguration.framework"
+      ],
+      "template": "src-tauri/mobile/ios/project.yml"
+    }
+  }
+}

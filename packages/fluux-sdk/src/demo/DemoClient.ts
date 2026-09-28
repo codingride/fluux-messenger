@@ -712,6 +712,7 @@ export class DemoClient extends XMPPClient {
     // emits room:reactions directly after sendStanza(), so no echo needed.
     // Returning early prevents a spurious empty message in the room.
     if (stanza.getChild('reactions')) return
+    if (!stanza.getChild('body')) return
 
     const nick = room.nickname
     const body = stanza.getChildText('body') ?? ''
@@ -784,12 +785,15 @@ export class DemoClient extends XMPPClient {
     const message: RoomMessage = {
       type: 'groupchat',
       id,
+      stanzaId: undefined,
       originId: id,
       roomJid,
       from: `${roomJid}/${nick}`,
       nick,
+      occupantId: undefined,
       body: processedBody,
       timestamp: new Date(),
+      receivedAt: new Date(),
       isOutgoing: true,
       ...(replyTo && { replyTo }),
       ...(attachment && { attachment }),

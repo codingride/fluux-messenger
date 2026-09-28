@@ -13,6 +13,9 @@ target/
 
 # Tauri
 **/src-tauri/target/
+# Recreated locally by tauri:ios:init; includes machine-specific Xcode state.
+apps/fluux/src-tauri/gen/apple/
+apps/fluux/src-tauri/gen/android/
 *.app
 *.dmg
 *.deb
@@ -90,3 +93,9 @@ ds-bundle/
 .design-sync/.cache/
 .design-sync/learnings/
 .design-sync/node_modules
+
+# Native share translations are generated from the app locales.
+apps/fluux/src-tauri/mobile/ios/Resources/
+
+# macOS extension build and signing metadata
+apps/fluux/src-tauri/macos/.build/

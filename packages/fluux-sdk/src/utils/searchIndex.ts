@@ -14,19 +14,24 @@ import { isNoLocalStore } from '../core/types/message-internal'
 import { captureStorageScope, getStorageScopeJid } from './storageScope'
 import {
   chatRetractionAliases,
+  ensureRetractionLedger,
   roomRetractionAliases,
   retractedAtForIdentity,
   type RetractionScope,
 } from './retractedIdentities'
 import * as messageCache from './messageCache'
+import { roomRetractionRecordApplies } from './moderation'
 import { getRoomModerationId, roomStanzaIdsMergeable } from './roomStanzaId'
 
 import {
   archiveIdentityConflict,
   canonicalKey,
   chatMessageAuthor,
+  firstDeliveryConflict,
   identityKeys,
+  isFirstDelivery,
   occupantConflict,
+  receiptQualifiedKey,
   roomMessageAuthor,
   roomScope,
   searchDocumentFallbackKey,
@@ -83,6 +88,10 @@ interface DocEntry {
   stanzaId?: string
   originId?: string
   occupantId?: string
+  /** Delivery evidence the room `from+id` rung reads; absent on older documents. */
+  isDelayed?: boolean
+  isOutgoing?: boolean
+  receivedAt?: number
   /** Derived room-scoped lookup keys; older room documents receive them on upgrade. */
   identityKeys?: string[]
 }
@@ -135,6 +144,10 @@ export interface SearchIndexResult {
   stanzaId: string | undefined
   originId: string | undefined
   occupantId: string | undefined
+  /** Delivery evidence the room `from+id` rung reads (`firstDeliveryConflict`). */
+  isDelayed?: boolean
+  isOutgoing?: boolean
+  receivedAt?: number
 }
 
 // =============================================================================
@@ -342,22 +355,26 @@ function getFallbackIndexIds(message: Message | RoomMessage): string[] {
   ]
 }
 
-function roomCollisionIndexId(message: Pick<RoomMessage, 'roomJid' | 'from' | 'id' | 'occupantId'>): string {
-  return `room:${canonicalKey(roomScope(message.roomJid), { from: message.from, id: message.id, occupantId: message.occupantId })}`
+/**
+ * The document id a room message takes when its own id already names another
+ * message: the occupant-qualified fallback key, and — for a copy that recorded
+ * its receipt instant — the receipt-qualified key, so two first deliveries
+ * sharing a client id (docs/MESSAGE_IDENTIFIERS.md §3) each keep a document.
+ * Deterministic from the message's own fields, so a removal recomputes it.
+ */
+function roomCollisionIndexId(
+  message: Pick<RoomMessage, 'roomJid' | 'from' | 'id' | 'occupantId'> & { receivedAt?: Date | number; timestamp?: Date | number },
+): string {
+  const scope = roomScope(message.roomJid)
+  const identity = { from: message.from, id: message.id, occupantId: message.occupantId, receivedAt: message.receivedAt, timestamp: message.timestamp }
+  return `room:${message.receivedAt !== undefined ? receiptQualifiedKey(scope, identity) : canonicalKey(scope, identity)}`
 }
 
 function roomDocumentIdentity(doc: DocEntry) {
   return { roomJid: doc.conversationId, from: doc.from, id: doc.messageId,
     stanzaId: doc.stanzaId, occupantId: doc.occupantId,
-    timestamp: doc.timestamp, body: doc.body }
-}
-
-interface RoomDocumentOwner {
-  roomJid: string
-  from: string
-  id: string
-  originId?: string
-  occupantId?: string
+    timestamp: doc.timestamp, body: doc.body,
+    receivedAt: doc.receivedAt, isDelayed: doc.isDelayed, isOutgoing: doc.isOutgoing }
 }
 
 export interface RoomIdentityClosure {
@@ -377,40 +394,6 @@ export interface ChatIdentityClosure {
   ids: readonly string[]
 }
 
-const ROOM_OWNER_CAP = 2000
-const roomDocumentOwners = new Map<string, RoomDocumentOwner>()
-
-function roomOwnerKey(indexId: string, scopeJid: string | null): string {
-  return `${scopeJid ?? ''}\u0000${indexId}`
-}
-
-function clearRoomDocumentOwners(scopeJid: string | null): void {
-  const prefix = `${scopeJid ?? ''}\u0000`
-  for (const key of roomDocumentOwners.keys()) {
-    if (key.startsWith(prefix)) roomDocumentOwners.delete(key)
-  }
-}
-
-function recordRoomDocumentOwner(
-  indexId: string,
-  message: Message | RoomMessage,
-  scopeJid: string | null
-): void {
-  if (message.type !== 'groupchat' || message.stanzaId) return
-  roomDocumentOwners.set(roomOwnerKey(indexId, scopeJid), {
-    roomJid: message.roomJid,
-    from: message.from,
-    id: message.id,
-    originId: message.originId,
-    occupantId: message.occupantId,
-  })
-  while (roomDocumentOwners.size > ROOM_OWNER_CAP) {
-    const oldest = roomDocumentOwners.keys().next()
-    if (oldest.done) break
-    roomDocumentOwners.delete(oldest.value)
-  }
-}
-
 /**
  * Whether a document found under a FALLBACK id genuinely names this message.
  *
@@ -422,32 +405,32 @@ function recordRoomDocumentOwner(
 function docBelongsToRoom(doc: DocEntry, message: RoomMessage): boolean {
   return doc.isRoom &&
     doc.conversationId === message.roomJid &&
-    !occupantConflict(doc, message) && roomStanzaIdsMergeable(roomDocumentIdentity(doc), message)
+    !occupantConflict(doc, message) && roomStanzaIdsMergeable(roomDocumentIdentity(doc), message) &&
+    (!firstDeliveryConflict(roomDocumentIdentity(doc), message) ||
+      !!doc.stanzaId && doc.stanzaId === message.stanzaId ||
+      !!doc.originId && doc.originId === message.originId)
 }
 
-function fallbackDocNamesMessage(
-  doc: DocEntry,
-  message: Message | RoomMessage,
-  indexId: string,
-  scopeJid: string | null
-): boolean {
+/**
+ * Whether a document found under a FALLBACK id was written by this message.
+ *
+ * The composite id names room, nick and client id, none of which is unique after
+ * a nick reassignment, so the document must carry evidence of its own: the
+ * XEP-0421 occupant id, the XEP-0359 origin id, or the receipt instant. Equal
+ * receipt instants are the converse of the delivery-evidence rule that keeps two
+ * `from+id` copies apart ({@link firstDeliveryConflict}): one client receives one
+ * stanza at one instant. A document written before it carried any of the three
+ * cannot be claimed and stays.
+ */
+function fallbackDocNamesMessage(doc: DocEntry, message: Message | RoomMessage): boolean {
   if (message.type !== 'groupchat' || !docBelongsToRoom(doc, message)) return false
   if (doc.messageId !== message.id || doc.from !== message.from) return false
-  // A room message carrying neither occupant-id nor origin-id cannot prove
-  // ownership of its composite document after nick reassignment, so only its
-  // canonical document is removed. This window is bounded to messages indexed
-  // in that identifier-less form; closing it requires additional durable
-  // ownership data.
-  const durableOwner: RoomDocumentOwner = {
-    roomJid: doc.conversationId,
-    from: doc.from,
-    id: doc.messageId,
-    originId: doc.originId,
-    occupantId: doc.occupantId,
+  if (doc.occupantId && message.occupantId) return doc.occupantId === message.occupantId
+  if (doc.originId && message.originId) return doc.originId === message.originId
+  if (doc.receivedAt !== undefined && message.receivedAt !== undefined) {
+    return doc.receivedAt === message.receivedAt.getTime()
   }
-  if (roomOwnerNamesMessage(durableOwner, message)) return true
-  const owner = roomDocumentOwners.get(roomOwnerKey(indexId, scopeJid))
-  return owner ? roomOwnerNamesMessage(owner, message) : false
+  return false
 }
 
 function roomDocumentIdentityKeys(doc: DocEntry): string[] {
@@ -463,10 +446,8 @@ function roomDocumentIdentityKeys(doc: DocEntry): string[] {
 function docBelongsToRoomIdentityClosure(
   doc: DocEntry,
   message: RoomMessage,
-  indexId: string,
   closureKeys: ReadonlySet<string>,
-  closureIds: ReadonlySet<string>,
-  scopeJid: string | null
+  closureIds: ReadonlySet<string>
 ): boolean {
   if (!docBelongsToRoom(doc, message)) return false
   const docKeys = roomDocumentIdentityKeys(doc)
@@ -474,21 +455,7 @@ function docBelongsToRoomIdentityClosure(
   if (!closureKeys.has(docKeys[docKeys.length - 1]) || !closureIds.has(doc.messageId)) {
     return false
   }
-  return fallbackDocNamesMessage(
-    doc,
-    { ...message, id: doc.messageId },
-    indexId,
-    scopeJid
-  )
-}
-
-function roomOwnerNamesMessage(owner: RoomDocumentOwner, message: RoomMessage): boolean {
-  if (owner.roomJid !== message.roomJid || owner.from !== message.from || owner.id !== message.id) {
-    return false
-  }
-  if (owner.occupantId && message.occupantId) return owner.occupantId === message.occupantId
-  if (owner.originId && message.originId) return owner.originId === message.originId
-  return false
+  return fallbackDocNamesMessage(doc, { ...message, id: doc.messageId })
 }
 
 function docBelongsToChat(doc: DocEntry, message: Message): boolean {
@@ -527,9 +494,12 @@ function createDocEntry(
   }
   if (message.stanzaId) doc.stanzaId = message.stanzaId
   if (message.originId) doc.originId = message.originId
+  if (message.isDelayed) doc.isDelayed = true
+  if (message.isOutgoing) doc.isOutgoing = true
   if (message.type === 'groupchat') {
     doc.nick = message.nick
     if (message.occupantId) doc.occupantId = message.occupantId
+    if (message.receivedAt) doc.receivedAt = message.receivedAt.getTime()
     doc.identityKeys = roomDocumentIdentityKeys(doc)
   }
   return doc
@@ -558,19 +528,24 @@ function retractionScopeOf(
 
 /**
  * Whether the message has been retracted even though the copy in hand does not
- * say so. Two blind spots, one per timescale:
+ * say so. Two blind spots:
  *
- * - This session: a retraction and its target's own indexing are independent
+ * - The write race: a retraction and its target's own indexing are independent
  *   fire-and-forget promises, so `removeMessage` can find no document and the
- *   indexing that follows would put the retracted body back
- *   (`retractedIdentities.ts`).
- * - An earlier session: an archive re-delivery carries the original body, and
- *   only the cached tombstone still remembers the retraction.
+ *   indexing that follows would put the retracted body back. The ledger
+ *   (`retractedIdentities.ts`) remembers the retraction, across restarts too.
+ * - An archive re-delivery carries the original body, and the cached tombstone
+ *   still remembers the retraction.
  *
  * The in-memory check answers first and costs nothing; the cache read is the
- * fallback.
+ * fallback. Callers await {@link ensureRetractionLedger} first, so the ledger has
+ * its stored records before it is asked.
  */
-function isKnownRetracted(message: Message | RoomMessage, scopeJid: string | null): boolean {
+function isKnownRetracted(
+  message: Message | RoomMessage,
+  scopeJid: string | null,
+  requireCorroboration = false
+): boolean {
   const aliases =
     message.type === 'groupchat'
       ? roomRetractionAliases(message)
@@ -580,17 +555,31 @@ function isKnownRetracted(message: Message | RoomMessage, scopeJid: string | nul
     aliases,
     (record) =>
       message.type === 'groupchat'
-        ? roomMessageAuthor(message, record) && !archiveIdentityConflict(message, record)
-          && (!record.moderation || !!record.stanzaId && getRoomModerationId(message, scopeJid) === record.stanzaId)
+        ? roomRetractionRecordApplies(message, record, scopeJid) && (!requireCorroboration ||
+          !!message.stanzaId && message.stanzaId === record.stanzaId ||
+          !!message.originId && message.originId === record.originId ||
+          !!message.occupantId && message.occupantId === record.actorOccupantId)
         : chatMessageAuthor(message, record) && !archiveIdentityConflict(message, record)
   ) !== undefined
+}
+
+/**
+ * Whether the session ledger may judge this copy BEFORE it is resolved against
+ * the cache. A room re-delivery must first attach to the row it re-delivers and
+ * take that row's receipt instant (`resolveMessagesForIndex` does so on the
+ * write path), or a nick-level record would tombstone a copy of a later
+ * message; a first delivery is its own occurrence and can be judged at once.
+ */
+function judgedBeforeResolution(message: Message | RoomMessage): boolean {
+  return message.type !== 'groupchat' || isFirstDelivery(message)
 }
 
 async function isRetractedElsewhere(
   message: Message | RoomMessage,
   scopeJid: string | null
 ): Promise<boolean> {
-  if (isKnownRetracted(message, scopeJid)) return true
+  await ensureRetractionLedger(scopeJid)
+  if (judgedBeforeResolution(message) && isKnownRetracted(message, scopeJid)) return true
   return (await messageCache.areRetractedInCache([message], scopeJid))[0]
 }
 
@@ -605,7 +594,8 @@ async function rejectRetracted(
   fromCache: boolean,
   scopeJid: string | null
 ): Promise<(Message | RoomMessage)[]> {
-  const unknown = messages.filter((m) => !isKnownRetracted(m, scopeJid))
+  await ensureRetractionLedger(scopeJid)
+  const unknown = messages.filter((m) => !judgedBeforeResolution(m) || !isKnownRetracted(m, scopeJid))
   if (fromCache || unknown.length === 0) return unknown
   const retracted = await messageCache.areRetractedInCache(unknown, scopeJid)
   return unknown.filter((_, i) => !retracted[i])
@@ -706,14 +696,8 @@ async function writeIndexBatch(
       }
       return entry.after
     }
-    const indexedMessages = new Map<string, Message | RoomMessage>()
-    const removedIds = new Set<string>()
-    const remove = async (message: Message | RoomMessage, closure?: RoomIdentityClosure | ChatIdentityClosure, source?: Message | RoomMessage, keep?: DocEntry) => {
-      for (const id of await removeMessageEntries(tx, message, scopeJid, getPostings, closure, source, keep)) {
-        removedIds.add(id)
-        indexedMessages.delete(id)
-      }
-    }
+    const remove = (message: Message | RoomMessage, closure?: RoomIdentityClosure | ChatIdentityClosure, source?: Message | RoomMessage, keep?: DocEntry) =>
+      removeMessageEntries(tx, message, getPostings, closure, source, keep)
     try {
       if (removal && !messages.length) await remove(removal.message, removal.identityClosure)
       for (let i = 0; i < resolved.length; i++) {
@@ -743,7 +727,6 @@ async function writeIndexBatch(
         const existing = await docsStore.get(indexId)
         if (existing) continue
         await docsStore.put(doc)
-        indexedMessages.set(indexId, message)
         for (const token of doc.tokens) (await getPostings(token)).add(indexId)
       }
       for (const [token, { before, after }] of postings) {
@@ -759,8 +742,6 @@ async function writeIndexBatch(
       await tx.done.catch(() => {})
       throw error
     }
-    for (const id of removedIds) roomDocumentOwners.delete(roomOwnerKey(id, scopeJid))
-    for (const [id, message] of indexedMessages) recordRoomDocumentOwner(id, message, scopeJid)
   })
 }
 
@@ -781,13 +762,11 @@ export async function removeMessage(
 async function removeMessageEntries(
   tx: IDBPTransaction<SearchIndexSchema, ['search-tokens', 'search-docs'], 'readwrite'>,
   message: Message | RoomMessage,
-  scopeJid: string | null,
   getPostings: (token: string) => Promise<Set<string>>,
   identityClosure?: RoomIdentityClosure | ChatIdentityClosure,
   source?: Message | RoomMessage,
   keep?: DocEntry,
-): Promise<string[]> {
-  const removedIds: string[] = []
+): Promise<void> {
   const docsStore = tx.objectStore(DOCS_STORE)
   const roomIdentityClosure =
     identityClosure && 'identityKeys' in identityClosure ? identityClosure : undefined
@@ -812,19 +791,12 @@ async function removeMessageEntries(
     ) return
     if (verification === 'room' && (message.type !== 'groupchat' || !docBelongsToRoom(doc, message))) return
     if (verification === 'room-source' && (!source || !fallbackDocNamesMessage(
-      doc, { ...message, id: source.id, from: source.from }, indexId, scopeJid
+      doc, { ...message, id: source.id, from: source.from }
     ))) return
-    if (verification === 'room-identity' && !fallbackDocNamesMessage(doc, message, indexId, scopeJid)) return
+    if (verification === 'room-identity' && !fallbackDocNamesMessage(doc, message)) return
     if (
       verification === 'room-closure' &&
-      (message.type !== 'groupchat' || !docBelongsToRoomIdentityClosure(
-        doc,
-        message,
-        indexId,
-        closureKeys,
-        closureIds,
-        scopeJid
-      ))
+      (message.type !== 'groupchat' || !docBelongsToRoomIdentityClosure(doc, message, closureKeys, closureIds))
     ) return
 
     if (keep && sameIndexDocument(doc, keep)) return
@@ -832,7 +804,6 @@ async function removeMessageEntries(
 
     // Remove the document
     await docsStore.delete(indexId)
-    removedIds.push(indexId)
   }
 
   await drop(
@@ -864,8 +835,6 @@ async function removeMessageEntries(
       }
     }
   }
-
-  return removedIds
 }
 
 /**
@@ -909,7 +878,9 @@ export async function search(
   const uniqueAllTokens = [...new Set(allTokens)]
   if (uniqueAllTokens.length === 0) return []
 
-  const db = await getDB()
+  const scopeJid = getStorageScopeJid()
+  await ensureRetractionLedger(scopeJid)
+  const db = await getDB(scopeJid)
   const tx = db.transaction([TOKENS_STORE, DOCS_STORE], 'readonly')
   const tokensStore = tx.objectStore(TOKENS_STORE)
   const docsStore = tx.objectStore(DOCS_STORE)
@@ -965,27 +936,64 @@ export async function search(
   }
 
   // Fetch matching documents
-  const docs: DocEntry[] = []
+  const candidates: DocEntry[] = []
   for (const indexId of result) {
     const doc = await docsStore.get(indexId)
-    if (doc) {
-      // Apply conversation filter if specified
-      if (options?.conversationId && doc.conversationId !== options.conversationId) {
-        continue
-      }
-      // Apply isRoom filter if specified
-      if (options?.isRoom !== undefined && doc.isRoom !== options.isRoom) {
-        continue
-      }
-      // Post-filter: verify exact phrases appear contiguously in the body
-      if (parsed.phrases.length > 0) {
-        const bodyLower = doc.body.toLowerCase()
-        const allPhrasesMatch = parsed.phrases.every((phrase) =>
-          bodyLower.includes(phrase)
-        )
-        if (!allPhrasesMatch) continue
-      }
-      docs.push(doc)
+    if (doc) candidates.push(doc)
+  }
+  await tx.done
+
+  const messages = candidates.map((doc): Message | RoomMessage => {
+    const fields = {
+      id: doc.messageId ?? doc.indexId.replace(/^(chat:|room:)/, ''),
+      from: doc.from,
+      body: doc.body,
+      timestamp: new Date(doc.timestamp),
+      stanzaId: doc.stanzaId,
+      originId: doc.originId,
+      isOutgoing: doc.isOutgoing ?? false,
+      isDelayed: doc.isDelayed,
+      ...(doc.receivedAt !== undefined ? { receivedAt: new Date(doc.receivedAt) } : {}),
+    }
+    return doc.isRoom
+      ? { ...fields, type: 'groupchat', roomJid: doc.conversationId,
+        nick: doc.nick ?? doc.from.split('/')[1], occupantId: doc.occupantId }
+      : { ...fields, type: 'chat', conversationId: doc.conversationId }
+  })
+  const cachedRetractions = await messageCache.areRetractedInCache(messages, scopeJid)
+  const docs: DocEntry[] = []
+  const retracted: (Message | RoomMessage)[] = []
+  for (const [index, doc] of candidates.entries()) {
+    const message = messages[index]
+    if (isKnownRetracted(message, scopeJid, true) || cachedRetractions[index]) {
+      retracted.push(message)
+      continue
+    }
+    // Apply conversation filter if specified
+    if (options?.conversationId && doc.conversationId !== options.conversationId) {
+      continue
+    }
+    // Apply isRoom filter if specified
+    if (options?.isRoom !== undefined && doc.isRoom !== options.isRoom) {
+      continue
+    }
+    // Post-filter: verify exact phrases appear contiguously in the body
+    if (parsed.phrases.length > 0) {
+      const bodyLower = doc.body.toLowerCase()
+      const allPhrasesMatch = parsed.phrases.every((phrase) =>
+        bodyLower.includes(phrase)
+      )
+      if (!allPhrasesMatch) continue
+    }
+    docs.push(doc)
+  }
+
+  for (const message of retracted) {
+    try {
+      await removeMessage(message, scopeJid, message.type === 'groupchat'
+        ? { identityKeys: roomRetractionAliases(message), ids: [message.id] } : undefined)
+    } catch (error) {
+      console.warn('Failed to remove a retracted search document:', error)
     }
   }
 
@@ -1012,6 +1020,9 @@ export async function search(
       stanzaId: doc.stanzaId,
       originId: doc.originId,
       occupantId: doc.occupantId,
+      ...(doc.isDelayed ? { isDelayed: true } : {}),
+      ...(doc.isOutgoing ? { isOutgoing: true } : {}),
+      ...(doc.receivedAt !== undefined ? { receivedAt: doc.receivedAt } : {}),
     }
   })
 }
@@ -1161,7 +1172,6 @@ async function clearIndexData(scopeJid: string | null): Promise<void> {
     await tx.objectStore(DOCS_STORE).clear()
     await tx.objectStore(META_STORE).clear()
     await tx.done
-    clearRoomDocumentOwners(scopeJid)
   })
 }
 
@@ -1189,5 +1199,4 @@ export async function closeSearchIndex(): Promise<void> {
 export function _resetDBForTesting(): void {
   dbPromise = null
   dbNameForPromise = null
-  roomDocumentOwners.clear()
 }

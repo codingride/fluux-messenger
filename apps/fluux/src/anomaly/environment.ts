@@ -31,6 +31,8 @@ const PLATFORM: Readonly<Record<PlatformOS, Opaque>> = Object.freeze({
   macos: TAG.platformMacos,
   linux: TAG.platformLinux,
   windows: TAG.platformWindows,
+  ios: TAG.platformIos,
+  android: TAG.platformAndroid,
   other: TAG.platformWeb,
 })
 

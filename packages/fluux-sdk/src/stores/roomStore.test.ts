@@ -520,6 +520,7 @@ describe('roomStore', () => {
       }), [{
         type: 'groupchat',
         id: 'msg1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         from: 'test@conference.example.com/user',
         roomJid: 'test@conference.example.com',
         nick: 'user',
@@ -763,6 +764,7 @@ describe('roomStore', () => {
         lastMessage: {
           type: 'groupchat',
           id: 'msg1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           from: 'with-message@conference.example.com/user',
           roomJid: 'with-message@conference.example.com',
           nick: 'user',
@@ -799,6 +801,7 @@ describe('roomStore', () => {
       roomStore.getState().addMessage('room-a@conference.example.com', {
         type: 'groupchat',
         id: 'new-msg',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         from: 'room-a@conference.example.com/otheruser',
         roomJid: 'room-a@conference.example.com',
         nick: 'otheruser',
@@ -833,6 +836,7 @@ describe('roomStore', () => {
       roomStore.getState().addMessage('room-a@conference.example.com', {
         type: 'groupchat',
         id: 'new-msg',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         from: 'room-a@conference.example.com/otheruser',
         roomJid: 'room-a@conference.example.com',
         nick: 'otheruser',
@@ -861,6 +865,7 @@ describe('roomStore', () => {
       }), [{
         type: 'groupchat',
         id: 'msg1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         from: 'room-a@conference.example.com/user',
         roomJid: 'room-a@conference.example.com',
         nick: 'user',
@@ -906,6 +911,7 @@ describe('roomStore', () => {
       roomStore.getState().addMessage('room-a@conference.example.com', {
         type: 'groupchat',
         id: 'new-msg',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         from: 'room-a@conference.example.com/otheruser',
         roomJid: 'room-a@conference.example.com',
         nick: 'otheruser',
@@ -931,6 +937,7 @@ describe('roomStore', () => {
       }), [{
         type: 'groupchat',
         id: 'msg1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         from: 'test@conference.example.com/user',
         roomJid: 'test@conference.example.com',
         nick: 'user',
@@ -979,6 +986,7 @@ describe('roomStore', () => {
       }), [{
         type: 'groupchat',
         id: 'msg1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         from: 'test@conference.example.com/user',
         roomJid: 'test@conference.example.com',
         nick: 'user',
@@ -998,6 +1006,7 @@ describe('roomStore', () => {
       roomStore.getState().addMessage('test@conference.example.com', {
         type: 'groupchat',
         id: 'msg2',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         from: 'test@conference.example.com/otheruser',
         roomJid: 'test@conference.example.com',
         nick: 'otheruser',
@@ -1377,6 +1386,7 @@ describe('roomStore', () => {
       const msg1: RoomMessage = {
         type: 'groupchat',
         id: 'msg-1',
+        originId: undefined, occupantId: undefined,
         stanzaId: 'server-id-123',
         roomJid: 'test@conference.example.com',
         from: 'test@conference.example.com/alice',
@@ -1390,6 +1400,7 @@ describe('roomStore', () => {
       const msg2: RoomMessage = {
         type: 'groupchat',
         id: 'msg-2',
+        originId: undefined, occupantId: undefined,
         stanzaId: 'server-id-123',
         roomJid: 'test@conference.example.com',
         from: 'test@conference.example.com/alice',
@@ -1412,6 +1423,7 @@ describe('roomStore', () => {
       const msg1: RoomMessage = {
         type: 'groupchat',
         id: 'msg-same-id',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid: 'test@conference.example.com',
         from: 'test@conference.example.com/alice',
         nick: 'alice',
@@ -1420,22 +1432,54 @@ describe('roomStore', () => {
         isOutgoing: false,
       }
 
-      // Same from + id (client duplicate)
+      // Same from + id: the history copy of msg1 on rejoin. A re-delivery marks
+      // itself with a XEP-0203 delay stamp, and that is what lets the from+id
+      // rung recognise it.
       const msg2: RoomMessage = {
         type: 'groupchat',
         id: 'msg-same-id',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid: 'test@conference.example.com',
         from: 'test@conference.example.com/alice',
         nick: 'alice',
         body: 'Hello!',
-        timestamp: new Date(),
+        timestamp: new Date(msg1.timestamp.getTime() + 60_000),
         isOutgoing: false,
+        isDelayed: true,
       }
 
       roomStore.getState().addMessage('test@conference.example.com', msg1)
       roomStore.getState().addMessage('test@conference.example.com', msg2)
 
       expect(roomWindow('test@conference.example.com').length).toBe(1)
+    })
+
+    // The delivery-channel clause (docs/MESSAGE_IDENTIFIERS.md §3): a room
+    // broadcasts a message once, so a second live message with no delay stamp is a
+    // new message that reused the client id, not a copy — a departed occupant's
+    // id, re-issued by whoever holds the nick now.
+    it('keeps a second first delivery sharing from + id as its own row', () => {
+      roomStore.getState().addRoom(createRoom('test@conference.example.com'))
+      const first = { ...createMessage('reused', 'test@conference.example.com', 'alice', 'from the first alice', false, new Date(1_000)), receivedAt: new Date(1_000) }
+      const second = { ...createMessage('reused', 'test@conference.example.com', 'alice', 'from the second alice', false, new Date(2_000)), receivedAt: new Date(2_000) }
+
+      roomStore.getState().addMessage('test@conference.example.com', first)
+      roomStore.getState().addMessage('test@conference.example.com', second)
+
+      expect(roomWindow('test@conference.example.com').map((m) => m.body)).toEqual(['from the first alice', 'from the second alice'])
+    })
+
+    // A late joiner holds the first message as a history copy; the live message
+    // with the reused client id is received after it and is still a new message.
+    it('keeps a first delivery apart from a delayed row sharing from + id', () => {
+      roomStore.getState().addRoom(createRoom('test@conference.example.com'))
+      const viaHistory = { ...createMessage('reused', 'test@conference.example.com', 'alice', 'from the first alice', false, new Date(1_000)), isDelayed: true, receivedAt: new Date(1_500) }
+      const live = { ...createMessage('reused', 'test@conference.example.com', 'alice', 'from the second alice', false, new Date(2_000)), receivedAt: new Date(2_000) }
+
+      roomStore.setState((state) => ({ messages: new Map(state.messages).set('test@conference.example.com', [viaHistory]) }))
+      roomStore.getState().addMessage('test@conference.example.com', live)
+
+      expect(roomWindow('test@conference.example.com').map((m) => m.body)).toEqual(['from the first alice', 'from the second alice'])
     })
 
     it('should deduplicate messages by originId (XEP-0359)', () => {
@@ -1445,6 +1489,7 @@ describe('roomStore', () => {
       const msg1: RoomMessage = {
         type: 'groupchat',
         id: 'client-uuid-1',
+        stanzaId: undefined, occupantId: undefined,
         originId: 'client-uuid-1',
         roomJid: 'test@conference.example.com',
         from: 'test@conference.example.com/me',
@@ -1458,6 +1503,7 @@ describe('roomStore', () => {
       const msg2: RoomMessage = {
         type: 'groupchat',
         id: 'different-id',
+        occupantId: undefined,
         originId: 'client-uuid-1',
         stanzaId: 'muc-stanza-456',
         roomJid: 'test@conference.example.com',
@@ -1481,6 +1527,7 @@ describe('roomStore', () => {
       const msg1: RoomMessage = {
         type: 'groupchat',
         id: 'msg-same-id',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid: 'test@conference.example.com',
         from: 'test@conference.example.com/alice',
         nick: 'alice',
@@ -1493,6 +1540,7 @@ describe('roomStore', () => {
       const msg2: RoomMessage = {
         type: 'groupchat',
         id: 'msg-same-id',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid: 'test@conference.example.com',
         from: 'test@conference.example.com/bob',
         nick: 'bob',
@@ -1513,6 +1561,7 @@ describe('roomStore', () => {
       const msg1: RoomMessage = {
         type: 'groupchat',
         id: 'msg-1',
+        originId: undefined, occupantId: undefined,
         stanzaId: 'server-id-123',
         roomJid: 'test@conference.example.com',
         from: 'test@conference.example.com/alice',
@@ -1525,6 +1574,7 @@ describe('roomStore', () => {
       const msg2: RoomMessage = {
         type: 'groupchat',
         id: 'msg-2',
+        originId: undefined, occupantId: undefined,
         stanzaId: 'server-id-123',
         roomJid: 'test@conference.example.com',
         from: 'test@conference.example.com/alice',
@@ -2547,6 +2597,7 @@ describe('roomStore', () => {
       const cached: RoomMessage = {
         type: 'groupchat',
         id: 'cached-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -2653,7 +2704,7 @@ describe('roomStore', () => {
       expect(roomStore.getState().activationPending).toBe(false)
       expect(roomStore.getState().activeRoomJid).toBeNull()
 
-      release([{ type: 'groupchat', id: 'cached', roomJid, from: `${roomJid}/alice`, nick: 'alice', body: 'Cached history', timestamp: new Date(), isOutgoing: false }])
+      release([{ type: 'groupchat', id: 'cached', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid, from: `${roomJid}/alice`, nick: 'alice', body: 'Cached history', timestamp: new Date(), isOutgoing: false }])
       await opening
       expect(roomStore.getState().activeRoomJid).toBeNull()
       expect(roomStore.getState().firstNewMessageMarkers).toEqual(markers)
@@ -2686,6 +2737,7 @@ describe('roomStore', () => {
       const roomMsgAt = (id: string, offsetMinutes: number): RoomMessage => ({
         type: 'groupchat',
         id,
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -2772,13 +2824,13 @@ describe('roomStore', () => {
 
     it('records a persisted GapInterval when a forward catch-up ends incomplete', async () => {
       const recent: RoomMessage = {
-        type: 'groupchat', id: 'recent', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'recent', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'recent', timestamp: new Date('2026-06-10T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().addRoom(createRoom(jid), [recent])
 
       const fetched: RoomMessage = {
-        type: 'groupchat', id: 'edge', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'edge', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'edge', timestamp: new Date('2026-05-14T09:00:00Z'), isOutgoing: false,
       }
       // Forward catch-up truncated (complete=false) at the edge message.
@@ -2804,14 +2856,14 @@ describe('roomStore', () => {
 
     it('plants a seam when a fetch-latest page lands disjoint above held history', async () => {
       const held: RoomMessage = {
-        type: 'groupchat', id: 'held', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'held', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'held', timestamp: new Date('2026-07-06T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().addRoom(createRoom(jid, { joined: true, lastMessage: held
 }), [held])
 
       const fetched: RoomMessage = {
-        type: 'groupchat', id: 'fresh', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'fresh', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z'), isOutgoing: false,
       }
       // backward + isFetchLatest=true = a `before:''` fetch-latest page
@@ -2830,14 +2882,14 @@ describe('roomStore', () => {
 
     it('does NOT plant a seam when the fetch-latest page overlaps held history (dedupe)', () => {
       const held: RoomMessage = {
-        type: 'groupchat', id: 'shared', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'shared', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'shared', timestamp: new Date('2026-07-14T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().addRoom(createRoom(jid, { joined: true, lastMessage: held
 }), [held])
 
       const fresh: RoomMessage = {
-        type: 'groupchat', id: 'fresh', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'fresh', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z'), isOutgoing: false,
       }
       const dupe: RoomMessage = { ...held } // same id → dedupe hit → connection proof
@@ -2852,7 +2904,7 @@ describe('roomStore', () => {
       // first-ever sync — so every already-cached room never got one and Phase B
       // fell back to the raw cache bottom.
       const held: RoomMessage = {
-        type: 'groupchat', id: 'held', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'held', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'held', timestamp: new Date('2026-07-20T00:00:00Z'), isOutgoing: false,
         stanzaId: 'local-edge',
       }
@@ -2861,7 +2913,7 @@ describe('roomStore', () => {
       expect(roomStore.getState().getRoomCoverage(jid)).toBeUndefined()
 
       const fetched: RoomMessage = {
-        type: 'groupchat', id: 'caught-up', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'caught-up', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'caught up', timestamp: new Date('2026-07-21T00:00:00Z'), isOutgoing: false,
         stanzaId: 'newer',
       }
@@ -2892,7 +2944,7 @@ describe('roomStore', () => {
       // draw "Beginning of conversation" at the top of the July slice and disable
       // load-more, stranding all the older history that is already cached.
       const residentTop: RoomMessage = {
-        type: 'groupchat', id: 'july-top', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'july-top', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'resident window top', timestamp: new Date('2026-07-13T14:21:40Z'),
         isOutgoing: false, stanzaId: 'july-top-archive-id',
       }
@@ -2903,7 +2955,7 @@ describe('roomStore', () => {
       // A Phase B page from January: it resumed from the cache-bottom cursor,
       // NOT from the resident window's oldest message, and hit the archive start.
       const januaryPage: RoomMessage = {
-        type: 'groupchat', id: 'jan-first', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'jan-first', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'first message ever', timestamp: new Date('2026-01-26T15:12:00Z'),
         isOutgoing: false, stanzaId: 'jan-first-archive-id',
       }
@@ -2920,7 +2972,7 @@ describe('roomStore', () => {
       // window's own oldest archive id, so complete=true really does mean the
       // visible timeline reached the start. The fix must not suppress this.
       const residentBottom: RoomMessage = {
-        type: 'groupchat', id: 'oldest-resident', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'oldest-resident', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'oldest resident', timestamp: new Date('2026-02-01T00:00:00Z'),
         isOutgoing: false, stanzaId: 'oldest-resident-archive-id',
       }
@@ -2929,7 +2981,7 @@ describe('roomStore', () => {
       }), [residentBottom])
 
       const firstEver: RoomMessage = {
-        type: 'groupchat', id: 'jan-first', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'jan-first', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'first message ever', timestamp: new Date('2026-01-26T15:12:00Z'),
         isOutgoing: false, stanzaId: 'jan-first-archive-id',
       }
@@ -2941,13 +2993,13 @@ describe('roomStore', () => {
 
     it('does NOT plant a seam for a plain backward pagination page (isFetchLatest omitted)', () => {
       const held: RoomMessage = {
-        type: 'groupchat', id: 'held', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'held', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'held', timestamp: new Date('2026-07-06T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().addRoom(createRoom(jid, { joined: true, lastMessage: held
 }), [held])
       const older: RoomMessage = {
-        type: 'groupchat', id: 'older', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'older', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'older', timestamp: new Date('2026-07-01T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [older], {}, false, 'backward')
@@ -2957,7 +3009,7 @@ describe('roomStore', () => {
 
     it('does not plant a seam from a preview timestamp when the resident array is empty; flags coverage unproven instead (finding 10)', () => {
       const held: RoomMessage = {
-        type: 'groupchat', id: 'held', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'held', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'held', timestamp: new Date('2026-07-06T00:00:00Z'), isOutgoing: false,
       }
       // Fresh-run shape: resident array EMPTY, preview (meta.lastMessage) persisted.
@@ -2965,7 +3017,7 @@ describe('roomStore', () => {
       roomStore.getState().addRoom(createRoom(jid, { joined: true, lastMessage: held }))
 
       const fetched: RoomMessage = {
-        type: 'groupchat', id: 'fresh', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'fresh', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [fetched], {}, true, 'backward', { preserveGapMarker: false, isFetchLatest: true })
@@ -2978,7 +3030,7 @@ describe('roomStore', () => {
 
     it('survives an unrelated later merge that does not re-affirm the flag (finding 10 follow-up: setMAMQueryCompleted must not wipe it)', () => {
       const held: RoomMessage = {
-        type: 'groupchat', id: 'held', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'held', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'held', timestamp: new Date('2026-07-06T00:00:00Z'), isOutgoing: false,
       }
       // Fresh-run shape: resident array EMPTY, preview persisted. Room stays
@@ -2986,7 +3038,7 @@ describe('roomStore', () => {
       roomStore.getState().addRoom(createRoom(jid, { joined: true, lastMessage: held }))
 
       const fetched: RoomMessage = {
-        type: 'groupchat', id: 'fresh', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'fresh', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [fetched], {}, true, 'backward', { preserveGapMarker: false, isFetchLatest: true })
@@ -2996,7 +3048,7 @@ describe('roomStore', () => {
       // omitted). Hits neither coverage-proving branch (resident stays empty,
       // no gap was recorded) — must NOT touch coverageBottomUnproven.
       const older: RoomMessage = {
-        type: 'groupchat', id: 'older', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'older', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'older', timestamp: new Date('2026-07-01T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [older], {}, false, 'backward')
@@ -3011,7 +3063,7 @@ describe('roomStore', () => {
       roomStore.getState().addRoom(createRoom(jid, { joined: true }))
 
       const fetched: RoomMessage = {
-        type: 'groupchat', id: 'fresh', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'fresh', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'fresh', timestamp: new Date('2026-07-15T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [fetched], {}, true, 'backward', { preserveGapMarker: false, isFetchLatest: true })
@@ -3028,11 +3080,11 @@ describe('roomStore', () => {
       }]]) })
 
       const mid: RoomMessage = {
-        type: 'groupchat', id: 'mid', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'mid', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'mid', timestamp: new Date('2026-07-10T00:00:00Z'), isOutgoing: false,
       }
       const upper: RoomMessage = {
-        type: 'groupchat', id: 'upper', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'upper', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'upper', timestamp: new Date('2026-07-14T06:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [mid, upper], {}, false, 'backward')
@@ -3046,7 +3098,7 @@ describe('roomStore', () => {
       })
 
       const below: RoomMessage = {
-        type: 'groupchat', id: 'below', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'below', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'below', timestamp: new Date('2026-07-05T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [below, mid], {}, false, 'backward')
@@ -3074,11 +3126,11 @@ describe('roomStore', () => {
       )
 
       const below: RoomMessage = {
-        type: 'groupchat', id: 'below', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'below', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'below', timestamp: new Date('2026-07-05T00:00:00Z'), isOutgoing: false,
       }
       const above: RoomMessage = {
-        type: 'groupchat', id: 'above', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'above', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'above', timestamp: new Date('2026-07-14T06:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [below, above], {}, false, 'backward')
@@ -3111,7 +3163,7 @@ describe('roomStore', () => {
       )
 
       const m: RoomMessage = {
-        type: 'groupchat', id: 'fwd', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'fwd', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'fwd', timestamp: new Date('2026-07-07T00:00:00Z'), isOutgoing: false,
       }
       // Incomplete forward page: gap start moves up and startId advances to page.last.
@@ -3139,7 +3191,7 @@ describe('roomStore', () => {
       vi.mocked(messageCache.saveRoomMessages).mockResolvedValue(false)
 
       const m: RoomMessage = {
-        type: 'groupchat', id: 'fwd', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'fwd', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'fwd', timestamp: new Date('2026-07-07T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [m], { last: 'new-cursor' }, false, 'forward')
@@ -3159,7 +3211,7 @@ describe('roomStore', () => {
       )
 
       const m: RoomMessage = {
-        type: 'groupchat', id: 'fwd', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'fwd', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'fwd', timestamp: new Date('2026-07-07T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [m], { last: 'c1' }, false, 'forward')
@@ -3192,11 +3244,11 @@ describe('roomStore', () => {
         .mockReturnValueOnce(new Promise<boolean>((r) => { resolveN1 = r }))
 
       const mN: RoomMessage = {
-        type: 'groupchat', id: 'n', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'n', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'n', timestamp: new Date('2026-07-02T00:00:00Z'), isOutgoing: false,
       }
       const mN1: RoomMessage = {
-        type: 'groupchat', id: 'n1', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'n1', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'n1', timestamp: new Date('2026-07-03T00:00:00Z'), isOutgoing: false,
       }
       // Page N then page N+1, both in flight before either write settles.
@@ -3219,11 +3271,11 @@ describe('roomStore', () => {
       }]]) })
 
       const mN: RoomMessage = {
-        type: 'groupchat', id: 'n', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'n', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'n', timestamp: new Date('2026-07-02T00:00:00Z'), isOutgoing: false,
       }
       const mN1: RoomMessage = {
-        type: 'groupchat', id: 'n1', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'n1', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'n1', timestamp: new Date('2026-07-03T00:00:00Z'), isOutgoing: false,
       }
       // Real-world shape: the IDB write resolves before the next page's merge
@@ -3243,7 +3295,7 @@ describe('roomStore', () => {
       vi.mocked(messageCache.saveRoomMessages).mockResolvedValue(false)
 
       const m: RoomMessage = {
-        type: 'groupchat', id: 'fwd', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'fwd', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'fwd', timestamp: new Date('2026-07-07T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [m], { last: 'c1' }, false, 'forward')
@@ -3255,7 +3307,7 @@ describe('roomStore', () => {
     it('fetch-latest establishes the coverage record and it survives resetRoomMAMStates (fresh session)', async () => {
       roomStore.getState().addRoom(createRoom(jid))
       const m: RoomMessage = {
-        type: 'groupchat', id: 'm1', roomJid: jid, from: `${jid}/a`, nick: 'a', stanzaId: 'sid-1',
+        type: 'groupchat', id: 'm1', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a', stanzaId: 'sid-1',
         body: 'm1', timestamp: new Date('2026-07-15T00:00:00Z'), isOutgoing: false,
       }
       const lookup = vi.spyOn(messageCache, 'resolveArchivePosition').mockResolvedValue(exactPosition(m, 'room'))
@@ -3282,7 +3334,7 @@ describe('roomStore', () => {
       vi.mocked(messageCache.saveRoomMessages).mockReturnValue(new Promise<boolean>((r) => { resolveSave = r }))
 
       const older: RoomMessage = {
-        type: 'groupchat', id: 'old', roomJid: jid, from: `${jid}/a`, nick: 'a', stanzaId: 'deeper',
+        type: 'groupchat', id: 'old', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a', stanzaId: 'deeper',
         body: 'old', timestamp: new Date('2026-07-01T00:00:00Z'), isOutgoing: false,
       }
       // Plain backward page resumed id-exactly from the coverage bottom.
@@ -3303,7 +3355,7 @@ describe('roomStore', () => {
       roomStore.setState({ roomCoverage: new Map([[jid, { bottomId: 'deep' }]]) })
 
       const older = {
-        type: 'groupchat', id: 'old', roomJid: jid, from: `${jid}/a`, nick: 'a', stanzaId: 'deeper',
+        type: 'groupchat', id: 'old', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a', stanzaId: 'deeper',
         body: 'old', timestamp: new Date('2026-07-01T00:00:00Z'), isOutgoing: false, noLocalStore: true,
       } as RoomMessage
       // Nothing persistable and no save in flight: the transition applies immediately.
@@ -3322,7 +3374,7 @@ describe('roomStore', () => {
       vi.mocked(messageCache.saveRoomMessages).mockResolvedValue(false)
 
       const older: RoomMessage = {
-        type: 'groupchat', id: 'old', roomJid: jid, from: `${jid}/a`, nick: 'a', stanzaId: 'deeper',
+        type: 'groupchat', id: 'old', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a', stanzaId: 'deeper',
         body: 'old', timestamp: new Date('2026-07-01T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [older], { first: 'deeper' }, false, 'backward', { preserveGapMarker: false, isFetchLatest: false, extras: { initialBefore: 'deep' } })
@@ -3367,7 +3419,7 @@ describe('roomStore', () => {
         new Promise<boolean>((r) => { resolveSave = r })
       )
       const m: RoomMessage = {
-        type: 'groupchat', id: 'fwd', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'fwd', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'fwd', timestamp: new Date('2026-07-07T00:00:00Z'), isOutgoing: false,
       }
       // Formation deferred on the held write.
@@ -3386,7 +3438,7 @@ describe('roomStore', () => {
       roomStore.getState().addRoom(createRoom(jid))
       roomStore.setState({ roomCoverage: new Map([[jid, { bottomId: 'deep' }]]) })
       const island: RoomMessage = {
-        type: 'groupchat', id: 'island', roomJid: jid, from: `${jid}/a`, nick: 'a', stanzaId: 'island-id',
+        type: 'groupchat', id: 'island', originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a', stanzaId: 'island-id',
         body: 'island', timestamp: new Date('2026-06-01T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [island], { first: 'island-id' }, true, 'backward', { preserveGapMarker: true, isFetchLatest: true, extras: { initialBefore: '' } })
@@ -3396,7 +3448,7 @@ describe('roomStore', () => {
     it('backward CLEARANCE with zero new persistable messages deletes immediately', () => {
       // Nothing new to persist → no crash window → no reason to defer.
       const above: RoomMessage = {
-        type: 'groupchat', id: 'above', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'above', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'above', timestamp: new Date('2026-07-14T06:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().addRoom(createRoom(jid), [above])
@@ -3417,7 +3469,7 @@ describe('roomStore', () => {
       roomStore.setState({ roomGaps: new Map([[jid, gap]]) })
 
       const ancient: RoomMessage = {
-        type: 'groupchat', id: 'ancient', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'ancient', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'ancient', timestamp: new Date('2026-07-01T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [ancient], {}, true, 'backward')
@@ -3452,12 +3504,12 @@ describe('roomStore', () => {
       setStorageScopeJid('alice@example.com')
       try {
         const recent: RoomMessage = {
-          type: 'groupchat', id: 'recent', roomJid: jid, from: `${jid}/b`, nick: 'b',
+          type: 'groupchat', id: 'recent', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
           body: 'recent', timestamp: new Date('2026-06-10T00:00:00Z'), isOutgoing: false,
         }
         roomStore.getState().addRoom(createRoom(jid), [recent])
         const fetched: RoomMessage = {
-          type: 'groupchat', id: 'edge', roomJid: jid, from: `${jid}/a`, nick: 'a',
+          type: 'groupchat', id: 'edge', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
           body: 'edge', timestamp: new Date('2026-05-14T09:00:00Z'), isOutgoing: false,
         }
         roomStore.getState().mergeRoomMAMMessages(jid, [fetched], {}, false, 'forward')
@@ -3505,12 +3557,12 @@ describe('roomStore', () => {
 
     it('persists roomGaps to localStorage so the marker survives a reload', async () => {
       const recent: RoomMessage = {
-        type: 'groupchat', id: 'recent', roomJid: jid, from: `${jid}/b`, nick: 'b',
+        type: 'groupchat', id: 'recent', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/b`, nick: 'b',
         body: 'recent', timestamp: new Date('2026-06-10T00:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().addRoom(createRoom(jid), [recent])
       const fetched: RoomMessage = {
-        type: 'groupchat', id: 'edge', roomJid: jid, from: `${jid}/a`, nick: 'a',
+        type: 'groupchat', id: 'edge', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid: jid, from: `${jid}/a`, nick: 'a',
         body: 'edge', timestamp: new Date('2026-05-14T09:00:00Z'), isOutgoing: false,
       }
       roomStore.getState().mergeRoomMAMMessages(jid, [fetched], {}, false, 'forward')
@@ -4448,6 +4500,7 @@ describe('roomStore', () => {
       const message: RoomMessage = {
         type: 'groupchat',
         id: 'original-uuid',
+        originId: undefined, occupantId: undefined,
         stanzaId: 'mam-archive-id-12345',
         roomJid,
         from: `${roomJid}/alice`,
@@ -4560,8 +4613,8 @@ describe('roomStore', () => {
       vi.mocked(messageCache.saveRoomMessages).mockClear()
 
       const mam: RoomMessage[] = [
-        { type: 'groupchat', id: 'bg-1', roomJid, from: `${roomJid}/bob`, nick: 'bob', body: 'caught up 1', timestamp: new Date('2024-02-01T10:00:00Z'), isOutgoing: false },
-        { type: 'groupchat', id: 'bg-2', roomJid, from: `${roomJid}/bob`, nick: 'bob', body: 'caught up 2', timestamp: new Date('2024-02-01T10:01:00Z'), isOutgoing: false },
+        { type: 'groupchat', id: 'bg-1', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid, from: `${roomJid}/bob`, nick: 'bob', body: 'caught up 1', timestamp: new Date('2024-02-01T10:00:00Z'), isOutgoing: false },
+        { type: 'groupchat', id: 'bg-2', stanzaId: undefined, originId: undefined, occupantId: undefined, roomJid, from: `${roomJid}/bob`, nick: 'bob', body: 'caught up 2', timestamp: new Date('2024-02-01T10:01:00Z'), isOutgoing: false },
       ]
 
       roomStore.getState().mergeRoomMAMMessages(roomJid, mam, {}, true, 'forward')
@@ -4580,6 +4633,7 @@ describe('roomStore', () => {
       const recentMessage: RoomMessage = {
         type: 'groupchat',
         id: 'recent-msg',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -4594,6 +4648,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-old-1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/bob`,
           nick: 'bob',
@@ -4604,6 +4659,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-old-2',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/charlie`,
           nick: 'charlie',
@@ -4639,6 +4695,7 @@ describe('roomStore', () => {
       const oldMessage: RoomMessage = {
         type: 'groupchat',
         id: 'old-local-msg',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -4653,6 +4710,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-new-1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/bob`,
           nick: 'bob',
@@ -4663,6 +4721,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-new-2',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/charlie`,
           nick: 'charlie',
@@ -4698,6 +4757,7 @@ describe('roomStore', () => {
       roomStore.getState().addMessage(roomJid, {
         type: 'groupchat',
         id: 'existing-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -4708,6 +4768,7 @@ describe('roomStore', () => {
       roomStore.getState().addMessage(roomJid, {
         type: 'groupchat',
         id: 'existing-2',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/bob`,
         nick: 'bob',
@@ -4721,6 +4782,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/charlie`,
           nick: 'charlie',
@@ -4731,6 +4793,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-2',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/dave`,
           nick: 'dave',
@@ -4797,6 +4860,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'm1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/alice`,
           nick: 'alice',
@@ -4808,6 +4872,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'm2',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/bob`,
           nick: 'bob',
@@ -4820,6 +4885,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'm3',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/charlie`,
           nick: 'charlie',
@@ -4856,6 +4922,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'f1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/alice`,
           nick: 'alice',
@@ -4867,6 +4934,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'f2',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/bob`,
           nick: 'bob',
@@ -4878,6 +4946,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'f3',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/charlie`,
           nick: 'charlie',
@@ -4913,6 +4982,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'older-1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/alice`,
           nick: 'alice',
@@ -4947,6 +5017,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'm2',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/bob`,
           nick: 'bob',
@@ -4978,6 +5049,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/alice`,
           nick: 'alice',
@@ -4988,6 +5060,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-2',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/bob`,
           nick: 'bob',
@@ -5010,6 +5083,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/alice`,
           nick: 'alice',
@@ -5044,6 +5118,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/alice`,
           nick: 'alice',
@@ -5064,6 +5139,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-1',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/alice`,
           nick: 'alice',
@@ -5074,6 +5150,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-2',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/bob`,
           nick: 'bob',
@@ -5084,6 +5161,7 @@ describe('roomStore', () => {
         {
           type: 'groupchat',
           id: 'mam-3',
+          stanzaId: undefined, originId: undefined, occupantId: undefined,
           roomJid,
           from: `${roomJid}/carol`,
           nick: 'carol',
@@ -5125,6 +5203,7 @@ describe('roomStore', () => {
       const lastMessage: RoomMessage = {
         type: 'groupchat',
         id: 'preview-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -5147,6 +5226,7 @@ describe('roomStore', () => {
       const oldMessage: RoomMessage = {
         type: 'groupchat',
         id: 'old-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -5160,6 +5240,7 @@ describe('roomStore', () => {
       const newMessage: RoomMessage = {
         type: 'groupchat',
         id: 'new-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/bob`,
         nick: 'bob',
@@ -5178,6 +5259,7 @@ describe('roomStore', () => {
       const newMessage: RoomMessage = {
         type: 'groupchat',
         id: 'new-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -5191,6 +5273,7 @@ describe('roomStore', () => {
       const oldMessage: RoomMessage = {
         type: 'groupchat',
         id: 'old-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/bob`,
         nick: 'bob',
@@ -5209,6 +5292,7 @@ describe('roomStore', () => {
       const message: RoomMessage = {
         type: 'groupchat',
         id: 'preview-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid: 'nonexistent@conference.example.com',
         from: 'nonexistent@conference.example.com/alice',
         nick: 'alice',
@@ -5251,6 +5335,7 @@ describe('roomStore', () => {
       const cachedMessage: RoomMessage = {
         type: 'groupchat',
         id: 'cached-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -5288,6 +5373,7 @@ describe('roomStore', () => {
       const newerMessage: RoomMessage = {
         type: 'groupchat',
         id: 'new-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/bob`,
         nick: 'bob',
@@ -5301,6 +5387,7 @@ describe('roomStore', () => {
       const olderCachedMessage: RoomMessage = {
         type: 'groupchat',
         id: 'old-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -5333,6 +5420,7 @@ describe('roomStore', () => {
       return {
         type: 'groupchat',
         id: `${roomJid}-${iso}`,
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -5457,6 +5545,7 @@ describe('roomStore', () => {
       return {
         type: 'groupchat',
         id,
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -5524,6 +5613,7 @@ describe('roomStore', () => {
       return {
         type: 'groupchat',
         id,
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -5590,6 +5680,7 @@ describe('roomStore', () => {
       return {
         type: 'groupchat',
         id,
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -5746,6 +5837,7 @@ describe('roomStore', () => {
       return {
         type: 'groupchat',
         id,
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -5890,6 +5982,7 @@ describe('roomStore', () => {
       return {
         type: 'groupchat',
         id,
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid,
         from: `${roomJid}/alice`,
         nick: 'alice',
@@ -6471,6 +6564,7 @@ describe('roomStore', () => {
       const realMessage: RoomMessage = {
         type: 'groupchat',
         id: 'real-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid: ROOM,
         from: `${ROOM}/alice`,
         nick: 'alice',
@@ -6487,6 +6581,7 @@ describe('roomStore', () => {
       const bodilessReaction: RoomMessage = {
         type: 'groupchat',
         id: 'react-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid: ROOM,
         from: `${ROOM}/bob`,
         nick: 'bob',
@@ -6508,6 +6603,7 @@ describe('roomStore', () => {
       const bodilessPlaceholder: RoomMessage = {
         type: 'groupchat',
         id: 'stuck-1',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid: ROOM,
         from: `${ROOM}/bob`,
         nick: 'bob',
@@ -6526,6 +6622,7 @@ describe('roomStore', () => {
       const realMessage: RoomMessage = {
         type: 'groupchat',
         id: 'real-2',
+        stanzaId: undefined, originId: undefined, occupantId: undefined,
         roomJid: ROOM,
         from: `${ROOM}/alice`,
         nick: 'alice',
@@ -6589,6 +6686,7 @@ describe('setActiveRoom new-message marker — delayed history unified with chat
     return {
       type: 'groupchat',
       id,
+      stanzaId: undefined, originId: undefined, occupantId: undefined,
       roomJid: ROOM,
       from: `${ROOM}/${nick}`,
       nick,
@@ -6733,14 +6831,25 @@ describe('roomStore pending retractions', () => {
     roomStore.getState().addRoom(createRoom(roomJid, { joined: true }))
   })
 
-  function occupantMessage(id: string): RoomMessage {
-    return { ...createMessage(id, roomJid, 'edaveine', 'to retract'), occupantId: 'occ-1' }
+  // A record is replayed onto the TARGET it outran. A target that reaches the
+  // window after the record does so through a re-delivery channel (a MAM page,
+  // discussion history, a cache load), never as a fresh live stanza — a room
+  // delivers a message before any retraction of it — so these fixtures carry the
+  // delay stamp such a channel carries, or a receipt instant before the record.
+  const RECEIVED_EARLIER = new Date(Date.now() - 60_000)
+
+  function occupantMessage(id: string, timestamp: Date = RECEIVED_EARLIER): RoomMessage {
+    return { ...createMessage(id, roomJid, 'edaveine', 'to retract', false, timestamp), occupantId: 'occ-1' }
   }
 
-  it('tombstones the target when it arrives after the retraction', () => {
+  function redelivered(message: RoomMessage): RoomMessage {
+    return { ...message, isDelayed: true, timestamp: new Date(Date.now() + 1_000) }
+  }
+
+  it('tombstones the target when it arrives after the retraction', async () => {
     roomStore.getState().recordPendingRetraction(roomJid, 'm1', `${roomJid}/edaveine`, 'occ-1')
 
-    roomStore.getState().addMessage(roomJid, occupantMessage('m1'))
+    await roomStore.getState().addMessage(roomJid, redelivered(occupantMessage('m1')))
 
     expect(roomWindow(roomJid)[0]).toMatchObject({
       id: 'm1',
@@ -6749,21 +6858,86 @@ describe('roomStore pending retractions', () => {
     expect(roomStore.getState().pendingRetractions.get(roomJid) ?? []).toHaveLength(0)
   })
 
-  it('matches the author by occupant-id, not by nick', () => {
+  it('matches the author by occupant-id, not by nick', async () => {
     // Same nick, different occupant: a nick can be reassigned after its owner leaves.
     roomStore.getState().recordPendingRetraction(roomJid, 'm1', `${roomJid}/edaveine`, 'occ-other')
 
-    roomStore.getState().addMessage(roomJid, occupantMessage('m1'))
+    await roomStore.getState().addMessage(roomJid, redelivered(occupantMessage('m1')))
 
     expect(roomWindow(roomJid)[0].isRetracted).toBeUndefined()
   })
 
-  it('falls back to the full room JID when neither side has an occupant-id', () => {
+  it('falls back to the full room JID when neither side has an occupant-id', async () => {
     roomStore.getState().recordPendingRetraction(roomJid, 'm1', `${roomJid}/edaveine`)
 
-    roomStore.getState().addMessage(roomJid, createMessage('m1', roomJid, 'edaveine', 'to retract'))
+    await roomStore.getState().addMessage(roomJid, redelivered(createMessage('m1', roomJid, 'edaveine', 'to retract')))
 
     expect(roomWindow(roomJid)[0]).toMatchObject({ isRetracted: true })
+  })
+
+  // The delivery-channel clause (docs/MESSAGE_IDENTIFIERS.md §3): a record naming
+  // a bare client id cannot be about a first delivery received after it. That is
+  // the message a newcomer to the nick sends with a re-issued id; the record
+  // keeps waiting for the re-delivery it is really about.
+  it('leaves a first delivery received after the record alone, and keeps the record', () => {
+    roomStore.getState().recordPendingRetraction(roomJid, 'm1', `${roomJid}/edaveine`)
+
+    const later = new Date(Date.now() + 1_000)
+    roomStore.getState().addMessage(roomJid, { ...createMessage('m1', roomJid, 'edaveine', 'the newcomer wrote this', false, later), receivedAt: later })
+
+    expect(roomWindow(roomJid)[0]).toMatchObject({ body: 'the newcomer wrote this' })
+    expect(roomWindow(roomJid)[0].isRetracted).toBeUndefined()
+    expect(roomStore.getState().pendingRetractions.get(roomJid) ?? []).toHaveLength(1)
+  })
+
+  it('still applies a record naming the archive id to a later first delivery', () => {
+    roomStore.getState().recordPendingRetraction(roomJid, 'archive-1', `${roomJid}/edaveine`)
+
+    const later = new Date(Date.now() + 1_000)
+    roomStore.getState().addMessage(roomJid, { ...createMessage('m1', roomJid, 'edaveine', 'to retract', false, later), receivedAt: later, stanzaId: 'archive-1' })
+
+    expect(roomWindow(roomJid)[0]).toMatchObject({ isRetracted: true })
+  })
+
+  // A copy is judged as the message it re-delivers: Bob's history copy attaches
+  // to Bob's resident row and takes its receipt instant, so a nick-level record
+  // older than that row does not tombstone the copy — or, through the archive-id
+  // backfill, Bob's row.
+  it('judges a re-delivery by the row it attaches to, not by its own channel', async () => {
+    roomStore.setState({ activeRoomJid: roomJid })
+    const departed = { ...createMessage('m1', roomJid, 'edaveine', '', false, new Date(1_000)), receivedAt: new Date(1_000), isRetracted: true, retractedAt: new Date(1_500) }
+    const newcomer = { ...createMessage('m1', roomJid, 'edaveine', 'the newcomer wrote this', false, new Date(2_000)), receivedAt: new Date(2_000) }
+    roomStore.setState((state) => ({ messages: new Map(state.messages).set(roomJid, [departed, newcomer]) }))
+    roomStore.getState().recordPendingRetraction(roomJid, 'm1', `${roomJid}/edaveine`)
+    expect(roomWindow(roomJid).map((m) => m.isRetracted ?? false)).toEqual([true, false])
+
+    await roomStore.getState().addMessage(roomJid, { ...newcomer, isDelayed: true, stanzaId: 'archive-b', timestamp: new Date(2_050), receivedAt: new Date(3_000) })
+
+    expect(roomWindow(roomJid).map((m) => [m.body, m.isRetracted ?? false, m.stanzaId])).toEqual([
+      ['', true, undefined],
+      ['the newcomer wrote this', false, 'archive-b'],
+    ])
+  })
+
+  // The residual the clause leaves open, pinned so it cannot change unnoticed: a
+  // retraction naming a reused client id resolves to the EARLIEST resident row.
+  // Right for a replayed retraction of the older message, wrong for the
+  // newcomer's own retraction — nothing in a room offering neither occupant ids
+  // nor archive ids can tell the two references apart.
+  it('resolves a bare client-id retraction to the earliest same-id row', () => {
+    roomStore.setState({ activeRoomJid: roomJid })
+    const departed = { ...createMessage('m1', roomJid, 'edaveine', '', false, new Date(1_000)), receivedAt: new Date(1_000), isRetracted: true, retractedAt: new Date(1_500) }
+    const newcomer = { ...createMessage('m1', roomJid, 'edaveine', 'the newcomer wrote this', false, new Date(2_000)), receivedAt: new Date(2_000) }
+    roomStore.getState().addMessage(roomJid, departed)
+    roomStore.getState().addMessage(roomJid, newcomer)
+    expect(roomWindow(roomJid)).toHaveLength(2)
+
+    roomStore.getState().updateMessage(roomJid, 'm1', { isRetracted: true, retractedAt: new Date(3_000) })
+
+    expect(roomWindow(roomJid).map((m) => [m.body, m.isRetracted ?? false])).toEqual([
+      ['', true],
+      ['the newcomer wrote this', false],
+    ])
   })
 
   it('applies to a resident target without recording anything', () => {
@@ -6778,12 +6952,11 @@ describe('roomStore pending retractions', () => {
 
   it('retracts the authorized occupant when resident client ids collide', () => {
     roomStore.setState({ activeRoomJid: roomJid })
-    const departed = { ...occupantMessage('m1'), occupantId: 'occ-departed', body: 'departed' }
+    const departed = { ...occupantMessage('m1', new Date(1_000)), occupantId: 'occ-departed', body: 'departed' }
     const newcomer = {
-      ...occupantMessage('m1'),
+      ...occupantMessage('m1', new Date(2_000)),
       occupantId: 'occ-newcomer',
       body: 'newcomer',
-      timestamp: new Date(departed.timestamp.getTime() + 1),
     }
     roomStore.setState({ messages: new Map([[roomJid, [departed, newcomer]]]) })
 
@@ -6879,6 +7052,7 @@ describe('roomStore parity drift regressions', () => {
     return {
       type: 'groupchat',
       id,
+      stanzaId: undefined, originId: undefined, occupantId: undefined,
       roomJid,
       from: `${roomJid}/${nick}`,
       nick,

@@ -55,6 +55,7 @@ const KEY_WARNING = /unique "key" prop/
 
 function message(overrides: Partial<BaseMessage>): BaseMessage {
   return {
+    stanzaId: undefined, originId: undefined,
     id: 'msg-default',
     from: 'user@example.com',
     body: 'hello',
@@ -67,7 +68,7 @@ function message(overrides: Partial<BaseMessage>): BaseMessage {
 
 describe('MessageList — row keys resilient to id-less messages', () => {
   it('deduplicates direct-chat IDs and preserves mounted row state during archive backfill', () => {
-    const first: BaseMessage = { type: 'chat', id: 'direct', from: 'peer@example.com',
+    const first: BaseMessage = { type: 'chat', id: 'direct', stanzaId: undefined, originId: undefined, from: 'peer@example.com',
       body: 'Direct message', timestamp: new Date(1000), isOutgoing: false }
     const renderMessage = (msg: BaseMessage) => <input aria-label={msg.body} defaultValue="Local row state" />
     const { container, rerender } = render(<MessageList messages={[first]} conversationId="peer@example.com" renderMessage={renderMessage} />)
@@ -86,7 +87,7 @@ describe('MessageList — row keys resilient to id-less messages', () => {
 
   it.each(['body', 'timestamp'])('renders uncertain and confirmed rows with reused client IDs when %s differs', difference => {
     const first: RoomMessage = { type: 'groupchat', roomJid: 'room@example.com', from: 'room@example.com/Peer', nick: 'Peer',
-      id: 'shared', occupantId: 'peer', stanzaId: 'same', body: 'Uncertain row', timestamp: new Date(1000), isOutgoing: false }
+      id: 'shared', originId: undefined, occupantId: 'peer', stanzaId: 'same', body: 'Uncertain row', timestamp: new Date(1000), isOutgoing: false }
     const second = roomMessageFixture({ ...first, stanzaId: 'later-archive',
       ...(difference === 'body' ? { body: 'Confirmed row' } : { timestamp: new Date(2000) }) })
     const { container, rerender } = render(<MessageList messages={[first, second]}
@@ -211,6 +212,47 @@ describe('MessageList — row keys resilient to id-less messages', () => {
     expect(errorSpy.mock.calls.some((args) => args.some((arg) =>
       typeof arg === 'string' && KEY_WARNING.test(arg)
     ))).toBe(false)
+  })
+
+  // Two first deliveries of a room can share a client id and a nick with no
+  // occupant id and no archive id: the SDK keeps them as two rows (the
+  // delivery-channel clause in docs/MESSAGE_IDENTIFIERS.md), and they share one
+  // row HANDLE. The React key carries the receipt instant so both render.
+  it('renders two occupant-less, archive-less rows sharing a client id', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const departed = message({ id: 'reused', type: 'groupchat', body: 'departed' })
+    const newcomer = message({ id: 'reused', type: 'groupchat', body: 'newcomer', timestamp: new Date(2024, 0, 1, 12, 1) })
+
+    const { container, rerender } = render(
+      <MessageList messages={[departed, newcomer]} conversationId="room@conference.example.com" renderMessage={(msg) => <div>{msg.body}</div>} />
+    )
+
+    const rows = [...container.querySelectorAll<HTMLElement>('.message-row')]
+    expect(rows.map((row) => row.textContent)).toEqual(['departed', 'newcomer'])
+    // One handle for both: addressing stays ambiguous, rendering does not.
+    expect(rows.map((row) => row.dataset.messageRowId)).toEqual(['reused', 'reused'])
+    expect(errorSpy.mock.calls.some((args) => args.some((arg) => typeof arg === 'string' && KEY_WARNING.test(arg)))).toBe(false)
+
+    // The same instant is one object presented again, and the safety net still folds it.
+    rerender(<MessageList messages={[departed, { ...departed }]} conversationId="room@conference.example.com" renderMessage={(msg) => <div>{msg.body}</div>} />)
+    expect(container.querySelectorAll('.message-row')).toHaveLength(1)
+  })
+
+  // One occupant's client re-issuing a client id is the same shape: two first
+  // deliveries under one occupant-qualified handle, both rendered.
+  it('renders two same-occupant, archive-less rows sharing a client id', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const first = { ...message({ id: 'reused', type: 'groupchat', body: 'before the restart' }), occupantId: 'occ-1', receivedAt: new Date(2024, 0, 1, 12, 0) }
+    const second = { ...first, body: 'after the restart', timestamp: new Date(2024, 0, 1, 12, 1), receivedAt: new Date(2024, 0, 1, 12, 1) }
+
+    const { container } = render(
+      <MessageList messages={[first, second]} conversationId="room@conference.example.com" renderMessage={(msg) => <div>{msg.body}</div>} />
+    )
+
+    const rows = [...container.querySelectorAll<HTMLElement>('.message-row')]
+    expect(rows.map((row) => row.textContent)).toEqual(['before the restart', 'after the restart'])
+    expect(new Set(rows.map((row) => row.dataset.messageRowId)).size).toBe(1)
+    expect(errorSpy.mock.calls.some((args) => args.some((arg) => typeof arg === 'string' && KEY_WARNING.test(arg)))).toBe(false)
   })
 
   it.each([undefined, 'same-author'])('renders distinct archive rows with reused client IDs and occupant %s', occupantId => {

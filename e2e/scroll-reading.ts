@@ -25,7 +25,7 @@ import {
   getSpacerHeight,
   getDebugState,
   findBottomVisibleMessage,
-  stressMsgIndex,
+  getRoomMessageIndices,
   getMessageOffsetFromTop,
   sampleScrollTop,
   waitForAnchorSettled,
@@ -41,91 +41,116 @@ test.afterEach(assertScrollShadow)
 
 // ── Invariant tests ───────────────────────────────────────────────────────────
 
-test('clamped top wheel starts older history before any scroll event', async ({ page }, testInfo) => {
-  await page.setViewportSize({ width: 900, height: 700 })
-  await bootDemo(page, '/demo.html?tutorial=false&virt=1&window=100&stress=rooms:1,messages:250,msgStep:0,mode:live')
-  await enableScrollTrace(page)
-  await withPinWindow(page, { trigger: 'switch' }, async () => {
-    await navigateToStressRoom(page)
-  })
+for (const input of ['wheel', 'touch'] as const) {
+  test(`clamped top ${input} starts older history before any scroll event`, async ({ page }, testInfo) => {
+    await page.setViewportSize(input === 'touch' ? { width: 390, height: 844 } : { width: 900, height: 700 })
+    await bootDemo(page, '/demo.html?tutorial=false&virt=1&window=100&stress=rooms:1,messages:250,msgStep:0,mode:live')
+    await enableScrollTrace(page)
+    await withPinWindow(page, { trigger: 'switch' }, async () => {
+      await navigateToStressRoom(page)
+    })
 
-  const readHistory = () => page.evaluate(jid => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const messages = (window as any).__roomStore.getState().messages.get(jid)
-    const scroller = document.querySelector('[data-message-list]')!
-    return {
-      first: messages[0].id as string,
-      count: messages.length as number,
-      top: scroller.scrollTop,
-      height: scroller.scrollHeight,
-    }
-  }, STRESS_ROOM_JID)
-  const initial = await readHistory()
-  expect(initial.first).toBe('stress-0-150')
-  expect(initial.count).toBe(100)
-  expect(initial.top).toBeGreaterThan(500)
+    const readHistory = () => page.evaluate(jid => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const messages = (window as any).__roomStore.getState().messages.get(jid)
+      const scroller = document.querySelector('[data-message-list]')!
+      return {
+        first: messages[0].id as string,
+        count: messages.length as number,
+        top: scroller.scrollTop,
+        height: scroller.scrollHeight,
+      }
+    }, STRESS_ROOM_JID)
+    const initial = await readHistory()
+    expect(initial.first).toBe('stress-0-150')
+    expect(initial.count).toBe(100)
+    expect(initial.top).toBeGreaterThan(500)
 
-  const scroller = page.locator('[data-message-list]')
-  const preparedTop = await scroller.evaluate(element => new Promise<number>(resolve => {
-    const blockSetupScroll = (event: Event) => event.stopImmediatePropagation()
-    element.addEventListener('scroll', blockSetupScroll, { capture: true })
-    element.scrollTop = 0
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      element.removeEventListener('scroll', blockSetupScroll, { capture: true })
-      resolve(element.scrollTop)
+    const scroller = page.locator('[data-message-list]')
+    const preparedTop = await scroller.evaluate(element => new Promise<number>(resolve => {
+      const blockSetupScroll = (event: Event) => event.stopImmediatePropagation()
+      element.addEventListener('scroll', blockSetupScroll, { capture: true })
+      element.scrollTop = 0
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        element.removeEventListener('scroll', blockSetupScroll, { capture: true })
+        resolve(element.scrollTop)
+      }))
     }))
-  }))
-  expect(preparedTop).toBe(0)
-  await page.evaluate(() => {
-    const scope = window as Window & {
-      __clampedTopHistoryEvents?: { type: 'wheel' | 'loader' | 'scroll'; trusted?: boolean }[]
+    expect(preparedTop).toBe(0)
+    await page.evaluate(input => {
+      const scope = window as Window & {
+        __clampedTopHistoryEvents?: { type: 'wheel' | 'touchmove' | 'loader' | 'scroll'; trusted?: boolean }[]
+      }
+      const scroller = document.querySelector<HTMLElement>('[data-message-list]')!
+      const store = (window as unknown as { __roomStore: typeof roomStore }).__roomStore
+      const original = store.getState().loadOlderMessagesFromCache
+      scope.__clampedTopHistoryEvents = []
+      scroller.addEventListener(input === 'touch' ? 'touchmove' : 'wheel', event => {
+        scope.__clampedTopHistoryEvents!.push({ type: input === 'touch' ? 'touchmove' : 'wheel', trusted: event.isTrusted })
+      }, { capture: true })
+      scroller.addEventListener('scroll', () => {
+        scope.__clampedTopHistoryEvents!.push({ type: 'scroll' })
+      }, { capture: true })
+      store.setState({
+        loadOlderMessagesFromCache: async (...args) => {
+          scope.__clampedTopHistoryEvents!.push({ type: 'loader' })
+          return original(...args)
+        },
+      })
+    }, input)
+    if (input === 'wheel') {
+      await scroller.hover()
+      await page.mouse.wheel(0, -20)
+    } else {
+      // Exercise the native touch listener while the scroller cannot move. Synthetic touch events
+      // do not perform browser scrolling; the load must come from the gesture's signed intent.
+      await scroller.evaluate(element => {
+        // Desktop WebKit does not expose a constructible Touch/TouchEvent. Model the event payload
+        // through ordinary Events so both engines exercise the same application listener.
+        const touch = (type: string, clientY: number | null) => element.dispatchEvent(Object.assign(
+          new Event(type, { bubbles: true }),
+          { touches: clientY === null ? [] : [{ identifier: 1, target: element, clientY }] },
+        ))
+        touch('touchstart', 200)
+        touch('touchmove', 260)
+        touch('touchend', null)
+      })
     }
-    const scroller = document.querySelector<HTMLElement>('[data-message-list]')!
-    const store = (window as unknown as { __roomStore: typeof roomStore }).__roomStore
-    const original = store.getState().loadOlderMessagesFromCache
-    scope.__clampedTopHistoryEvents = []
-    scroller.addEventListener('wheel', event => {
-      scope.__clampedTopHistoryEvents!.push({ type: 'wheel', trusted: event.isTrusted })
-    }, { capture: true })
-    scroller.addEventListener('scroll', () => {
-      scope.__clampedTopHistoryEvents!.push({ type: 'scroll' })
-    }, { capture: true })
-    store.setState({
-      loadOlderMessagesFromCache: async (...args) => {
-        scope.__clampedTopHistoryEvents!.push({ type: 'loader' })
-        return original(...args)
-      },
-    })
+    try {
+      // Older history reached the window — NOT a particular row. The loader can run twice before
+      // the next sample (observed on CI: 150 → 100 → 50 with two `loader` events), so asserting
+      // the first page's exact top row fails whenever the second page beats the poll. What this
+      // test claims is that the gesture started history at all; the event order below is what
+      // says it started from the gesture rather than from a scroll.
+      const olderThan = (id: string) => Number(id.replace('stress-0-', ''))
+      await expect.poll(async () => olderThan((await readHistory()).first), { timeout: 15_000 })
+        .toBeLessThan(olderThan(initial.first))
+      const events = await page.evaluate(() => (window as unknown as Window & {
+        __clampedTopHistoryEvents: { type: 'wheel' | 'touchmove' | 'loader' | 'scroll'; trusted?: boolean }[]
+      }).__clampedTopHistoryEvents)
+      const loader = events.findIndex(event => event.type === 'loader')
+      expect(loader).toBeGreaterThan(0)
+      expect(events[0]).toEqual({ type: input === 'touch' ? 'touchmove' : 'wheel', trusted: input === 'wheel' })
+      expect(events.slice(0, loader)).not.toContainEqual({ type: 'scroll' })
+    } finally {
+      await testInfo.attach(`first-${input}-history`, {
+        body: JSON.stringify({
+          initial,
+          preparedTop,
+          events: await page.evaluate(() => (window as Window & {
+            __clampedTopHistoryEvents?: unknown
+          }).__clampedTopHistoryEvents),
+          after: await readHistory(),
+        }),
+        contentType: 'application/json',
+      })
+      await testInfo.attach(`first-${input}-history-viewport`, {
+        body: await page.screenshot(),
+        contentType: 'image/png',
+      })
+    }
   })
-  await scroller.hover()
-  await page.mouse.wheel(0, -20)
-  try {
-    await expect.poll(async () => (await readHistory()).first, { timeout: 15_000 }).toBe('stress-0-100')
-    const events = await page.evaluate(() => (window as unknown as Window & {
-      __clampedTopHistoryEvents: { type: 'wheel' | 'loader' | 'scroll'; trusted?: boolean }[]
-    }).__clampedTopHistoryEvents)
-    const loader = events.findIndex(event => event.type === 'loader')
-    expect(loader).toBeGreaterThan(0)
-    expect(events[0]).toEqual({ type: 'wheel', trusted: true })
-    expect(events.slice(0, loader)).not.toContainEqual({ type: 'scroll' })
-  } finally {
-    await testInfo.attach('first-wheel-history', {
-      body: JSON.stringify({
-        initial,
-        preparedTop,
-        events: await page.evaluate(() => (window as Window & {
-          __clampedTopHistoryEvents?: unknown
-        }).__clampedTopHistoryEvents),
-        after: await readHistory(),
-      }),
-      contentType: 'application/json',
-    })
-    await testInfo.attach('first-wheel-history-viewport', {
-      body: await page.screenshot(),
-      contentType: 'image/png',
-    })
-  }
-})
+}
 
 test.describe('Controller-owned resident-top navigation', () => {
   test('Home advances through attributed frames, settles, and respects interruption', async ({
@@ -662,7 +687,7 @@ test.describe('Virtualization scroll invariants', () => {
 
     let anchorId = ''
     let anchorDepth = -1
-    for (let attempt = 0; attempt < 4 && anchorDepth < MIN_ANCHOR_DEPTH; attempt++) {
+    for (let attempt = 0; attempt < 4 && anchorDepth <= MIN_ANCHOR_DEPTH; attempt++) {
       for (let i = 0; i < 8; i++) {
         await page.mouse.wheel(0, -1500)
         await page.waitForTimeout(150)
@@ -678,7 +703,7 @@ test.describe('Virtualization scroll invariants', () => {
     expect(anchorId, `anchor "${anchorId}" should be a deep older message, not the latest slice`).toContain('older-')
     // ...and deep enough that the return rehydration cannot contain it, which is what makes the
     // on-demand reload the only way it can come back.
-    expect(anchorDepth, `anchor "${anchorId}" sits ${anchorDepth} rows from the live edge, inside the ${REHYDRATED_SLICE} the return rehydrates`).toBeGreaterThan(MIN_ANCHOR_DEPTH)
+    expect(anchorDepth, `anchor "${anchorId}" sits ${anchorDepth} rows from the live edge; require more than ${MIN_ANCHOR_DEPTH} to stay beyond the ${REHYDRATED_SLICE} the return rehydrates`).toBeGreaterThan(MIN_ANCHOR_DEPTH)
 
     // SWITCH AWAY → the room's resident window is evicted from RAM.
     await page.evaluate(() => {
@@ -816,7 +841,8 @@ test.describe('Virtualization scroll invariants', () => {
     // it within a ≤1-message measurement settle (the now-correct bottom-visible anchor can resolve one
     // row as estimated heights settle); creep grows the spread with every open and still fails here.
     expect(anchors.every((a) => a !== null), `every re-open must capture an anchor (${JSON.stringify(anchors)})`).toBe(true)
-    const anchorSpread = Math.max(...anchors.map(stressMsgIndex)) - Math.min(...anchors.map(stressMsgIndex))
+    const anchorIndices = await getRoomMessageIndices(page, STRESS_ROOM_JID, anchors)
+    const anchorSpread = Math.max(...anchorIndices) - Math.min(...anchorIndices)
     expect(
       anchorSpread,
       `restored anchor drifted ${anchorSpread} messages across re-opens (bottom-visible per open: ${JSON.stringify(anchors)}) — anchor not re-pinned`,
@@ -885,7 +911,8 @@ test.describe('Virtualization scroll invariants', () => {
     }
 
     expect(anchors.every((a) => a !== null), `every re-open must capture an anchor (${JSON.stringify(anchors)})`).toBe(true)
-    const tallAnchorSpread = Math.max(...anchors.map(stressMsgIndex)) - Math.min(...anchors.map(stressMsgIndex))
+    const anchorIndices = await getRoomMessageIndices(page, STRESS_ROOM_JID, anchors)
+    const tallAnchorSpread = Math.max(...anchorIndices) - Math.min(...anchorIndices)
     expect(
       tallAnchorSpread,
       `restored anchor drifted ${tallAnchorSpread} messages across re-opens with tall rows (bottom-visible per open: ${JSON.stringify(anchors)}) — anchor not re-pinned / drifted position saved`,
@@ -1077,7 +1104,8 @@ test.describe('Virtualization scroll invariants', () => {
     // fraction legitimately shifts even as the message itself stays pinned at the fold.
     const after = await findBottomVisibleMessage(page)
     expect(after, 'must capture a reading anchor after return').not.toBeNull()
-    const drift = Math.abs(stressMsgIndex(after!.id) - stressMsgIndex(anchorId))
+    const [beforeIndex, afterIndex] = await getRoomMessageIndices(page, STRESS_ROOM_JID, [anchorId, after!.id])
+    const drift = Math.abs(afterIndex - beforeIndex)
     expect(drift, `bottom-visible anchor moved ${drift} messages across the relayout (before=${anchorId}, after=${after!.id})`).toBeLessThanOrEqual(2)
   })
 })
@@ -2860,8 +2888,8 @@ test.describe('search navigation beyond the resident bound', () => {
       const store = (window as unknown as { __roomStore: typeof roomStore }).__roomStore
       const newest = store.getState().rooms.get(jid)!.lastMessage!
       const page = Array.from({ length: 5 }, (_, index): RoomMessage => ({
-        type: 'groupchat', roomJid: jid, id: `caught-up-${index}`, stanzaId: `sid-caught-up-${index}`,
-        from: `${jid}/U0_1`, nick: 'U0_1', body: `caught up ${index}`, isOutgoing: false,
+        type: 'groupchat', roomJid: jid, id: `caught-up-${index}`, stanzaId: `sid-caught-up-${index}`, originId: undefined,
+        from: `${jid}/U0_1`, nick: 'U0_1', occupantId: undefined, body: `caught up ${index}`, isOutgoing: false,
         timestamp: new Date(newest.timestamp.getTime() + (index + 1) * 1000),
       }))
       store.getState().mergeRoomMAMMessages(jid, page, {}, true, 'forward')
@@ -2903,7 +2931,7 @@ test('direct chat keyboard selection preserves opaque literal row IDs', async ({
     const store = (window as unknown as { __chatStore: typeof chatStore }).__chatStore
     const messages: Message[] = Array.from({ length: 40 }, (_, index) => ({
       type: 'chat', conversationId: jid, from: jid, to: 'me@fluux.chat', isOutgoing: false,
-      id: index === 0 ? 'wire' : ids[index / 10 - 1] ?? `keyboard-${index}`,
+      id: index === 0 ? 'wire' : ids[index / 10 - 1] ?? `keyboard-${index}`, stanzaId: undefined, originId: undefined,
       body: index === 0 ? 'Decoded decoy' : `Keyboard row ${index}\nSecond line\nThird line`,
       timestamp: new Date(Date.now() - (40 - index) * 1000),
     }))
@@ -2963,7 +2991,7 @@ test('room history crosses hidden spam pages with one load action and preserves 
   await page.evaluate(jid => {
     const store = (window as unknown as { __roomStore: typeof roomStore }).__roomStore
     const message = (id: string, second: number): RoomMessage => ({
-      type: 'groupchat', roomJid: jid, id, stanzaId: `archive-${id}`,
+      type: 'groupchat', roomJid: jid, id, stanzaId: `archive-${id}`, originId: undefined,
       from: `${jid}/Alice`, nick: 'Alice', occupantId: 'alice',
       body: id === 'before-spam' ? 'Conversation before the spam' : `Visible message ${id}`,
       timestamp: new Date(1_700_000_000_000 + second * 1000), isOutgoing: false,
@@ -3041,28 +3069,48 @@ for (const virtualized of [false, true]) {
     await page.mouse.wheel(0, -1000)
     await page.waitForTimeout(SETTLE_MS)
     const positions = []
-    for (const movement of [0, 250, -300]) {
-      if (movement) {
-        await page.mouse.wheel(0, movement)
+    try {
+      for (const movement of [0, 250, -300]) {
+        if (movement) {
+          await page.mouse.wheel(0, movement)
+          await page.waitForTimeout(SETTLE_MS)
+        }
+        const before = await list.evaluate(scroller => {
+          const boundary = scroller.getBoundingClientRect().bottom
+          const row = [...scroller.querySelectorAll<HTMLElement>('.message-row')].find(row => row.getBoundingClientRect().top > boundary)
+          if (!row) throw new Error('Missing mounted row below viewport')
+          const box = row.getBoundingClientRect()
+          const growth = document.createElement('div')
+          growth.style.height = '200px'
+          // Read before the row grows: which row was stretched, and how far below the fold it
+          // sat, is what tells a displacement apart from a re-anchor onto that row.
+          const state = {
+            scrollTop: scroller.scrollTop,
+            scrollHeight: scroller.scrollHeight,
+            clientHeight: scroller.clientHeight,
+            grownRow: {
+              messageId: row.dataset.messageId ?? null,
+              belowFold: Math.round(box.top - boundary),
+              height: Math.round(box.height),
+            },
+          }
+          row.appendChild(growth)
+          return state
+        })
         await page.waitForTimeout(SETTLE_MS)
+        const after = await list.evaluate(scroller => ({
+          scrollTop: scroller.scrollTop,
+          scrollHeight: scroller.scrollHeight,
+        }))
+        // Recorded BEFORE the assertion. An attachment written after the loop never runs on the
+        // iteration that throws, which is the only one anybody needs it for.
+        positions.push({ movement, before, after, moved: after.scrollTop - before.scrollTop })
+        expect(Math.abs(after.scrollTop - before.scrollTop)).toBeLessThanOrEqual(1)
       }
-      const before = await list.evaluate(scroller => {
-        const boundary = scroller.getBoundingClientRect().bottom
-        const row = [...scroller.querySelectorAll<HTMLElement>('.message-row')].find(row => row.getBoundingClientRect().top > boundary)!
-        if (!row) throw new Error('Missing mounted row below viewport')
-        const before = scroller.scrollTop
-        const growth = document.createElement('div')
-        growth.style.height = '200px'
-        row.appendChild(growth)
-        return before
-      })
-      await page.waitForTimeout(SETTLE_MS)
-      const after = await list.evaluate(scroller => scroller.scrollTop)
-      expect(Math.abs(after - before)).toBeLessThanOrEqual(1)
-      positions.push({ movement, before, after })
+      await page.screenshot({ path: testInfo.outputPath('reading-anchor.png') })
+    } finally {
+      await testInfo.attach('trusted-wheel-reading-position', { body: JSON.stringify(positions, null, 1), contentType: 'application/json' })
     }
-    await page.screenshot({ path: testInfo.outputPath('reading-anchor.png') })
-    await testInfo.attach('trusted-wheel-reading-position', { body: JSON.stringify(positions), contentType: 'application/json' })
   })
 
   test(`final history boundary excludes delayed layout events (virtualized: ${virtualized})`, async ({ page }, testInfo) => {

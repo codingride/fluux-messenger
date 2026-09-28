@@ -6,6 +6,11 @@ New to the codebase? [`GLOSSARY.md`](GLOSSARY.md) explains the vocabulary this p
 live edge, coverage, read pointer, resident window and the rest — and what each term is called
 elsewhere.
 
+For changes to platform capabilities, native adapters, or OS-specific Rust code,
+run `npm run test:platform` and follow [Platform regression coverage](PLATFORM_REGRESSIONS.md).
+Keep the capability inventory and application scenarios current when adding a
+platform branch; browser mocks and native compilation have different proof limits.
+
 ## Quick Start
 
 ```bash
@@ -69,15 +74,18 @@ npm run test:run -w @fluux/sdk -- --maxWorkers=1
 
 ### Browser invariant suites
 
-`npm run test:scroll` runs both scroll suites on Chromium and WebKit:
+`npm run test:scroll` runs the scroll suites on Chromium and WebKit:
 
 - `scroll-reading`: reading anchors, history loading, conversation re-entry, and
   navigation through cached or moderated messages.
 - `scroll-live-edge`: following new messages at the bottom and preserving that
   position through typing indicators, composer resizing, reactions, and media growth.
+- `scroll-message-surface`: continuous grouped-message backgrounds around link
+  previews across viewport sizes, themes, and text sizes.
 
-The suites share their setup, geometry helpers, and after-test scroll diagnostics
-in `e2e/harness/scrollHarness.ts`. Tests within each file run in declaration order.
+The reading and live-edge suites share their setup, geometry helpers, and after-test
+scroll diagnostics in `e2e/harness/scrollHarness.ts`. Tests within each file run in
+declaration order.
 
 CI runs all browser invariants, including composer, popover, history-loading, and
 anomaly coverage, in separate Chromium and WebKit jobs with two workers per runner.
@@ -97,6 +105,18 @@ when rebuilding in another worktree, with no clear benefit for small source
 edits. This did not justify adding sccache installation and configuration to the
 development workflow. Keep the toolchain's default linker and the existing
 `Swatinem/rust-cache` setup in CI; the experiment did not evaluate CI performance.
+
+## Experimental Android APK build
+
+See [Android development: build and install](ANDROID_DEVELOPMENT.md) for the
+SDK/NDK setup, device or emulator preparation, hot reload, standalone debug APK
+installation, proxy limitations and troubleshooting.
+
+## Experimental iOS build
+
+See [iOS development: build and install](IOS_DEVELOPMENT.md) for Xcode setup,
+simulator builds, iPhone/iPad signing and installation, isolated demo mode,
+proxy limitations and troubleshooting.
 
 ## macOS Notifications in Local Development
 
@@ -444,3 +464,52 @@ FLUUX_BINARY=apps/fluux/src-tauri/target/release/fluux dpkg-buildpackage -d -uc 
 sudo dpkg -i ../fluux-messenger_*.deb
 sudo apt-get install -f  # Fix any missing dependencies
 ```
+
+
+## Incoming sharing on macOS
+
+The macOS bundle embeds `Contents/PlugIns/FluuxShare.appex`. On macOS 11 or newer,
+choose Fluux in the system Share menu (Safari, Finder, Photos). After saving
+an import, the extension opens its containing Fluux application and closes.
+If launching fails, it keeps the saved-import instructions visible so the user
+can open Fluux manually. The pending-import picker uses the same
+contact/room selection, preview and explicit Send action as the mobile app.
+The extension does not connect to XMPP or upload content. It accepts one link
+or file per share, at most 20 MiB, with 20 pending imports. Closing the picker
+preserves the original import. Imports are local to this installation, and the
+user selects their account and recipient in Fluux.
+
+`build.rs` prepares metadata from Tauri's effective configuration, including
+CLI overrides such as the development bundle identifier. The macOS
+`beforeBundleCommand` refreshes that metadata for the current bundle (Cargo
+may reuse a cached build), compiles the shared Swift controller with AppKit, copies
+translations and signs the extension before Tauri signs/notarizes the parent
+bundle. Generated files live under `src-tauri/macos/.build/`; do not edit them.
+`tauri dev` runs an unbundled executable and cannot register a Share Extension;
+use a bundled development build. The browser, Windows and Linux do not attempt
+to read the native inbox.
+
+Signed builds use `<APPLE_TEAM_ID>.<bundle identifier>.share` as their App
+Group. When the team variable is absent, the build can derive it from the
+suffix of a Developer ID Application signing identity. Apple Development
+certificates require `APPLE_TEAM_ID` explicitly because their name suffix is
+a personal identifier, not the team. Both the host and extension receive the
+same group entitlement, with distinct groups for production and development.
+Release CI already supplies the Apple team, signing identity and certificate.
+The extension build imports that certificate into an ephemeral private
+keychain, signs the extension, and removes the keychain without changing the
+user's default/search keychains. Tauri then signs the parent normally.
+
+Without an Apple team/identity, local builds produce an ad-hoc extension for
+compilation and bundle inspection. This is not proof that macOS will grant
+App Group access or load the sandboxed extension. Validate distribution with
+a proper Developer ID identity; do not advertise ad-hoc signing as a substitute.
+If Fluux is not listed, check System Settings' extension controls for sharing.
+
+Checks: `node --test scripts/macos-share.test.mjs`, the ShareInbox component
+and delivery tests, native Cargo tests/Clippy, and a bundled macOS build. Verify
+both bundle signatures (`codesign --verify --deep --strict <app>`), the shared
+group entitlements and that `pluginkit` discovers the extension. Exercise real
+links, documents and images, an app restart before Send, logged-out import,
+and a warm app returning to focus. Keep signed distribution and interactive
+Share menu evidence separate from compilation results.

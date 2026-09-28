@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { defaultRangeExtractor, elementScroll, measureElement, useVirtualizer } from '@tanstack/react-virtual'
+import { defaultRangeExtractor, elementScroll, useVirtualizer } from '@tanstack/react-virtual'
 import type { MessageVirtualizer } from './messageVirtualizer'
 
 // Frames the offset must hold steady before we declare scrolling settled and stop polling
@@ -202,7 +202,15 @@ export function useTanstackMessageVirtualizer({
       if (source === 'navigation') cancelledTargetRef.current = false
       else if (source === 'reconcile' && cancelledTargetRef.current) return
       const observer = writeObserverRef.current
-      if (observer?.({ phase: 'before', source, behavior: options.behavior }) === false) return
+      const refused = observer?.({ phase: 'before', source, behavior: options.behavior }) === false
+      // A measurement write carries the adjustment for a row that measured taller than its
+      // estimate above the reader. virtual-core folds that adjustment into its own scrollOffset
+      // and clears it as soon as it has called this function, whether or not the element moved,
+      // so skipping the write leaves its offset permanently ahead of the DOM and the reader
+      // stranded that many pixels above the live edge with nothing left to reconcile it (#1510).
+      // Suppressing an adjustment is done at `shouldAdjustScrollPositionOnItemSizeChange`, which
+      // runs before anything is counted; refusing it here is not available to the observer.
+      if (refused && source !== 'measurement') return
       elementScroll(offset, options, instance)
       observer?.({ phase: 'after', source, behavior: options.behavior })
       if (source === 'measurement' && instance.scrollElement) {
@@ -214,13 +222,10 @@ export function useTanstackMessageVirtualizer({
       if (instance.scrollElement && instance.scrollOffset !== instance.scrollElement.scrollTop) {
         offsetCbRef.current?.(instance.scrollElement.scrollTop, false)
       }
-      // The synchronous (ref-callback) path must report the rendered height. Since virtual-core
-      // 3.17.0 the default returns an already-cached size there and leaves the change to the
-      // ResizeObserver, which lands after positioning loops have settled on the stale layout and
-      // leaves seeded heights unverified. ResizeObserver entries still use the default.
-      const size = entry
-        ? measureElement(element, entry, instance)
-        : (element as HTMLElement).offsetHeight
+      // Preserve fractional border-box heights: integer rounding leaves seams or overlaps
+      // between grouped message tints, especially after previews at scaled text sizes.
+      // The mount path must measure live geometry rather than reuse a cached estimate.
+      const size = entry?.borderBoxSize?.[0]?.blockSize ?? element.getBoundingClientRect().height
       const index = instance.indexFromElement(element)
       const key = instance.options.getItemKey(index)
       if (index >= 0 && size > 0) onMeasuredRef.current?.(String(key), size)

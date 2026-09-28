@@ -53,6 +53,7 @@ vi.mock('@/stores/settingsStore', () => ({
 // Create a base message for testing
 function createTestMessage(overrides: Partial<BaseMessage> = {}): BaseMessage {
   return {
+    stanzaId: undefined, originId: undefined,
     type: 'chat',
     id: 'msg-1',
     from: 'alice@example.com',
@@ -86,6 +87,48 @@ function createDefaultProps(overrides: Partial<MessageBubbleProps> = {}): Messag
 }
 
 describe('MessageBubble', () => {
+  describe('Touch actions', () => {
+    it.each([
+      { isOutgoing: false, showAvatar: true },
+      { isOutgoing: true, showAvatar: true },
+      { isOutgoing: true, showAvatar: false },
+    ])('opens actions on long press without occupying message space for %j', ({ isOutgoing, showAvatar }) => {
+      vi.useFakeTimers()
+      try {
+        const props = createDefaultProps({ message: createTestMessage({ isOutgoing }), showAvatar })
+        render(<MessageBubble {...props} />)
+        const chrome = screen.getByText('Hello, world!').closest('[data-msg-chrome]')!
+        const row = chrome.closest('[data-message-id]')!
+        expect(row.querySelector('button[aria-haspopup="dialog"]')).toBeNull()
+        fireEvent.touchStart(chrome)
+        act(() => vi.advanceTimersByTime(500))
+        const sheet = screen.getByRole('dialog', { name: 'chat.moreOptions' })
+        expect(chrome).toHaveClass('opacity-0')
+        expect(sheet.querySelector('[data-message-preview]')).toHaveTextContent('Hello, world!')
+        fireEvent.click(within(sheet).getByRole('button', { name: 'chat.reply' }))
+        expect(props.onReply).toHaveBeenCalledOnce()
+        expect(chrome).not.toHaveClass('opacity-0')
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not open the actions after iOS cancels the touch', () => {
+      vi.useFakeTimers()
+      try {
+        render(<MessageBubble {...createDefaultProps()} />)
+        const chrome = screen.getByText('Hello, world!').closest('[data-msg-chrome]')!
+        fireEvent.touchStart(chrome)
+        fireEvent.touchCancel(chrome)
+        act(() => vi.advanceTimersByTime(500))
+        expect(screen.queryByRole('dialog', { name: 'chat.moreOptions' })).not.toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
   describe('Basic Rendering', () => {
     it('renders message body', () => {
       const props = createDefaultProps()
@@ -687,7 +730,7 @@ describe('MessageBubble', () => {
       expect(screen.getByRole('button', { name: 'chat.editMessage' })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'chat.moreReactions' })).toBeInTheDocument()
       // Delete lives behind the more-options button, enabled only when delete is allowed.
-      expect(screen.getByRole('button', { name: 'chat.moreOptions' })).toBeEnabled()
+      expect(within(document.querySelector('[data-message-toolbar]')!).getByRole('button', { name: 'chat.moreOptions' })).toBeEnabled()
     })
 
     it('shows react but hides edit and delete on an incoming whisper', () => {
@@ -698,7 +741,7 @@ describe('MessageBubble', () => {
       expect(screen.getByRole('button', { name: 'chat.moreReactions' })).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'chat.editMessage' })).not.toBeInTheDocument()
       // No moderation-delete on a whisper: more-options is present but disabled.
-      expect(screen.getByRole('button', { name: 'chat.moreOptions' })).toBeDisabled()
+      expect(within(document.querySelector('[data-message-toolbar]')!).getByRole('button', { name: 'chat.moreOptions' })).toBeDisabled()
     })
 
     it('disables edit, delete, and react on a whisper once the counterpart has left', () => {
@@ -711,7 +754,7 @@ describe('MessageBubble', () => {
 
       expect(screen.queryByRole('button', { name: 'chat.editMessage' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'chat.moreReactions' })).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'chat.moreOptions' })).toBeDisabled()
+      expect(within(document.querySelector('[data-message-toolbar]')!).getByRole('button', { name: 'chat.moreOptions' })).toBeDisabled()
     })
   })
 })

@@ -84,7 +84,7 @@ import type {
   RoomHistorySearchOptions,
   HistoryPagingSearchOptions,
 } from '../types'
-import { parseMessageContent, parseOgpFastening, applyRetraction, applyCorrection, parseStanzaId, parseArchiveStanzaId, hasRenderableContent, parseReactionsSignal, parseRetractionSignal, parseCorrectionSignal, isMessageSignal } from './messagingUtils'
+import { parseMessageContent, parseOgpFastening, applyRetraction, applyCorrection, parseStanzaId, parseArchiveStanzaId, parseOriginId, hasRenderableContent, parseReactionsSignal, parseRetractionSignal, parseCorrectionSignal, isMessageSignal } from './messagingUtils'
 import { getDomain } from '../jid'
 import { logInfo, logError as logErr } from '../logger'
 import {
@@ -2851,8 +2851,8 @@ export class MAM extends BaseModule {
     return {
       type: 'chat',
       id: messageId,
-      ...(stanzaId && { stanzaId }),
-      ...(parsed.originId && { originId: parsed.originId }),
+      stanzaId: stanzaId || undefined,
+      originId: parsed.originId || undefined,
       conversationId,
       from: bareFrom,
       body: parsed.processedBody,
@@ -2912,8 +2912,9 @@ export class MAM extends BaseModule {
         type: 'groupchat', roomJid, from, nick,
         id: messageEl.attrs.id || generateStableMessageId(from, timestamp, ''),
         stanzaId,
+        originId: parseOriginId(messageEl),
         occupantId: messageEl.getChild('occupant-id', NS_OCCUPANT_ID)?.attrs.id,
-        body: '', timestamp, isDelayed: true,
+        body: '', timestamp, receivedAt: new Date(), isDelayed: true,
         isOutgoing: nick.toLowerCase() === myNickname.toLowerCase(),
         ...tombstone,
       }
@@ -2979,19 +2980,20 @@ export class MAM extends BaseModule {
     const message: RoomMessage = {
       type: 'groupchat',
       id: messageId,
-      ...(stanzaId && { stanzaId }),
-      ...(parsed.originId && { originId: parsed.originId }),
+      stanzaId: stanzaId || undefined,
+      originId: parsed.originId || undefined,
       roomJid,
       from,
       nick,
       body: parsed.processedBody,
       timestamp: parsed.timestamp,
+      receivedAt: new Date(),
       isOutgoing,
       isDelayed: true,
       ...(parsed.noStyling && { noStyling: parsed.noStyling }),
       ...(parsed.replyTo && { replyTo: parsed.replyTo }),
       ...(parsed.attachment && { attachment: parsed.attachment }),
-      ...(occupantId && { occupantId }),
+      occupantId: occupantId || undefined,
       ...(roomSecurityContext && { securityContext: roomSecurityContext }),
       ...(roomEncryptedPayload && { encryptedPayload: roomEncryptedPayload }),
       ...(roomUnsupportedEncryption && { unsupportedEncryption: roomUnsupportedEncryption }),

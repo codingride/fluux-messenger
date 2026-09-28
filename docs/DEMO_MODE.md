@@ -19,6 +19,25 @@ Then open **http://localhost:5173/demo.html**
 
 Example: **http://localhost:5173/demo.html?tutorial=false**
 
+### iOS Simulator
+
+On a Mac with the [experimental iOS prerequisites](DEVELOPER.md#experimental-ios-build),
+run from the repository root:
+
+```bash
+npm run tauri:ios:init  # Once per checkout
+npm run tauri:ios:demo -- "Simulator name"
+```
+
+**Fluux iOS Demo** runs the same demo in the native iOS WebView, including safe
+areas and keyboard resizing. It uses a separate bundle identity and storage
+from the connected iOS development app, and skips the tutorial. The command
+embeds the demo in an unsigned simulator app, installs it, and launches it
+without a Vite server. If exactly one simulator is already booted, the name
+can be omitted. For hot reload, run `npm run tauri:ios:demo:dev`, select a
+simulator in Xcode, and press Run. This is a development preview, excluded
+from releases.
+
 ## What's Included
 
 The demo populates the UI with:
@@ -111,7 +130,7 @@ Each scene is tagged `variant: 'reel'` (appears in both videos) or `variant: 'fu
 
 `packages/fluux-sdk/src/demo/DemoClient.ts` extends `XMPPClient`:
 
-- Overrides `sendStanza()` and `sendIQ()` as no-ops (no real XMPP connection)
+- Simulates server responses through `beginStanzaSend()` and `beginIQSend()` without a real XMPP connection. Groupchat messages with a body are echoed; reactions and body-less chat states do not create message rows.
 - `populateDemo(data: DemoData)` seeds all Zustand stores synchronously via `emitSDK()` calls
 - `startAnimation(steps: DemoAnimationStep[])` schedules timed events (typing, messages, reactions) on `setTimeout`s
 - Sets MAM query state to "history complete" so no loading spinners appear

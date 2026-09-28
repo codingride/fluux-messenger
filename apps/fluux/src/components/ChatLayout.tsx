@@ -1,3 +1,4 @@
+import { ShareInbox } from './ShareInbox'
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { detectRenderLoop } from '@/utils/renderLoopDetector'
@@ -44,6 +45,7 @@ import { useReactionNotifications } from '@/hooks/useReactionNotifications'
 import { useEasterEggNotifications } from '@/hooks/useEasterEggNotifications'
 import { useFocusZones, useViewNavigation, isMobileWeb, isSmallScreen, useWindowVisibility, useRouteSync, useDayBoundaryWatcher, type FocusZoneRefs } from '@/hooks'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
+import { useIosEdgeBack } from '@/hooks/useIosEdgeBack'
 import { useDeepLink } from '@/hooks/useDeepLink'
 import { saveViewState, getSavedViewState, type ViewStateData } from '@/hooks/useSessionPersistence'
 import { useModalStore } from '@/stores/modalStore'
@@ -366,6 +368,7 @@ function ChatLayoutContent() {
 
   // Ref for main container to enable focus for keyboard shortcuts
   const containerRef = useRef<HTMLDivElement>(null)
+  const mobileMainRef = useRef<HTMLElement>(null)
 
   // Focus zone refs for Tab cycling - create refs at top level (stable across renders)
   const sidebarListRef = useRef<HTMLDivElement>(null)
@@ -823,6 +826,14 @@ function ChatLayoutContent() {
     navigateToRooms(undefined, { replace: true })
   }
 
+  const previewBack = useIosEdgeBack(
+    mobileMainRef,
+    (sidebarView === 'messages' && !!activeConversationId) ||
+      (sidebarView === 'rooms' && !!activeRoomJid && !showRoomOccupants),
+    sidebarView === 'rooms' ? handleRoomBack : handleChatBack,
+    activeRoomJid || activeConversationId,
+  )
+
   const handleSearchInConversation = (conversationId: string) => {
     searchStore.getState().setSearchScope(conversationId)
     navigateToSearch()
@@ -995,6 +1006,7 @@ function ChatLayoutContent() {
     >
       {/* Global side-effect hooks isolated from ChatLayout re-renders */}
       <GlobalEffects />
+      <ShareInbox />
 
       {/* Desktop window app bar — hosts macOS traffic lights + nav/search/settings.
           On the desktop app it always renders (even in a narrow window); on the
@@ -1002,11 +1014,12 @@ function ChatLayoutContent() {
       <AppBar />
 
       {/* Main content area */}
-      <div className="flex flex-1 min-h-0">
+      <div className={`flex flex-1 min-h-0 ${previewBack ? 'relative overflow-hidden' : ''}`}>
         {/* Left Sidebar - Conversations */}
         {/* Hidden on mobile when conversation or room is active, full width on mobile */}
-        <div className={`${hasActiveContent ? 'hidden md:flex' : 'flex'} w-full md:w-auto`} data-testid="sidebar-pane">
+        <div className={`${previewBack ? 'absolute inset-0 flex w-full' : adminHasMainContent ? 'flex w-auto' : hasActiveContent ? 'hidden md:flex w-full' : 'flex w-full'} md:w-auto`} inert={previewBack || undefined} aria-hidden={previewBack || undefined} data-testid="sidebar-pane">
           <Sidebar
+            mobileRailOnly={!!adminHasMainContent}
             onSelectContact={handleSelectContact}
             onStartChat={handleStartConversation}
             onStartChatWithJid={handleStartChatWithJid}
@@ -1021,7 +1034,7 @@ function ChatLayoutContent() {
 
         {/* Main Content Area */}
         {/* Hidden on mobile when no conversation/room selected */}
-        <main className={`${hasActiveContent ? 'flex' : 'hidden md:flex'} flex-1 flex-col bg-fluux-chat min-w-0 min-h-0`}>
+        <main ref={mobileMainRef} className={`${hasActiveContent ? 'flex' : 'hidden md:flex'} ${previewBack ? 'relative z-10 shadow-[-8px_0_24px_rgba(0,0,0,0.18)]' : ''} flex-1 flex-col bg-fluux-chat min-w-0 min-h-0`}>
           {sidebarView === 'settings' ? (
             <Suspense fallback={<ViewLoadingFallback />}>
               <SettingsView onBack={handleSettingsBack} />

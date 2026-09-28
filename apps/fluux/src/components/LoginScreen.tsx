@@ -170,10 +170,9 @@ export function LoginScreen({ claimConnection }: LoginScreenProps) {
       const savedServer = localStorage.getItem(STORAGE_KEY_SERVER)
       if (!hasLinkPrefill) {
         if (savedJid) setJid(savedJid)
-        // Web restores only explicit WebSocket endpoints; desktop also restores
-        // native connection targets such as bare domains.
+        // Native proxy hosts also restore TCP targets and bare domains.
         const isWebSocketUrl = savedServer?.startsWith('ws://') || savedServer?.startsWith('wss://')
-        if (savedServer && (inTauri || isWebSocketUrl)) {
+        if (savedServer && (platform().nativeXmppProxy || isWebSocketUrl)) {
           setServer(savedServer)
         }
       }
@@ -395,9 +394,9 @@ export function LoginScreen({ claimConnection }: LoginScreenProps) {
     <div className="h-full bg-fluux-bg overflow-y-auto relative">
       {/* Window drag region - covers top area for title bar */}
       <div className="absolute top-0 inset-x-0 h-8" {...dragRegionProps} />
-      {/* Faint aurora backdrop glow — decorative, behind the content */}
+      {/* The viewport owns the glow so it also paints behind the mobile status bar. */}
       <div
-        className="pointer-events-none absolute inset-x-0 top-0 h-80 z-0"
+        className="pointer-events-none fixed inset-x-0 top-0 h-80 z-0"
         style={{ background: 'radial-gradient(60% 100% at 50% 0%, color-mix(in srgb, var(--fluux-bg-accent), transparent 88%), transparent 70%)' }}
         aria-hidden="true"
       />
@@ -533,7 +532,7 @@ export function LoginScreen({ claimConnection }: LoginScreenProps) {
                   setServer(e.target.value)
                   setCredentialsModified(true)
                 }}
-                placeholder={isDesktopApp ? t('login.serverPlaceholderDesktop') : t('login.serverPlaceholder')}
+                placeholder={platform().nativeXmppProxy ? t('login.serverPlaceholderDesktop') : t('login.serverPlaceholder')}
                 disabled={isLoading}
                 className="w-full px-3 py-2 bg-fluux-bg text-fluux-text rounded
                            border border-fluux-border focus:border-fluux-brand
@@ -541,7 +540,7 @@ export function LoginScreen({ claimConnection }: LoginScreenProps) {
                            placeholder:text-fluux-muted disabled:opacity-50"
               />
               <p className="text-xs text-fluux-muted mt-1">
-                {isDesktopApp ? t('login.serverHintDesktop') : t('login.serverHint')}
+                {platform().nativeXmppProxy ? t('login.serverHintDesktop') : t('login.serverHint')}
               </p>
               {linkServerHost && (
                 <p className="text-xs text-fluux-muted mt-1">
@@ -561,19 +560,18 @@ export function LoginScreen({ claimConnection }: LoginScreenProps) {
               checked={rememberMe}
               onChange={(e) => setRememberMe(e.target.checked)}
               disabled={isLoading}
-              className="size-4 rounded border border-fluux-border bg-fluux-bg
+              className="size-4 shrink-0 rounded border border-fluux-border bg-fluux-bg
                          checked:bg-fluux-brand checked:border-fluux-brand
                          focus:ring-fluux-brand focus:ring-offset-0"
             />
-            <label htmlFor="remember" className="text-sm text-fluux-text flex items-center gap-2">
-              <KeyRound className="size-4 text-fluux-muted" />
-              {t('login.rememberMe')}
-              {isDesktopApp && (
-                <span className="text-xs text-fluux-muted">{t('login.storedInKeychain')}</span>
-              )}
-              {!isDesktopApp && (
-                <span className="text-xs text-fluux-muted">{t('login.staySignedIn')}</span>
-              )}
+            <label htmlFor="remember" className="min-w-0 flex-1 text-sm text-fluux-text flex items-center gap-2">
+              <KeyRound className="size-4 shrink-0 text-fluux-muted" />
+              <span>
+                {t('login.rememberMe')}
+                <span className="block sm:inline sm:ms-1 text-xs text-fluux-muted">
+                  {t(isDesktopApp ? 'login.storedInKeychain' : 'login.staySignedIn')}
+                </span>
+              </span>
             </label>
             <div className="ms-auto">
               <OverflowMenu

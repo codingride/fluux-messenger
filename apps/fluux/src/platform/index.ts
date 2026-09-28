@@ -10,6 +10,7 @@
  * @module Platform
  */
 
+import { platform as nativePlatform } from '@tauri-apps/plugin-os'
 import {
   deriveCapabilities,
   type PlatformCapabilities,
@@ -29,17 +30,23 @@ export {
  * runs, which is the only signal available synchronously at module scope.
  */
 function detectShell(): PlatformShell {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window ? 'desktop' : 'web'
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return 'web'
+  // plugin-os injects its compile-time platform synchronously, including on
+  // iPads whose user agent reports macOS. Old desktop shells may lack it.
+  try {
+    const os = nativePlatform()
+    if (os === 'ios' || os === 'android') return 'mobile'
+  } catch {
+    // Preserve desktop detection when the plugin is unavailable.
+  }
+  return 'desktop'
 }
 
 /**
  * Sniffs `navigator`, matching the substrings the app has always matched so
  * the capabilities derived from the OS keep their current answers exactly.
  *
- * Android reports `Linux` in its user agent and lands on `'linux'` here, as it
- * always has. Telling a phone from a desktop needs the Tauri OS plugin, which
- * only answers asynchronously — see `utils/tauriPlatform.ts`. Do not add a
- * `'mobile'` member here until this can resolve one.
+ * Native mobile hosts are detected independently of the user agent by plugin-os.
  */
 export function detectOS(): PlatformOS {
   if (typeof navigator === 'undefined') return 'other'
@@ -63,7 +70,13 @@ let current: PlatformCapabilities | null = null
  * app, and several callers read this at module scope.
  */
 export function platform(): PlatformCapabilities {
-  current ??= deriveCapabilities(detectShell(), detectOS())
+  if (!current) {
+    const shell = detectShell()
+    const os = shell === 'mobile'
+      ? (nativePlatform() === 'android' ? 'android' : 'ios')
+      : detectOS()
+    current = deriveCapabilities(shell, os)
+  }
   return current
 }
 

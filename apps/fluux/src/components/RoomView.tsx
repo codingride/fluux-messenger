@@ -22,6 +22,7 @@ import { TextInput, TextArea } from './ui/TextInput'
 import { MessageComposer, type ReplyInfo, type EditInfo, type MessageComposerHandle, type PendingAttachment, type ComposerAutocompleteAriaProps, MESSAGE_INPUT_BASE_CLASSES, MESSAGE_INPUT_OVERLAY_CLASSES } from './MessageComposer'
 import { MentionAutocompleteMenu } from './composer/MentionAutocompleteMenu'
 import { composerAutocompleteAriaProps } from './composer/autocompleteAria'
+import { usesMobileEnterKey } from './composer/mobileEnter'
 import { RoomHeader } from './RoomHeader'
 import { RoomVoiceControls } from './RoomVoiceControls'
 import { OccupantPanel } from './OccupantPanel'
@@ -49,7 +50,7 @@ import { computeMediaAutoload } from '@/utils/mediaAutoload'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { getRoomJoinErrorMessage } from '@/utils/roomJoinError'
 import { auroraSenderColor, nickColorSeed } from '@/utils/senderColor'
-import { registerViewportBottomRef } from '@/utils/viewportAtBottom'
+import { useViewportBottom } from '@/hooks/useViewportBottom'
 import { registerViewportScroller } from '@/utils/viewportScroller'
 import { ReactionMentions } from './conversation/ReactionMentions'
 import { messageRowId, messageRowRefFromRowId } from './conversation/messageRowIdentity'
@@ -282,16 +283,10 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
 
   // Scroll ref for programmatic scrolling and keyboard navigation
   const scrollRef = useRef<HTMLElement>(null)
-  const isAtBottomRef = useRef(true)
-
-  // Publish the viewport-at-bottom truth so the global focus handler can tell a
-  // genuine "user is looking at the newest message" from a view merely parked at
-  // the live edge (issue #1076). Registers the ref object, so the scroll hook's
-  // many writes to `.current` need no notification.
-  useEffect(() => {
-    if (!activeRoomJid) return
-    return registerViewportBottomRef('room', activeRoomJid, isAtBottomRef)
-  }, [activeRoomJid])
+  // Whether the viewport is showing the newest message — owned by useViewportBottom, which also
+  // publishes it so the global focus handler can tell a reader who is genuinely looking at the
+  // newest message from a view merely parked at the live edge (issue #1076).
+  const { ref: isAtBottomRef, assume: assumeViewportBottom } = useViewportBottom('room', activeRoomJid)
 
   // Publish the scroll element too. Unlike the ref above this is not consumed in
   // release builds; it exists so a dev-only check can measure the viewport WITHOUT
@@ -315,13 +310,13 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
     clearSelection,
     handleMouseMove,
     handleMouseLeave,
-  } = useMessageSelection(displayMessages, scrollRef, isAtBottomRef, {
+  } = useMessageSelection(displayMessages, scrollRef, {
     getRowId: messageRowId,
     onReachedFirstMessage: fetchOlderHistory,
     isLoadingOlder: activeHistoryState?.isLoading,
     isHistoryComplete: activeRoom?.supportsMAM === false || activeHistoryState?.isHistoryComplete,
     onEnterPressed: (id: string) => useExpandedMessagesStore.getState().toggle(id),
-    onKeyboardNavigate: () => { isAtBottomRef.current = false },
+    onKeyboardNavigate: () => assumeViewportBottom(false),
   })
 
   // Format copied messages with sender headers
@@ -2249,6 +2244,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
 
     // Enhanced keydown handler for mentions
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      const enterSelectsSuggestion = e.key === 'Enter' && !usesMobileEnterKey()
       // Handle backspace/delete within a mention - delete the whole mention at once
       if (e.key === 'Backspace' || e.key === 'Delete') {
         const textarea = e.currentTarget
@@ -2311,7 +2307,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
           commandMenu.moveSelection('down')
           return
         }
-        if (e.key === 'Enter' || e.key === 'Tab') {
+        if (enterSelectsSuggestion || e.key === 'Tab') {
           e.preventDefault()
           const cmd = commandMenu.state.matches[commandMenu.state.selectedIndex]
           if (cmd) {
@@ -2339,7 +2335,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
           moveSelection('down')
           return
         }
-        if (e.key === 'Enter' || e.key === 'Tab') {
+        if (enterSelectsSuggestion || e.key === 'Tab') {
           if (mentionState.matches.length > 0) {
             e.preventDefault()
             handleMentionSelect(mentionState.selectedIndex)
@@ -2398,6 +2394,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
           spellCheck={true}
           autoCorrect="on"
           autoCapitalize="sentences"
+          enterKeyHint="enter"
           {...inputAriaProps}
           className={`${MESSAGE_INPUT_BASE_CLASSES} ${MESSAGE_INPUT_OVERLAY_CLASSES}`}
           style={{ caretColor: 'var(--fluux-text, #e4e4e7)' }}

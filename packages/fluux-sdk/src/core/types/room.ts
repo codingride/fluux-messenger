@@ -148,7 +148,17 @@ export interface RoomMessage extends Omit<BaseMessage, 'type'> {
    * XEP-0421: Stable anonymous occupant identifier of the sender.
    * Survives nick changes and works in anonymous rooms.
    */
-  occupantId?: string
+  occupantId: string | undefined
+  /**
+   * The instant this copy reached the client, on the client's own clock. Set at
+   * parse time for every room stanza, live or delayed. `timestamp` is the
+   * stamp when the copy carries one, so it cannot serve as a receipt instant;
+   * the `from+id` identity rung reads this field to tell a message the room is
+   * broadcasting now from a copy of one it already delivered
+   * (`docs/MESSAGE_IDENTIFIERS.md` §3). Absent on rows written before the
+   * field existed, which leaves that rung as permissive as it always was.
+   */
+  receivedAt?: Date
   /**
    * XEP-0045 §7.5: true if this is a private message ("whisper") exchanged
    * with a single room occupant rather than a public room message.
@@ -197,7 +207,7 @@ export interface RoomEntity {
   isJoining?: boolean
   /** Room subject/topic */
   subject?: string
-  /** Blob URL for room avatar display (XEP-0054/XEP-0084) */
+  /** Room avatar URL for display */
   avatar?: string
   /** Avatar hash for cache lookup */
   avatarHash?: string
@@ -325,10 +335,10 @@ export interface RoomRuntime {
    * an O(1) lookup on message render paths.
    */
   occupantIdToNick?: Map<string, string>
-  /** Cache of nick→avatar blob URL for users who have left (preserves avatars across leave/join) */
+  /** Cache of nick→avatar URL for users who have left (preserves avatars across leave/join) */
   nickToAvatarCache?: Map<string, string>
   /**
-   * Cache of room-scoped XEP-0421 occupant-id→avatar blob URL.
+   * Cache of room-scoped XEP-0421 occupant-id→avatar URL.
    * Hydrated from IndexedDB on join so anonymous occupants keep their avatars
    * across reconnects, nick changes, and application restarts.
    */
