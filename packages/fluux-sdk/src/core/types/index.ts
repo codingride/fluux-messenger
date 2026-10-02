@@ -12,7 +12,7 @@
 export type { XMLElementData } from './stanza'
 
 // Connection types
-export type { ConnectionStatus, ConnectionMethod, ConnectOptions, SystemState } from './connection'
+export type { ConnectionStatus, ConnectionMethod, ConnectOptions, DiscoveryFailure, SystemState } from './connection'
 
 // Base message type (shared between chat and room messages)
 export type { BaseMessage, MessageSecurityContext, UnsupportedEncryptionInfo, PollData, PollOption, PollSettings, PollClosedData } from './message-base'
@@ -25,6 +25,7 @@ export type {
   SendMessageOptions,
   MentionReference,
   Message,
+  ChatMessageTarget,
   ConversationEntity,
   ConversationMetadata,
   Conversation,
@@ -77,6 +78,13 @@ export type {
   ServerIdentity,
   ServerInfo,
 } from './discovery'
+
+// Push types (XEP-0357)
+export type {
+  PushDeviceRegistrationRequest,
+  PushAppServerRegistration,
+  PushStatus,
+} from './push'
 
 // Web Push types
 export type {

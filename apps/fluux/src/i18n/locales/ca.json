@@ -44,6 +44,8 @@
         "madeBy": "Fet per",
         "poweredBy": "Funciona amb",
         "errors": {
+            "discoveryFailed": "Ha fallat la descoberta del servidor {{domain}}. S’ha provat {{target}} com a alternativa.",
+            "discoveryFailedTcp": "Ha fallat la descoberta del servidor {{domain}}. S’ha provat una connexió TCP nativa a {{target}} com a alternativa.",
             "tlsCertTitle": "No s'ha pogut verificar el certificat de seguretat del servidor",
             "tlsOtherTitle": "Ha fallat la connexió segura",
             "tlsOtherBody": "No s'ha pogut establir la connexió xifrada amb el servidor. La configuració TLS del servidor pot no ser compatible. Comproveu l'adreça del servidor o contacteu amb l'administrador.",
@@ -72,7 +74,8 @@
         "joinRoom": "Uneix-te a una sala",
         "viewProfile": "Veure perfil",
         "resizeHint": "Arrossega per redimensionar, doble clic per reiniciar",
-        "dismiss": "Descarta"
+        "dismiss": "Descarta",
+        "search": "Cerca"
     },
     "newMessage": {
         "title": "Missatge nou",
@@ -758,6 +761,8 @@
         "webPush_disabled": "Desactivat, notificacions push desactivades",
         "webPushDisable": "Desactiva",
         "webPushReEnable": "Reactiva",
+        "pushStatus": "Notificacions push",
+        "push_failed": "Ha fallat el registre, toca per tornar-ho a provar",
         "updates": "Actualitzacions",
         "storage": {
             "title": "Emmagatzematge",
@@ -1305,6 +1310,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Requereix atenció"
     },
+    "windowControls": {
+        "minimize": "Minimitza",
+        "maximize": "Maximitza",
+        "restore": "Restaura"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "El nom visible que es mostra a la llista de sales i a la capçalera.",
         "muc#roomconfig_roomdesc": "Una breu descripció del propòsit de la sala.",
@@ -1461,5 +1471,32 @@
         "saved": "Desat. Obriu Fluux per triar una conversa i enviar.",
         "importError": "No s’ha pogut importar. Compartiu un enllaç o fitxer de fins a 20 MB; hi caben 20 elements.",
         "sent": "Missatge enviat. Podeu suprimir aquest element importat."
+    },
+    "search": {
+        "filter": {
+            "all": "Tot",
+            "conversations": "Xats",
+            "rooms": "Sales"
+        },
+        "placeholder": "Cerca missatges…",
+        "scopeLabel": "Cercant a {{name}}",
+        "clearScope": "Cerca a totes les converses",
+        "searching": "Cercant…",
+        "noResults": "No s'ha trobat cap missatge",
+        "searchServer": "Cerca a l'arxiu del servidor",
+        "searchingServer": "Cercant a l'arxiu del servidor…",
+        "serverResults": "Arxiu del servidor",
+        "loadMore": "Carrega'n més del servidor",
+        "hint": "Escriu per cercar en tots els missatges",
+        "contextView": "Resultat de la cerca",
+        "previewBanner": "Esteu veient una previsualització d'un resultat de cerca",
+        "goToMessage": "Vés al missatge",
+        "loadingContext": "Carregant missatges…",
+        "errors": {
+            "failed": "La cerca ha fallat",
+            "archiveRooms": "El servidor no admet la cerca a l'arxiu de les sales",
+            "archiveUnsupported": "El servidor no admet la cerca a l'arxiu. Proveu de cercar dins d'una conversa.",
+            "serverFailed": "La cerca al servidor ha fallat"
+        }
     }
 }

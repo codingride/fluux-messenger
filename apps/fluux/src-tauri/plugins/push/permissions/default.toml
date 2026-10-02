@@ -1,0 +1,3 @@
+[default]
+description = "Register this device for remote push notifications, receive its token updates and the notifications the user taps."
+permissions = ["allow-register", "allow-take-pending-tap", "allow-register-listener", "allow-remove-listener"]

@@ -1,13 +1,14 @@
 import { createStore } from 'zustand/vanilla'
 import { persist, subscribeWithSelector } from 'zustand/middleware'
-import type { Message, Conversation, ConversationEntity, ConversationMetadata, HistoryQueryState, PageInfo } from '../core/types'
+import type { Message, ChatMessageTarget, Conversation, ConversationEntity, ConversationMetadata, HistoryQueryState, PageInfo } from '../core/types'
 import type { ReadStateGeneration } from '../core/types/readStateGeneration'
 import { isNoLocalStore, resolveCorrectionUpdates, correctionContent, sameCorrection, type StoredMessage } from '../core/types/message-internal'
 import { setTypingTimeout, clearTypingTimeout, clearAllTypingTimeouts } from './typingTimeout'
 import {
   CHAT_SCOPE,
   chatMessageAuthor,
-  findMessageById,
+  findChatMessageIndex,
+  canonicalReference,
   findMessageIndexById,
   findMessageRowIndex,
   identityKeys,
@@ -15,7 +16,8 @@ import {
   messageReferences,
   correctionReferences,
   type CorrectionReferences,
-  sameLogicalMessage,
+  chatArchiveConflict,
+  sameChatMessage,
   type MessageRowRef,
   type MessageActor,
 } from '../utils/messageIdentity'
@@ -30,18 +32,14 @@ import {
   type CoverageRecord,
 } from './shared/mamCoverage'
 import {
-  transientIdentity,
-  transientAliases,
-} from './shared/transientUnread'
-import {
   matchesCorrectionTarget, reconcileCachedCorrections, reconcileCorrectionHandoff, refreshCachedCorrections,
 } from './shared/correctionHandoff'
 import { createArchiveSaveChain } from './shared/archiveSaveChain'
 import * as draftState from './shared/draftState'
 import * as timeline from './shared/messageTimeline'
-import { isPreviewableMessage, findLastPreviewableMessage, shouldReplaceLastMessage } from './shared/lastMessageUtils'
+import { isPreviewableMessage, findLastPreviewableMessage, shouldReplaceLastMessage, isResolvedSamePreview } from './shared/lastMessageUtils'
 import { derivePreviewAfterMerge } from './shared/previewState'
-import { draftConversationMaps, rebuildCompatEntry } from './shared/conversationMaps'
+import { draftConversationMaps, rebuildCompatEntry, type ConversationMapsDraft } from './shared/conversationMaps'
 import { addPendingRetraction, applyPendingRetractions, removePendingRetraction, type PendingRetraction } from './shared/pendingRetractions'
 import { retractChatMessageInStorage, retractUnresidentChatTarget } from './shared/retractionStorage'
 import { rowRefOfPointer } from './shared/readPointer'
@@ -66,7 +64,8 @@ import { scheduleDurableMaps, cancelDurableMaps, forgetAllDurableMapBaselines, n
 // Read via getResidentWindowSize() so a DEV/DEMO/TEST caller can shrink it — see shared/residentWindow.ts.
 import { getResidentWindowSize } from './shared/residentWindow'
 import { lastMessageTimestamp, clearCoverageEntry, clearGapAnchor } from './shared/keyedMapEdits'
-import { sortMessagesByTimestamp } from './shared/messageArrayUtils'
+import { backfillArchiveIds, sortMessagesByTimestamp } from './shared/messageArrayUtils'
+import { archiveMoment, revivesArchivedConversation } from './shared/archiveRevival'
 
 const STORAGE_KEY_BASE = 'xmpp-chat-storage'
 
@@ -114,6 +113,51 @@ function captureChatCacheRead(conversationId: string): () => boolean {
   const epoch = chatCacheEpoch
   const entityEpoch = currentChatEntityEpoch(conversationId)
   return () => scope.isCurrent() && epoch === chatCacheEpoch && entityEpoch === currentChatEntityEpoch(conversationId)
+}
+
+function backfillChatPreviewIdentity(preview: Message | undefined, messages: readonly Message[]): Message | undefined {
+  if (!preview || preview.stanzaId && preview.originId) return preview
+  const matches = messages.filter(message => matchesCorrectionTarget(preview, message))
+  if (matches.some((a, index) => matches.slice(index + 1).some(b => chatArchiveConflict(a, b)))) return preview
+  const stanzaId = preview.stanzaId ?? matches.find(message => message.stanzaId)?.stanzaId
+  const originId = preview.originId ?? matches.find(message => message.originId)?.originId
+  return stanzaId === preview.stanzaId && originId === preview.originId
+    ? preview
+    : { ...preview, stanzaId, originId }
+}
+
+/** Drops the archive moment of a conversation leaving the archive. */
+function clearArchiveMoment(draft: ConversationMapsDraft, id: string): void {
+  const meta = draft.getMeta(id)
+  if (!meta || meta.archivedAt === undefined) return
+  const { archivedAt: _archivedAt, ...rest } = meta
+  draft.setMeta(id, rest)
+}
+
+/**
+ * Unarchives `conversationId` when `messages` are activity since its archive.
+ *
+ * Every path that lands messages in a conversation (live and replayed stanzas,
+ * MAM merges, the preview refresh) applies this after its own write. The rule
+ * cannot live in one of them: whichever delivers a message first makes the
+ * others see a duplicate or an unchanged preview.
+ */
+function reviveArchivedConversation(conversationId: string, messages: readonly Message[]): void {
+  // Checked before set(): every set() through the persist middleware schedules a write.
+  const current = chatStore.getState()
+  if (!current.archivedConversations.has(conversationId)) return
+  if (!revivesArchivedConversation(current.conversationMeta.get(conversationId), messages)) return
+  chatStore.setState((state) => {
+    const archivedConversations = new Set(state.archivedConversations)
+    archivedConversations.delete(conversationId)
+    const draft = draftConversationMaps(state)
+    clearArchiveMoment(draft, conversationId)
+    return { ...draft.commit(), archivedConversations }
+  })
+}
+
+function reconcileChatPreview(preview: Message | undefined, message: StoredMessage, scope: string | null): Message | undefined {
+  return backfillChatPreviewIdentity(reconcileCorrectionHandoff(preview, message, scope), [message])
 }
 
 /** What a write says about where the window sits relative to the live edge. */
@@ -173,6 +217,12 @@ function withChatMessageWindow(
   return written.messages || written.windowAtLiveEdge ? written : null
 }
 
+function reconcileCachedChatRows(resident: Message[], cached: Message[]): Message[] {
+  const config = chatTimelineConfig()
+  const { messages } = backfillArchiveIds(resident, cached, config.getKeys, config.sameMessage, config.getMergeCandidates)
+  return reconcileCachedCorrections(messages, cached, getStorageScopeJid())
+}
+
 /**
  * Merge a latest-N batch of cached messages into a conversation's resident array, returning the
  * partial state update (or `null` when the resident slice is unchanged): filter duplicates,
@@ -188,7 +238,7 @@ function mergeCachedChatMessages(
   const existingMessages = state.messages.get(conversationId) || []
 
   const { merged } = timeline.latestSlice(
-    reconcileCachedCorrections(existingMessages, cachedMessages, getStorageScopeJid()),
+    reconcileCachedChatRows(existingMessages, cachedMessages),
     cachedMessages,
     chatTimelineConfig()
   )
@@ -207,7 +257,7 @@ function mergeCachedChatAround(
   contextBefore: number
 ): Partial<ChatState> | null {
   const { merged, newestEvicted } = timeline.aroundSlice(
-    reconcileCachedCorrections(state.messages.get(conversationId) || [], cachedMessages, getStorageScopeJid()),
+    reconcileCachedChatRows(state.messages.get(conversationId) || [], cachedMessages),
     cachedMessages,
     (messages) => findMessageRowIndex(messages, anchorRow),
     contextBefore,
@@ -231,7 +281,8 @@ function commitCachedChatMessages(state: ChatState, conversationId: string, merg
   // whose stored preview is a stuck placeholder heals it here.
   const meta = state.conversationMeta.get(conversationId)
   const previous = meta?.lastMessage
-  const current = previous ? reconcileCachedCorrections([previous], trimmed, getStorageScopeJid())[0] : previous
+  const reconciled = previous ? reconcileCachedCorrections([previous], trimmed, getStorageScopeJid())[0] : previous
+  const current = backfillChatPreviewIdentity(reconciled, trimmed)
   const { lastMessage } = derivePreviewAfterMerge(current, trimmed, findLastPreviewableMessage)
   const changed = lastMessage !== previous
   if (!changed && trimmed === state.messages.get(conversationId) && !resolved.pendingRetractions) return null
@@ -301,11 +352,11 @@ function getChatMessageKeys(m: Message): string[] {
 }
 
 /** Timeline config for the shared resident-window machine (see shared/messageTimeline.ts). */
-function chatTimelineConfig(): timeline.TimelineConfig<Message> {
+export function chatTimelineConfig(): timeline.TimelineConfig<Message> {
   return {
     getKeys: getChatMessageKeys,
-    sameMessage: (a, b) => sameLogicalMessage(CHAT_SCOPE, a, b),
-    getMergeCandidates: (_incoming, candidates) => [...candidates],
+    sameMessage: sameChatMessage,
+    getMergeCandidates: (incoming, candidates) => candidates.filter(candidate => !chatArchiveConflict(incoming, candidate)),
     windowSize: getResidentWindowSize(),
     kind: 'chat',
   }
@@ -498,10 +549,10 @@ interface ChatState {
   mergeServerConversations: (convs: Array<{ id: string; name: string; type: 'chat' | 'groupchat'; archived: boolean }>) => void
   setTyping: (conversationId: string, jid: string, isTyping: boolean) => void
   clearAllTyping: () => void
-  updateReactions: (conversationId: string, messageId: string, reactorJid: string, emojis: string[]) => void
+  updateReactions: (conversationId: string, messageId: ChatMessageTarget, reactorJid: string, emojis: string[]) => void
   updateMessage: (
     conversationId: string,
-    messageId: string,
+    messageId: ChatMessageTarget,
     updates: Partial<StoredMessage>,
     retractionReference?: string,
     correctionActor?: MessageActor,
@@ -516,7 +567,7 @@ interface ChatState {
    * signal (XEP-0444 reaction) whose "[could not decrypt]" placeholder must
    * disappear once the real reaction is applied to its target.
    */
-  removeMessage: (conversationId: string, messageId: string) => void
+  removeMessage: (conversationId: string, messageId: ChatMessageTarget) => void
   /**
    * Reconcile a non-active conversation's unread count against the durable
    * archive: a coverage-gated cursor count from the effective read
@@ -553,7 +604,7 @@ interface ChatState {
    * @param actorJid - Bare JID the retraction came from.
    */
   recordPendingRetraction: (conversationId: string, targetId: string, actorJid: string) => void
-  getMessage: (conversationId: string, messageId: string) => Message | undefined
+  getMessage: (conversationId: string, messageId: ChatMessageTarget) => Message | undefined
   /**
    * Epoch ms of the conversation's persisted last-known message (the entity
    * preview), or undefined. Used as a last-resort forward catch-up cursor so a
@@ -608,21 +659,8 @@ interface ChatState {
    * @param lastMessage - The most recent message from MAM
    */
   updateLastMessagePreview: (conversationId: string, lastMessage: Message) => void
-  /**
-   * Apply an in-place content update to a conversation's lastMessage preview,
-   * but only when the preview IS the referenced message (matched across the
-   * XEP-0359 id tiers). Used by the durable-cache deferred-decrypt pass: when a
-   * conversation's preview message is decrypted while its messages aren't loaded
-   * in memory, {@link updateMessage} can't reach it and the timestamp-gated
-   * {@link updateLastMessagePreview} won't replace a same-timestamp message — so
-   * the sidebar would keep showing "[OpenPGP-encrypted message]". This refreshes
-   * the preview's content (body/securityContext/attachment/encryptedPayload)
-   * without touching the messages array.
-   * @param conversationId - Conversation JID
-   * @param messageId - id / stanzaId / originId of the decrypted message
-   * @param updates - Partial content to merge into the preview message
-   */
-  refreshLastMessageContent: (conversationId: string, messageId: string, updates: Partial<StoredMessage>) => void
+  /** See ChatBindings.refreshLastMessageContent in core/types/storeBindings.ts for the contract. */
+  refreshLastMessageContent: (conversationId: string, messageId: ChatMessageTarget, updates: Partial<StoredMessage>) => void
   resolveCorrectionReferences: (conversationId: string, targetId: string, actor: MessageActor) => Promise<CorrectionReferences | null | undefined>
   reconcileHistoryMessages: (messages: Message[]) => Promise<Message[]>
   /**
@@ -790,10 +828,8 @@ const chatArchiveMerge = createArchiveMerge<Message>('chat', {
   saveRows: (rows) => messageCache.saveMessages(rows),
   saves: conversationArchiveSaves,
   readTracker: chatReadTracker,
-  unreadKey: (message) => transientIdentity({ id: message.id }, 'chat'),
   pendingRemoteMarker: (conversationId) =>
     chatReadView(chatStore.getState(), conversationId)?.pendingRemoteMarker,
-  recountUnread: (conversationId) => { void chatStore.getState().recomputeUnreadForConversation(conversationId) },
   coverageOf: (conversationId) => chatStore.getState().conversationCoverage.get(conversationId),
 })
 
@@ -1266,6 +1302,7 @@ function deserializeState(persisted: PersistedState, storageKey: string): Pick<C
             unreadCount: meta.unreadCount ?? 0,
             lastMessage: restoreLastMessage(meta.lastMessage),
             historyFloor: restoreDate(meta.historyFloor),
+            archivedAt: restoreDate(meta.archivedAt),
             // The persisted value is untrusted, not really a `ReadPointer`: a chat
             // pointer riding inside `conversationMeta` goes through a plain
             // `JSON.stringify`, so its `timestamp` lands on disk as an ISO string
@@ -1304,6 +1341,7 @@ function deserializeState(persisted: PersistedState, storageKey: string): Pick<C
             unreadCount: conv.unreadCount ?? 0,
             lastMessage: restoreLastMessage(conv.lastMessage),
             historyFloor: restoreDate(conv.historyFloor),
+            archivedAt: restoreDate(conv.archivedAt),
             readPointer: deserializeReadPointer(conv.readPointer),
           },
         ]
@@ -1325,6 +1363,7 @@ function deserializeState(persisted: PersistedState, storageKey: string): Pick<C
         lastMessage: conv.lastMessage,
         readPointer: conv.readPointer,
         historyFloor: conv.historyFloor,
+        archivedAt: conv.archivedAt,
       })
     }
   }
@@ -1360,6 +1399,7 @@ function deserializeState(persisted: PersistedState, storageKey: string): Pick<C
 
   // Restore archived conversations (backwards compatible - default to empty set)
   const archivedConversations = new Set(persisted.archivedConversations || [])
+  stampLegacyArchiveMoments(archivedConversations, conversationEntities, conversationMeta, conversations)
 
   // Restore drafts (backwards compatible - default to empty map)
   const drafts = new Map(persisted.drafts || [])
@@ -1386,6 +1426,30 @@ function deserializeState(persisted: PersistedState, storageKey: string): Pick<C
     conversationGaps,
     conversationCoverage,
     pendingRetractions,
+  }
+}
+
+/**
+ * Gives an archived conversation persisted without `archivedAt` an archive
+ * moment: its last known message, the newest activity the archive can have
+ * covered. Without a last message there is no evidence of when it was archived,
+ * so the archive starts at load time.
+ */
+function stampLegacyArchiveMoments(
+  archived: Set<string>,
+  entities: Map<string, ConversationEntity>,
+  metaMap: Map<string, ConversationMetadata>,
+  compat: Map<string, Conversation>,
+): void {
+  const now = Date.now()
+  for (const id of archived) {
+    const meta = metaMap.get(id)
+    if (!meta || meta.archivedAt) continue
+    const lastAt = meta.lastMessage?.timestamp?.getTime()
+    const next = { ...meta, archivedAt: new Date(lastAt !== undefined && !Number.isNaN(lastAt) ? lastAt : now) }
+    metaMap.set(id, next)
+    const entity = entities.get(id)
+    if (entity) compat.set(id, rebuildCompatEntry(entity, next))
   }
 }
 
@@ -1696,6 +1760,8 @@ export const chatStore = createStore<ChatState>()(
             // value comes back through `deserializeState`, so a conversation
             // re-added after a restart finds its original floor here.
             historyFloor: existingMeta?.historyFloor ?? conv.historyFloor ?? new Date(),
+            // Archive state is owned by the archive actions, not by the caller.
+            ...(existingMeta?.archivedAt ? { archivedAt: existingMeta.archivedAt } : {}),
             pendingRemoteDisplayedStanzaId: conv.pendingRemoteDisplayedStanzaId,
           }
 
@@ -1766,8 +1832,7 @@ export const chatStore = createStore<ChatState>()(
 
         // The read tracker records an arrival the reader has not seen in its transient overlay:
         // until the cache write commits — and for a message never stored locally, for good — the
-        // overlay is the only place it is counted. Chat identities are bare ids, since a 1:1 row
-        // cannot be ambiguous the way a reused MUC nick makes a room row.
+        // overlay is the only place it is counted.
         const arrivalNote = chatReadTracker.beginArrival(
           msg.conversationId,
           msg,
@@ -1775,7 +1840,6 @@ export const chatStore = createStore<ChatState>()(
             isActive: get().activeConversationId === msg.conversationId,
             windowVisible: connectionStore.getState().windowVisible,
           },
-          { identity: { id: transientIdentity({ id: msg.id }, 'chat'), aliases: transientAliases({ id: msg.id }, 'chat') } },
         )
         let acceptedMessage = false
 
@@ -1804,10 +1868,16 @@ export const chatStore = createStore<ChatState>()(
                 p.conversationId,
                 p.id,
                 { stanzaId: p.stanzaId!, ...(p.originId ? { originId: p.originId } : {}) },
-                p.from
+                p.from,
+                undefined,
+                p
               )
             }
-            return withChatMessageWindow(state, msg.conversationId, { messages: append.messages }) ?? state
+            const existingPreview = state.conversationMeta.get(msg.conversationId)?.lastMessage
+            const preview = backfillChatPreviewIdentity(existingPreview, append.messages)
+            const draft = draftConversationMaps(state)
+            if (preview !== existingPreview) draft.patchMeta(msg.conversationId, { lastMessage: preview })
+            return { ...withChatMessageWindow(state, msg.conversationId, { messages: append.messages }), ...draft.commit() }
           }
           acceptedMessage = true
 
@@ -1877,28 +1947,12 @@ export const chatStore = createStore<ChatState>()(
             // window-hidden case; otherwise it is preserved. Mirror that into the map.
             const newMarkers = withDivider(state.firstNewMessageMarkers, msg.conversationId, read.divider)
 
-            // Auto-unarchive conversation when new incoming message arrives
-            // (outgoing messages should not trigger unarchive)
-            if (!msg.isOutgoing) {
-              const newArchived = new Set(state.archivedConversations)
-              if (newArchived.has(msg.conversationId)) {
-                newArchived.delete(msg.conversationId)
-                return {
-                  ...window,
-                  ...draft.commit(),
-                  archivedConversations: newArchived,
-                  firstNewMessageMarkers: newMarkers,
-                  lastArrivedMessage: newArrived,
-                  ...interiorPlacementPatch,
-                }
-              }
-            }
-
             return { ...window, ...draft.commit(), firstNewMessageMarkers: newMarkers, lastArrivedMessage: newArrived, ...interiorPlacementPatch }
           }
 
           return { ...window, lastArrivedMessage: newArrived, ...interiorPlacementPatch }
         })
+        reviveArchivedConversation(msg.conversationId, [msg])
 
         const durableWrite = acceptedMessage && !isNoLocalStore(msg)
           ? messageCache.saveMessageWithResult(msg)
@@ -1951,9 +2005,11 @@ export const chatStore = createStore<ChatState>()(
         set((state) => {
           const newArchived = new Set(state.archivedConversations)
           newArchived.add(id)
+          const draft = draftConversationMaps(state)
+          draft.patchMeta(id, { archivedAt: archiveMoment(draft.getMeta(id)) })
           // Clear active conversation if we're archiving it
           const newActiveId = state.activeConversationId === id ? null : state.activeConversationId
-          return { archivedConversations: newArchived, activeConversationId: newActiveId }
+          return { ...draft.commit(), archivedConversations: newArchived, activeConversationId: newActiveId }
         })
       },
 
@@ -1961,7 +2017,9 @@ export const chatStore = createStore<ChatState>()(
         set((state) => {
           const newArchived = new Set(state.archivedConversations)
           newArchived.delete(id)
-          return { archivedConversations: newArchived }
+          const draft = draftConversationMaps(state)
+          clearArchiveMoment(draft, id)
+          return { ...draft.commit(), archivedConversations: newArchived }
         })
       },
 
@@ -1972,10 +2030,17 @@ export const chatStore = createStore<ChatState>()(
 
           for (const serverConv of convs) {
             if (draft.getEntity(serverConv.id)) {
-              // Existing conversation: sync archived status
+              // Existing conversation: sync archived status. Re-asserting an
+              // archive this client already holds keeps its original moment, so
+              // a message delivered after the fetch but sent since the archive
+              // still unarchives it.
               if (serverConv.archived) {
+                if (!newArchived.has(serverConv.id) || !draft.getMeta(serverConv.id)?.archivedAt) {
+                  draft.patchMeta(serverConv.id, { archivedAt: archiveMoment(draft.getMeta(serverConv.id)) })
+                }
                 newArchived.add(serverConv.id)
               } else {
+                clearArchiveMoment(draft, serverConv.id)
                 newArchived.delete(serverConv.id)
               }
             } else {
@@ -1991,6 +2056,9 @@ export const chatStore = createStore<ChatState>()(
                 // This branch only runs for a conversation we do not have, so
                 // it can never restamp an existing floor.
                 historyFloor: new Date(),
+                // A cold profile has seen nothing of this conversation, so
+                // the archive starts now.
+                ...(serverConv.archived ? { archivedAt: archiveMoment(undefined) } : {}),
               }
 
               draft.upsert(serverConv.id, entity, meta)
@@ -2045,7 +2113,8 @@ export const chatStore = createStore<ChatState>()(
         set({ typingStates: new Map() })
       },
 
-      updateReactions: (conversationId, messageId, reactorJid, emojis) => {
+      updateReactions: (conversationId, target, reactorJid, emojis) => {
+        const messageId = typeof target === 'string' ? target : canonicalReference(target)
         set((state) => {
           const convMessages = state.messages.get(conversationId)
           if (!convMessages) {
@@ -2054,19 +2123,19 @@ export const chatStore = createStore<ChatState>()(
             // durable cache so the correct state loads when the conversation
             // is reactivated, instead of silently dropping the reaction.
             logInfo(`Reaction for message ${messageId} not in memory — updating in cache`)
-            void messageCache.updateMessageReactions(conversationId, messageId, reactorJid, emojis)
+            void messageCache.updateMessageReactions(conversationId, messageId, reactorJid, emojis, typeof target === 'string' ? undefined : target)
             return state
           }
 
           // Resolve by id/stanzaId first, origin-id only as fallback (reactions
           // may reference any tier; origin-id must not shadow a real id).
-          const messageIndex = findMessageIndexById(convMessages, messageId)
+          const messageIndex = findChatMessageIndex(convMessages, target)
           if (messageIndex === -1) {
             // The conversation is resident but the target message is not (the
             // sliding window evicted it). Update the durable cache so the
             // reaction survives instead of being silently dropped.
             logInfo(`Reaction for message ${messageId} not in resident window — updating in cache`)
-            void messageCache.updateMessageReactions(conversationId, messageId, reactorJid, emojis)
+            void messageCache.updateMessageReactions(conversationId, messageId, reactorJid, emojis, typeof target === 'string' ? undefined : target)
             return state
           }
 
@@ -2100,7 +2169,9 @@ export const chatStore = createStore<ChatState>()(
             message.conversationId,
             message.id,
             { reactions: updatedMessage.reactions },
-            message.from
+            message.from,
+            undefined,
+            message
           )
 
           const updatedConvMessages = [...convMessages]
@@ -2110,42 +2181,42 @@ export const chatStore = createStore<ChatState>()(
         })
       },
 
-      updateMessage: (conversationId, messageId, updates, retractionReference, correctionActor, onCorrectionMissing, onCorrectionResolved) => {
+      updateMessage: (conversationId, selectedTarget, updates, retractionReference, correctionActor, onCorrectionMissing, onCorrectionResolved) => {
+        const messageId = typeof selectedTarget === 'string' ? selectedTarget : canonicalReference(selectedTarget)
         let recountNeeded = false
         const correctionPayload = updates
         const contentRecovery = updates.contentRecovery
         const liveCorrection = updates.liveCorrection
+        const reconcileStoredMessage = (message: StoredMessage, scope: string | null) => set(current => {
+          const rows = current.messages.get(conversationId) ?? []
+          const index = rows.findIndex(row => matchesCorrectionTarget(row, message))
+          const updated = reconcileCorrectionHandoff(rows[index], message, scope)
+          const draft = draftConversationMaps(current)
+          const preview = reconcileChatPreview(current.conversationMeta.get(conversationId)?.lastMessage, message, scope)
+          if (preview) draft.patchMeta(conversationId, { lastMessage: preview })
+          if (!updated) return draft.commit()
+          const replay = resolvePendingRetractions(current, conversationId, [updated], { persist: false })
+          const completed = replay.messages[0]
+          const window = withChatMessageWindow(current, conversationId, { messages: rows.map((row, i) => i === index ? completed : row) })
+          if (preview) draft.patchMeta(conversationId, { lastMessage: reconcileChatPreview(preview, completed, scope) ?? preview })
+          return { ...window, ...draft.commit(), ...(replay.pendingRetractions && { pendingRetractions: replay.pendingRetractions }) }
+        })
         const persistCorrection = (pendingUpdates: Partial<StoredMessage>, targetId = messageId) => {
           if (!correctionActor) return
           const scope = captureStorageScope()
-          const epoch = chatCacheEpoch
-          const entityEpoch = currentChatEntityEpoch(conversationId)
-          const isCurrent = () => scope.isCurrent() && epoch === chatCacheEpoch && entityEpoch === currentChatEntityEpoch(conversationId)
+          const isCurrent = captureChatCacheRead(conversationId)
           const fallback = () => {
             if (!isCurrent() || !onCorrectionMissing) return
             const current = get().messages.get(conversationId) ?? []
             const resolution = resolveMessageReference(current, messageId, 'archive-first')
             if (resolution?.candidates.some(({ message }) => chatMessageAuthor(message, correctionActor))) {
-              get().updateMessage(conversationId, messageId, { ...pendingUpdates, liveCorrection: false }, undefined, correctionActor)
+              get().updateMessage(conversationId, selectedTarget, { ...pendingUpdates, liveCorrection: false }, undefined, correctionActor)
             } else if (!resolution?.authoritative) onCorrectionMissing()
           }
-          void messageCache.applyChatCorrection(conversationId, targetId, pendingUpdates, correctionActor, scope.jid)
+          void messageCache.applyChatCorrection(conversationId, targetId, pendingUpdates, correctionActor, scope.jid, typeof selectedTarget === 'string' ? undefined : selectedTarget)
             .then(message => {
               if (message) {
-                if (isCurrent()) set(current => {
-                  const rows = current.messages.get(conversationId) ?? []
-                  const index = rows.findIndex(row => matchesCorrectionTarget(row, message))
-                  const updated = reconcileCorrectionHandoff(rows[index], message, scope.jid)
-                  const draft = draftConversationMaps(current)
-                  const preview = reconcileCorrectionHandoff(current.conversationMeta.get(conversationId)?.lastMessage, message, scope.jid)
-                  if (preview) { draft.patchMeta(conversationId, { lastMessage: preview }) }
-                  if (!updated) return draft.commit()
-                  const replay = resolvePendingRetractions(current, conversationId, [updated], { persist: false })
-                  const completed = replay.messages[0]
-                  const window = withChatMessageWindow(current, conversationId, { messages: rows.map((row, i) => i === index ? completed : row) })
-                  if (preview) draft.patchMeta(conversationId, { lastMessage: reconcileCorrectionHandoff(preview, completed, scope.jid) ?? preview })
-                  return { ...window, ...draft.commit(), ...(replay.pendingRetractions && { pendingRetractions: replay.pendingRetractions }) }
-                })
+                if (isCurrent()) reconcileStoredMessage(message, scope.jid)
                 void searchIndex.updateMessage(message, scope.jid).catch(error => logWarn(`Failed to index correction: ${String(error)}`))
                 if (isCurrent()) onCorrectionResolved?.(message, isCurrent)
               } else if (message === undefined) {
@@ -2163,24 +2234,44 @@ export const chatStore = createStore<ChatState>()(
           const convMessages = state.messages.get(conversationId) ?? []
 
           let messageIndex: number
-          if (correctionActor) {
+          if (typeof selectedTarget !== 'string') {
+            messageIndex = findChatMessageIndex(convMessages, selectedTarget)
+          } else if (correctionActor) {
             messageIndex = resolveMessageReference(convMessages, messageId, 'archive-first')?.candidates
               .find(({ message }) => chatMessageAuthor(message, correctionActor))?.index ?? -1
-          } else if (retractionReference) {
-            messageIndex = convMessages.findIndex((message) => message.id === messageId)
           } else if (updates.isRetracted) {
             messageIndex = resolveMessageReference(convMessages, messageId, 'archive-first')?.candidates[0]?.index ?? -1
           } else {
             messageIndex = findMessageIndexById(convMessages, messageId)
           }
-          if (messageIndex === -1) {
+          const existingPreview = state.conversationMeta.get(conversationId)?.lastMessage
+          const target = convMessages[messageIndex] ?? (
+            typeof selectedTarget !== 'string' && existingPreview && findChatMessageIndex([existingPreview], selectedTarget) === 0
+              ? existingPreview
+              : undefined
+          )
+          if (target && correctionActor && !chatMessageAuthor(target, correctionActor)) return state
+          if (!target) {
             if (correctionActor && resolveMessageReference(convMessages, messageId, 'archive-first')?.authoritative) return state
             if (correctionActor) {
               persistCorrection(updates)
+            } else if (typeof selectedTarget !== 'string') {
+              const scope = captureStorageScope()
+              const isCurrent = captureChatCacheRead(conversationId)
+              void messageCache.getMessage(conversationId, selectedTarget.id, selectedTarget).then(async target => {
+                if (!target || !isCurrent()) return
+                if (updates.isRetracted) await retractChatMessageInStorage(conversationId, target, updates, scope.jid)
+                else await messageCache.updateMessage(conversationId, target.id, updates, target.from, scope.jid, target)
+                if (!isCurrent()) return
+                const updated = await messageCache.getMessage(conversationId, target.id, target)
+                if (updated && isCurrent()) {
+                  reconcileStoredMessage(updated, scope.jid)
+                  if (updates.body !== undefined) await searchIndex.updateMessage(updated, scope.jid)
+                }
+              }).catch(error => logWarn(`Failed to persist message update: ${String(error)}`))
             }
             return state
           }
-          const target = convMessages[messageIndex]
           const applicable = resolveCorrectionUpdates(target, {
             ...updates,
             ...(updates.isEdited && { originalBody: target.originalBody ?? target.body }),
@@ -2190,18 +2281,20 @@ export const chatStore = createStore<ChatState>()(
 
           const updatedConvMessages = [...convMessages]
           let updatedMessage = {
-            ...convMessages[messageIndex],
+            ...target,
             ...updates,
-            ...(updates.isRetracted && convMessages[messageIndex].retractedAt
-              ? { retractedAt: convMessages[messageIndex].retractedAt }
+            ...(updates.isRetracted && target.retractedAt
+              ? { retractedAt: target.retractedAt }
               : {}),
           }
           const replay = resolvePendingRetractions(state, conversationId, [updatedMessage], { persist: false })
           updatedMessage = replay.messages[0]
           if (updatedMessage.isRetracted) updates = { ...updates, isRetracted: true, retractedAt: updatedMessage.retractedAt }
           const pendingPatch = replay.pendingRetractions ? { pendingRetractions: replay.pendingRetractions } : {}
-          updatedConvMessages[messageIndex] = updatedMessage
-          const window = withChatMessageWindow(state, conversationId, { messages: updatedConvMessages })
+          if (messageIndex !== -1) updatedConvMessages[messageIndex] = updatedMessage
+          const window = messageIndex !== -1
+            ? withChatMessageWindow(state, conversationId, { messages: updatedConvMessages })
+            : undefined
 
           // Update in IndexedDB asynchronously (non-blocking)
           // Use the actual message id (not the lookup id which could be stanzaId)
@@ -2223,10 +2316,11 @@ export const chatStore = createStore<ChatState>()(
             const reindex = updates.body !== undefined
             void messageCache.updateMessage(
               conversationId,
-              convMessages[messageIndex].id,
+              target.id,
               { ...updates, ...(contentRecovery && { contentRecovery }) },
-              convMessages[messageIndex].from,
+              target.from,
               scope.jid,
+              target,
             ).then(() => {
               if (reindex && scope.isCurrent()) return searchIndex.updateMessage({ ...updatedMessage, ...(contentRecovery && { contentRecovery }) }, scope.jid)
             }).catch(error => logWarn(`Failed to index message update: ${String(error)}`))
@@ -2238,15 +2332,13 @@ export const chatStore = createStore<ChatState>()(
           // (safe to call for every retraction: removeTransient is a no-op
           // when the alias was never noted).
           if (updates.isRetracted) {
-            const removal = { removed: chatReadTracker.dropUnreadMessage(conversationId, transientIdentity({ id: updatedMessage.id }, 'chat')) }
+            const removal = { removed: chatReadTracker.dropUnreadMessage(conversationId, updatedMessage) }
             if (removal.removed) recountNeeded = true
           }
 
-          const meta = state.conversationMeta.get(conversationId)
-          const existingPreview = meta?.lastMessage
-          const isLastMessage = messageIndex === updatedConvMessages.length - 1
-          const preview = correctionActor || updates.isEdited || updates.correctionRevision || updates.correctionStanzaIds || contentRecovery
-            ? reconcileCorrectionHandoff(existingPreview ?? (isLastMessage ? target : undefined), { ...updatedMessage, ...(contentRecovery && { contentRecovery }) }, getStorageScopeJid())
+          const isLastMessage = messageIndex !== -1 && messageIndex === updatedConvMessages.length - 1
+          const preview = correctionActor || updates.isEdited || updates.isRetracted || updates.correctionRevision || updates.correctionStanzaIds || contentRecovery
+            ? reconcileChatPreview(existingPreview ?? (isLastMessage ? target : undefined), { ...updatedMessage, ...(contentRecovery && { contentRecovery }) }, getStorageScopeJid())
             : existingPreview
               ? matchesCorrectionTarget(existingPreview, updatedMessage) ? { ...existingPreview, ...updates } : undefined
               : isLastMessage ? updatedMessage : undefined
@@ -2280,7 +2372,9 @@ export const chatStore = createStore<ChatState>()(
             conversationId,
             convMessages[messageIndex].id,
             { stanzaId: undefined },
-            convMessages[messageIndex].from
+            convMessages[messageIndex].from,
+            undefined,
+            convMessages[messageIndex]
           )
 
           // Against the PRE-update copy: `updatedMessage` has just lost the
@@ -2288,7 +2382,7 @@ export const chatStore = createStore<ChatState>()(
           const meta = state.conversationMeta.get(conversationId)
           const wasLastMessage =
             !!meta?.lastMessage &&
-            sameLogicalMessage(CHAT_SCOPE, meta.lastMessage, convMessages[messageIndex])
+            sameChatMessage(meta.lastMessage, convMessages[messageIndex])
 
           if (wasLastMessage) {
             const draft = draftConversationMaps(state)
@@ -2316,7 +2410,7 @@ export const chatStore = createStore<ChatState>()(
           // IndexedDB and the search-index removal.
           get().updateMessage(
             conversationId,
-            target.id,
+            target,
             {
               isRetracted: true,
               retractedAt: target.retractedAt ?? new Date(record.retractedAt),
@@ -2381,7 +2475,7 @@ export const chatStore = createStore<ChatState>()(
       getMessage: (conversationId, messageId) => {
         const convMessages = get().messages.get(conversationId)
         if (!convMessages) return undefined
-        return findMessageById(convMessages, messageId)
+        return convMessages[findChatMessageIndex(convMessages, messageId)]
       },
 
       getConversationLastTimestamp: (conversationId) => {
@@ -2390,28 +2484,34 @@ export const chatStore = createStore<ChatState>()(
       },
 
       removeMessage: (conversationId, messageId) => {
+        const isCurrent = captureChatCacheRead(conversationId)
         let recountNeeded = false
         set((state) => {
-          const convMessages = state.messages.get(conversationId)
-          if (!convMessages) return state
-
-          const messageIndex = findMessageIndexById(convMessages, messageId)
-          if (messageIndex === -1) return state
-
-          const removed = convMessages[messageIndex]
+          const convMessages = state.messages.get(conversationId) ?? []
+          const meta = state.conversationMeta.get(conversationId)
+          const messageIndex = findChatMessageIndex(convMessages, messageId)
+          // MAM preview fetches do not load a history row. A deferred signal
+          // can therefore exist only in the preview when it is removed.
+          const preview = meta?.lastMessage
+          const removed = messageIndex !== -1
+            ? convMessages[messageIndex]
+            : preview && findChatMessageIndex([preview], messageId) !== -1 ? preview : undefined
+          if (!removed) return state
           const updatedConvMessages = convMessages.filter((_, i) => i !== messageIndex)
-          const window = withChatMessageWindow(state, conversationId, { messages: updatedConvMessages })
+          const window = messageIndex !== -1
+            ? withChatMessageWindow(state, conversationId, { messages: updatedConvMessages })
+            : undefined
 
           // Mirror updateMessage: keep the search index and durable cache in
           // sync, using the message's real id (not the lookup id).
           void searchIndex.removeMessage(removed)
-          void messageCache.deleteMessage(conversationId, removed.id, removed.from)
+          const deletion = messageCache.deleteMessage(conversationId, removed.id, removed.from, undefined, removed)
 
           // This may be dropping a noted `noLocalStore` message (a
           // bodiless placeholder never resolves to noLocalStore in practice,
           // but removeTransient is a harmless no-op when the alias was never
           // noted, so it is safe to call unconditionally here too).
-          const removal = { removed: chatReadTracker.dropUnreadMessage(conversationId, transientIdentity({ id: removed.id }, 'chat')) }
+          const removal = { removed: chatReadTracker.dropUnreadMessage(conversationId, removed) }
           if (removal.removed) recountNeeded = true
 
           // If the removed message was the conversation preview, recompute it.
@@ -2419,12 +2519,29 @@ export const chatStore = createStore<ChatState>()(
           // encrypted reaction/retraction placeholder: removeMessage drops the
           // bodiless placeholder, and the preview falls back to the newest
           // remaining previewable message instead of keeping a stale pointer.
-          const meta = state.conversationMeta.get(conversationId)
           const wasLastMessage =
-            !!meta?.lastMessage && sameLogicalMessage(CHAT_SCOPE, meta.lastMessage, removed)
+            !!meta?.lastMessage && sameChatMessage(meta.lastMessage, removed)
 
           if (wasLastMessage) {
             const lastMessage = findLastPreviewableMessage(updatedConvMessages)
+            void deletion.then(async () => {
+              if (!isCurrent()) return
+              const cached = await messageCache.getMessages(conversationId, {
+                limit: 1,
+                latest: true,
+                filter: message => isPreviewableMessage(message) && !sameChatMessage(message, removed),
+              }).then(messages => refreshCachedCorrections(messages, isCurrent))
+              if (!isCurrent()) return
+              const candidate = cached[0]
+              if (!candidate) return
+              set((current) => {
+                if (!isCurrent() || current.conversationMeta.get(conversationId)?.lastMessage !== lastMessage) return current
+                if (!shouldReplaceLastMessage(lastMessage, candidate)) return current
+                const draft = draftConversationMaps(current)
+                draft.patchMeta(conversationId, { lastMessage: candidate })
+                return draft.commit()
+              })
+            }).catch(error => logWarn(`Failed to recover conversation preview: ${String(error)}`))
             const draft = draftConversationMaps(state)
             draft.patchMeta(conversationId, { lastMessage })
             return { ...window, ...draft.commit() }
@@ -2533,21 +2650,24 @@ export const chatStore = createStore<ChatState>()(
           // RAM messages must persist — but only for the ACTIVE conversation
           // (non-active conversations keep no resident array).
           const isActive = state.activeConversationId === conversationId
+          const meta = state.conversationMeta.get(conversationId)
+          const currentPreview = backfillChatPreviewIdentity(meta?.lastMessage, mamMessages)
           if (newMessages.length === 0) {
+            const draft = draftConversationMaps(state)
+            if (currentPreview !== meta?.lastMessage) draft.patchMeta(conversationId, { lastMessage: currentPreview })
             if (patched.length === 0 || !isActive) {
-              return { mamQueryStates: newStates, conversationGaps: gapsAfterMerge, conversationCoverage: coverageAfterMerge }
+              return { ...draft.commit(), mamQueryStates: newStates, conversationGaps: gapsAfterMerge, conversationCoverage: coverageAfterMerge }
             }
-            return { ...withChatMessageWindow(state, conversationId, { messages: resident }), mamQueryStates: newStates, conversationGaps: gapsAfterMerge, conversationCoverage: coverageAfterMerge }
+            return { ...withChatMessageWindow(state, conversationId, { messages: resident }), ...draft.commit(), mamQueryStates: newStates, conversationGaps: gapsAfterMerge, conversationCoverage: coverageAfterMerge }
           }
 
           // Sidebar preview via the shared policy: the newest previewable message
           // supersedes (or heals) the stored preview — deep-history merges must
           // not regress the sidebar.
-          const meta = state.conversationMeta.get(conversationId)
           const conv = state.conversations.get(conversationId)
-          const preview = derivePreviewAfterMerge(meta?.lastMessage, trimmed, findLastPreviewableMessage)
+          const preview = derivePreviewAfterMerge(currentPreview, trimmed, findLastPreviewableMessage)
           const lastMessage = preview.lastMessage
-          const previewUpdate = !!(meta && conv && preview.changed)
+          const previewUpdate = !!(meta && conv && lastMessage !== meta.lastMessage)
 
           // NON-ACTIVE conversation (background catch-up): the messages are durable
           // in IndexedDB and the preview/gap are updated, but we DON'T populate the
@@ -2604,6 +2724,8 @@ export const chatStore = createStore<ChatState>()(
           return { ...window, mamQueryStates: newStates, conversationGaps: gapsAfterMerge, conversationCoverage: coverageAfterMerge }
         })
 
+        reviveArchivedConversation(conversationId, mamMessages)
+
         run.settled({ merged: mergedForMarker, recount: shouldRecountAfterMerge })
       },
 
@@ -2640,13 +2762,14 @@ export const chatStore = createStore<ChatState>()(
           // Never let a bodiless signal placeholder become the preview
           if (!isPreviewableMessage(lastMessage)) return state
 
-          // Update if newer, or if the existing preview is a stuck placeholder
-          if (!shouldReplaceLastMessage(meta.lastMessage, lastMessage)) return state
+          // A resolved copy of the same message may keep its original timestamp.
+          if (!shouldReplaceLastMessage(meta.lastMessage, lastMessage) && !isResolvedSamePreview(meta.lastMessage, lastMessage)) return state
 
           const draft = draftConversationMaps(state)
           draft.patchMeta(conversationId, { lastMessage })
           return draft.commit()
         })
+        reviveArchivedConversation(conversationId, [lastMessage])
       },
 
       resolveCorrectionReferences: async (conversationId, targetId, actor) => {
@@ -2682,9 +2805,8 @@ export const chatStore = createStore<ChatState>()(
           const existing = meta?.lastMessage ?? conv?.lastMessage
           if (!existing) return state
 
-          // Only touch the preview when it IS this message — matched across the
-          // id/stanzaId/originId tiers so a MAM-id copy still resolves.
-          if (findMessageIndexById([existing], messageId) === -1) return state
+          // Use the same target selection as resident updates to preserve twin identity.
+          if (findChatMessageIndex([existing], messageId) === -1) return state
 
           const applicable = resolveCorrectionUpdates(existing, updates, getStorageScopeJid())
           if (!applicable) return state

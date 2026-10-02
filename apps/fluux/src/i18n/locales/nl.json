@@ -44,6 +44,8 @@
         "madeBy": "Gemaakt door",
         "poweredBy": "Mogelijk gemaakt door",
         "errors": {
+            "discoveryFailed": "Serverdetectie voor {{domain}} is mislukt. In plaats daarvan is {{target}} geprobeerd.",
+            "discoveryFailedTcp": "Serverdetectie voor {{domain}} is mislukt. In plaats daarvan is een directe TCP-verbinding met {{target}} geprobeerd.",
             "tlsCertTitle": "Het beveiligingscertificaat van de server kon niet worden geverifieerd",
             "tlsOtherTitle": "Beveiligde verbinding mislukt",
             "tlsOtherBody": "De versleutelde verbinding met de server kon niet tot stand worden gebracht. De TLS-configuratie van de server wordt mogelijk niet ondersteund. Controleer het serveradres of neem contact op met de serverbeheerder.",
@@ -72,7 +74,8 @@
         "joinRoom": "Groep joinen",
         "viewProfile": "Profiel bekijken",
         "resizeHint": "Sleep om te verkleinen, dubbelklik om te herstellen",
-        "dismiss": "Sluiten"
+        "dismiss": "Sluiten",
+        "search": "Zoeken"
     },
     "newMessage": {
         "title": "Nieuw bericht",
@@ -754,6 +757,8 @@
         "webPush_disabled": "Uitgeschakeld, pushmeldingen uit",
         "webPushDisable": "Uitschakelen",
         "webPushReEnable": "Opnieuw inschakelen",
+        "pushStatus": "Pushmeldingen",
+        "push_failed": "Registratie mislukt, tik om opnieuw te proberen",
         "updates": "Updates",
         "storage": {
             "title": "Opslag",
@@ -1301,6 +1306,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Vereist aandacht"
     },
+    "windowControls": {
+        "minimize": "Minimaliseren",
+        "maximize": "Maximaliseren",
+        "restore": "Vorig formaat"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "De weergavenaam in de kamerlijst en de koptekst.",
         "muc#roomconfig_roomdesc": "Een korte beschrijving van het doel van de kamer.",
@@ -1457,5 +1467,32 @@
         "saved": "Opgeslagen. Open Fluux om een gesprek te kiezen en te verzenden.",
         "importError": "Importeren mislukt. Deel één link of bestand tot 20 MB; er is ruimte voor 20 items.",
         "sent": "Bericht verzonden. Je kunt dit geïmporteerde item verwijderen."
+    },
+    "search": {
+        "filter": {
+            "all": "Alles",
+            "conversations": "Chats",
+            "rooms": "Kamers"
+        },
+        "placeholder": "Berichten zoeken…",
+        "scopeLabel": "Zoeken in {{name}}",
+        "clearScope": "Alle gesprekken doorzoeken",
+        "searching": "Zoeken…",
+        "noResults": "Geen berichten gevonden",
+        "searchServer": "Serverarchief doorzoeken",
+        "searchingServer": "Serverarchief wordt doorzocht…",
+        "serverResults": "Serverarchief",
+        "loadMore": "Meer laden van server",
+        "hint": "Typ om in alle berichten te zoeken",
+        "contextView": "Zoekresultaat",
+        "previewBanner": "U bekijkt een voorbeeld van een zoekresultaat",
+        "goToMessage": "Ga naar bericht",
+        "loadingContext": "Berichten laden…",
+        "errors": {
+            "failed": "Zoeken mislukt",
+            "archiveRooms": "De server ondersteunt geen archiefzoekopdrachten voor kamers",
+            "archiveUnsupported": "De server ondersteunt geen archiefzoekopdrachten. Probeer te zoeken binnen een gesprek.",
+            "serverFailed": "Zoeken op de server mislukt"
+        }
     }
 }

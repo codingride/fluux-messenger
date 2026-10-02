@@ -5,8 +5,9 @@
 Run commands from the repository root unless stated otherwise.
 
 iOS is an opt-in development target and is not part of the release workflow.
-Its identity is `com.processone.fluux.ios.dev` (Fluux Messenger iOS Dev). The
-desktop executable keeps its own entry point and plugins; the mobile library
+Its identity is `net.processone.fluux` (Fluux Messenger iOS Dev), the same as a
+release build: the signing, not the identifier, separates development from
+production. The desktop executable keeps its own entry point and plugins; the mobile library
 loads the OS and opener plugins plus the shared XMPP proxy commands. The iOS
 config is selected automatically by `tauri ios`, not by desktop or web builds.
 
@@ -102,7 +103,7 @@ npm run tauri:ios:demo
 npm run tauri:ios:demo -- "Fluux iOS QA"
 ```
 
-This builds and installs **Fluux iOS Demo** (`com.processone.fluux.ios.demo`)
+This builds and installs **Fluux iOS Demo** (`net.processone.fluux.demo`)
 alongside the connected development app. Its separate data container keeps the
 demo's storage reset away from real accounts. The app embeds
 `demo.html?tutorial=false`, so it opens without a running Vite server or a
@@ -144,7 +145,7 @@ npm run tauri:ios:dev -- --open
 
 Select the physical device in Xcode and press **Run**. Keep the Tauri command
 running for hot reload, and let the device reach the Mac's Vite server on port
-5173. This uses the development identity `com.processone.fluux.ios.dev`.
+5173. This uses the identity `net.processone.fluux`.
 Signing credentials and team IDs belong to local configuration, not committed
 files. Set the team environment before initialization too when Tauri requests it.
 
@@ -153,6 +154,21 @@ files. Set the team environment before initialization too when Tauri requests it
 After the device's signing/provisioning setup works, build a signed debug device
 archive with embedded frontend assets. Unlike `tauri:ios:build`, this explicitly
 selects the physical-device target and does not use `--no-sign`:
+
+```bash
+export APPLE_DEVELOPMENT_TEAM="YOUR_TEAM_ID"
+npm run tauri:ios:install
+```
+
+The install command builds the SDK, prepares the iOS icons, creates a signed
+device archive, checks the app identity and signature, then installs it. It
+lists known iPhones and iPads and asks for a device number before building.
+Empty or invalid answers prompt again, up to three attempts. Enter `0` to cancel.
+To skip the menu, pass an identifier from `xcrun devicectl list devices` as
+`npm run tauri:ios:install -- "DEVICE_ID"`. The command does not launch the app.
+The menu requires interactive terminal input. When running from automation or
+with redirected stdin, pass the device identifier explicitly.
+To perform the steps separately, use:
 
 ```bash
 export APPLE_DEVELOPMENT_TEAM="YOUR_TEAM_ID"
@@ -247,3 +263,32 @@ already running, and logged out. Also test cancellation, failed uploads,
 restart before sending, account changes and an unsupported/oversize file.
 `demo.html?tutorial=false&share=1` exercises the common picker with a mock inbox
 without reading native storage or sending real messages.
+
+## Remote push notifications
+
+The `push` plugin (`apps/fluux/src-tauri/plugins/push`) asks for notification permission, registers with APNs and
+returns `{ token, environment }` through `plugin:push|register`. The token can change between launches, so once
+permission is granted the plugin registers again on every launch and emits each token it receives as a `token` plugin
+event. The environment comes from the embedded provisioning
+profile: `development` for builds installed from Xcode or `tauri:ios:install`, `production` for TestFlight and the App
+Store, which embed no development profile. Both use the topic `net.processone.fluux`.
+
+To check a device without the web UI, launch the installed app with the push diagnostic, then read the file in which
+it records the outcome of its launch registration (it asks for permission first if it has never been granted):
+
+```bash
+xcrun devicectl device process launch --device <DEVICE_ID> --terminate-existing \
+  --environment-variables '{"FLUUX_PUSH_PROBE":"1"}' net.processone.fluux
+xcrun devicectl device copy from --device <DEVICE_ID> --domain-type appDataContainer \
+  --domain-identifier net.processone.fluux --source Library/Caches/push-probe.txt --destination push-probe.txt
+```
+
+With the app in the background, send a notification straight to APNs with the team's APNs key, bypassing the XMPP
+server:
+
+```bash
+node scripts/apns-test.mjs AuthKey_XXXXXXXXXX.p8 <KEY_ID> <DEVICE_TOKEN> development
+```
+
+APNs answers `HTTP 200` when the key, topic, token and environment match. iOS shows no banner while the app is in the
+foreground.

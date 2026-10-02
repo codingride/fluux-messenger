@@ -1860,6 +1860,58 @@ describe('chatStore', () => {
       expect(after?.lastMessage?.body).toBe('Real message')
     })
 
+    it.each(['empty', 'parked', 'resident'] as const)('restores the newest cached preview with %s history', async (history) => {
+      const id = 'alice@example.com'
+      chatStore.getState().addConversation(createConversation(id))
+      const old = { ...createMessage(id, 'Old'), timestamp: new Date(1000) }
+      const cached = { ...createMessage(id, 'Newest incoming'), timestamp: new Date(2000) }
+      const signal = { ...createMessage(id, '[Encrypted message]', true), timestamp: new Date(3000) }
+      if (history !== 'empty') chatStore.getState().addMessage(old)
+      if (history === 'resident') chatStore.getState().addMessage(signal)
+      if (history === 'parked') chatStore.setState({ windowAtLiveEdge: new Map([[id, false]]) })
+      chatStore.getState().updateLastMessagePreview(id, signal)
+      const resident = chatStore.getState().messages.get(id)?.filter(m => m.id !== signal.id)
+      vi.mocked(messageCache.getMessages).mockImplementationOnce(async (_id, options) => {
+        expect(options?.latest).toBe(true)
+        expect(options?.limit).toBe(1)
+        return [signal, { ...signal, id: 'bodiless', body: '' }, cached]
+          .filter(message => !options?.filter || options.filter(message)).slice(0, options?.limit)
+      })
+
+      chatStore.getState().removeMessage(id, signal.id)
+      await flushRetractionStorage()
+
+      expect(chatStore.getState().conversationMeta.get(id)?.lastMessage).toEqual(cached)
+      expect(chatStore.getState().conversations.get(id)?.lastMessage).toEqual(cached)
+      expect(chatStore.getState().messages.get(id)).toEqual(resident)
+    })
+
+    it.each(['preview', 'account', 'conversation'] as const)('discards a delayed preview recovery after a concurrent %s change', async (change) => {
+      const id = 'alice@example.com'
+      setStorageScopeJid('me@example.com')
+      chatStore.getState().addConversation(createConversation(id))
+      const cached = { ...createMessage(id, 'Cached'), timestamp: new Date(1000) }
+      const signal = { ...createMessage(id, '[Encrypted message]', true), timestamp: new Date(2000) }
+      const newer = { ...createMessage(id, 'New preview'), timestamp: new Date(3000) }
+      chatStore.getState().updateLastMessagePreview(id, signal)
+      let release!: (messages: Message[]) => void
+      vi.mocked(messageCache.getMessages).mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+      chatStore.getState().removeMessage(id, signal.id)
+      await flushRetractionStorage()
+      if (change === 'account') setStorageScopeJid('other@example.com')
+      if (change === 'conversation') {
+        chatStore.getState().deleteConversation(id)
+        chatStore.getState().addConversation(createConversation(id))
+      }
+      if (change === 'preview') chatStore.getState().updateLastMessagePreview(id, newer)
+      release([cached])
+      await flushRetractionStorage()
+
+      expect(chatStore.getState().conversationMeta.get(id)?.lastMessage).toEqual(change === 'preview' ? newer : undefined)
+      expect(chatStore.getState().conversations.get(id)?.lastMessage).toEqual(change === 'preview' ? newer : undefined)
+      _resetStorageScopeForTesting()
+    })
+
     it('leaves lastMessage untouched when removing a non-preview message', () => {
       chatStore.getState().addConversation(createConversation('alice@example.com'))
       const first = createMessage('alice@example.com', 'First', false)
@@ -1981,7 +2033,10 @@ describe('chatStore', () => {
         'alice@example.com',
         msg.id,
         { stanzaId: undefined },
-        msg.from
+        msg.from,
+        undefined,
+        // The pre-update identity: the cached row still carries the stanza-id.
+        expect.objectContaining({ stanzaId: 'uuid-sent' })
       )
     })
 
@@ -2848,7 +2903,7 @@ describe('chatStore', () => {
 
       // Conversation-scoped: the chat cache resolves the reference through the
       // shared ladder, which repeats across conversations without that scope.
-      expect(messageCache.updateMessageReactions).toHaveBeenCalledWith('alice@example.com', msg.id, 'bob@example.com', ['👍'])
+      expect(messageCache.updateMessageReactions).toHaveBeenCalledWith('alice@example.com', msg.id, 'bob@example.com', ['👍'], undefined)
       // No resident array to update — the reaction lands in the cache only,
       // to be picked up next time the conversation is activated.
       expect(chatStore.getState().messages.get('alice@example.com')).toBeUndefined()
@@ -3191,8 +3246,8 @@ describe('chatStore', () => {
 
       expect(chatStore.getState().isArchived('alice@example.com')).toBe(true)
 
-      // Receive a new message
-      const msg = createMessage('alice@example.com', 'New message!')
+      // Receive a message sent after the archive
+      const msg = { ...createMessage('alice@example.com', 'New message!'), timestamp: new Date(Date.now() + 1000) }
       chatStore.getState().addMessage(msg)
 
       expect(chatStore.getState().isArchived('alice@example.com')).toBe(false)
@@ -3425,7 +3480,9 @@ describe('chatStore', () => {
           'alice@example.com',
           'uuid-2',
           expect.objectContaining({ stanzaId: 'archive-carbon' }),
-          sent.from
+          sent.from,
+          undefined,
+          expect.objectContaining({ id: 'uuid-2', stanzaId: 'archive-carbon' })
         )
       })
     })
@@ -4512,6 +4569,26 @@ describe('chatStore', () => {
     })
   })
 
+  describe('resolved MAM previews', () => {
+    it.each(['plaintext', 'unsupported'] as const)('refreshes a same-timestamp %s preview without loading history', (resolution) => {
+      const id = 'alice@example.com'
+      const encrypted = { ...createMessage(id, '[Encrypted message: could not decrypt]'), encryptedPayload: '<openpgp/>' }
+      chatStore.getState().addConversation({ ...createConversation(id), lastMessage: encrypted })
+      const resolved = {
+        ...encrypted,
+        body: resolution === 'plaintext' ? 'Recovered content' : 'OMEMO fallback',
+        encryptedPayload: undefined,
+        ...(resolution === 'unsupported' && { unsupportedEncryption: { namespace: 'eu.siacs.conversations.axolotl', name: 'OMEMO' } }),
+      }
+      chatStore.getState().updateLastMessagePreview(id, resolved)
+      expect(chatStore.getState().conversationMeta.get(id)?.lastMessage).toEqual(resolved)
+      expect(chatStore.getState().conversations.get(id)?.lastMessage).toEqual(resolved)
+      expect(chatStore.getState().messages.get(id) ?? []).toEqual([])
+      chatStore.getState().updateLastMessagePreview(id, encrypted)
+      expect(chatStore.getState().conversationMeta.get(id)?.lastMessage).toEqual(resolved)
+    })
+  })
+
   describe('refreshLastMessageContent', () => {
     const conversationId = 'alice@example.com'
     const fixedTs = new Date('2024-01-15T12:00:00Z')
@@ -5144,8 +5221,9 @@ describe('chatStore', () => {
         expect.objectContaining({ isRetracted: true }),
         convId,
         null,
-        // No exact cache key: the target is resident but has no cached row to pin.
-        undefined,
+        // No exact cache key: the target is resident but has no cached row to pin,
+        // so its own archive identity selects the row.
+        expect.objectContaining({ id: 'msg-1', from: convId }),
       )
     })
 
@@ -5174,8 +5252,9 @@ describe('chatStore', () => {
         expect.objectContaining({ isRetracted: true }),
         convId,
         null,
-        // No exact cache key: the target is resident but has no cached row to pin.
-        undefined,
+        // No exact cache key: the target is resident but has no cached row to pin,
+        // so its own archive identity selects the row.
+        expect.objectContaining({ id: 'msg-1', from: convId }),
       )
     })
 
@@ -5264,7 +5343,7 @@ describe('chatStore parity drift regressions', () => {
 
       chatStore.getState().updateReactions(convId, 'evicted-1', 'bob@example.com', ['👍'])
 
-      expect(messageCache.updateMessageReactions).toHaveBeenCalledWith(convId, 'evicted-1', 'bob@example.com', ['👍'])
+      expect(messageCache.updateMessageReactions).toHaveBeenCalledWith(convId, 'evicted-1', 'bob@example.com', ['👍'], undefined)
       // The resident array is untouched — only the durable copy is patched.
       expect(chatStore.getState().messages.get(convId)).toBe(residentBefore)
     })

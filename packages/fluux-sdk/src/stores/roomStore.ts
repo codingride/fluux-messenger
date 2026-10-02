@@ -58,7 +58,7 @@ import {
 import { createArchiveSaveChain } from './shared/archiveSaveChain'
 import * as draftState from './shared/draftState'
 import * as timeline from './shared/messageTimeline'
-import { shouldUpdateLastMessage, shouldReplaceLastMessage, isPreviewableMessage, findLastNonIgnoredMessage } from './shared/lastMessageUtils'
+import { shouldUpdateLastMessage, shouldReplaceLastMessage, isPreviewableMessage, findLastNonIgnoredMessage, isResolvedSamePreview } from './shared/lastMessageUtils'
 import { derivePreviewAfterMerge } from './shared/previewState'
 import { addPendingRetraction, applyPendingRetractions, removePendingRetraction, type PendingRetraction } from './shared/pendingRetractions'
 import { retractRoomMessageInStorage, retractUnresidentRoomTarget } from './shared/retractionStorage'
@@ -537,9 +537,7 @@ const roomArchiveMerge = createArchiveMerge<RoomMessage>('room', {
   saveRows: (rows) => messageCache.saveRoomMessages(rows),
   saves: roomArchiveSaves,
   readTracker: roomReadTracker,
-  unreadKey: (message) => message,
   pendingRemoteMarker: (roomJid) => roomReadView(roomStore.getState(), roomJid)?.pendingRemoteMarker,
-  recountUnread: (roomJid) => { void roomStore.getState().recomputeUnreadForRoom(roomJid) },
   coverageOf: (roomJid) => roomStore.getState().roomCoverage.get(roomJid),
 })
 
@@ -2138,7 +2136,7 @@ export const roomStore = createStore<RoomState>()(
       roomJid,
       messageToAdd,
       { isActive: get().activeRoomJid === roomJid, windowVisible: connectionStore.getState().windowVisible },
-      { increment: incrementUnread, roomMessage: messageToAdd },
+      { increment: incrementUnread },
     )
     let acceptedMessage = false
 
@@ -3684,9 +3682,8 @@ export const roomStore = createStore<RoomState>()(
       // preview — parity with chatStore.updateLastMessagePreview (#524).
       if (!isPreviewableMessage(lastMessage)) return state
 
-      // Update if newer, OR if the existing preview is itself a stuck
-      // non-previewable placeholder that a real message should heal.
-      if (!shouldReplaceLastMessage(meta.lastMessage, lastMessage)) return state
+      // A resolved copy of the same message may keep its original timestamp.
+      if (!shouldReplaceLastMessage(meta.lastMessage, lastMessage) && !isResolvedSamePreview(meta.lastMessage, lastMessage)) return state
 
       // Update metadata map
       const newMeta = new Map(state.roomMeta)

@@ -44,6 +44,8 @@
         "madeBy": "נוצר על ידי",
         "poweredBy": "מופעל באמצעות",
         "errors": {
+            "discoveryFailed": "גילוי השרת עבור {{domain}} נכשל. נוסה חיבור אל {{target}} במקום זאת.",
+            "discoveryFailedTcp": "גילוי השרת עבור {{domain}} נכשל. נוסה חיבור TCP ישיר אל {{target}} במקום זאת.",
             "tlsCertTitle": "לא ניתן לאמת את אישור האבטחה של השרת",
             "tlsOtherTitle": "החיבור המאובטח נכשל",
             "tlsOtherBody": "לא ניתן היה ליצור חיבור מוצפן לשרת. ייתכן שתצורת ה-TLS של השרת אינה נתמכת. בדוק את כתובת השרת, או פנה למנהל השרת.",
@@ -72,7 +74,8 @@
         "joinRoom": "הצטרף לחדר",
         "viewProfile": "צפה בפרופיל",
         "resizeHint": "גרור לשינוי גודל, לחיצה כפולה לאיפוס",
-        "dismiss": "סגור"
+        "dismiss": "סגור",
+        "search": "חיפוש"
     },
     "newMessage": {
         "title": "הודעה חדשה",
@@ -756,6 +759,8 @@
         "webPush_disabled": "מושבת - התראות Push כבויות",
         "webPushDisable": "השבת",
         "webPushReEnable": "הפעל מחדש",
+        "pushStatus": "התראות Push",
+        "push_failed": "הרישום נכשל, הקש כדי לנסות שוב",
         "updates": "עדכונים",
         "storage": {
             "title": "אחסון",
@@ -1303,6 +1308,11 @@
         "searchMessages": "חיפוש הודעות עבור \"{{query}}\"",
         "attention": "דורש תשומת לב"
     },
+    "windowControls": {
+        "minimize": "מזער",
+        "maximize": "הגדל",
+        "restore": "שחזר"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "שם התצוגה המוצג ברשימות החדרים ובכותרת.",
         "muc#roomconfig_roomdesc": "תיאור קצר של מטרת החדר.",
@@ -1459,5 +1469,32 @@
         "saved": "נשמר. פתחו את Fluux כדי לבחור שיחה ולשלוח.",
         "importError": "הייבוא נכשל. שתפו קישור אחד או קובץ עד 20 MB; ניתן לשמור 20 פריטים.",
         "sent": "ההודעה נשלחה. ניתן למחוק את הפריט שיובא."
+    },
+    "search": {
+        "filter": {
+            "all": "הכול",
+            "conversations": "צ'אטים",
+            "rooms": "חדרים"
+        },
+        "placeholder": "חיפוש הודעות…",
+        "scopeLabel": "מחפש ב-{{name}}",
+        "clearScope": "חיפוש בכל השיחות",
+        "searching": "מחפש…",
+        "noResults": "לא נמצאו הודעות",
+        "searchServer": "חיפוש בארכיון השרת",
+        "searchingServer": "מחפש בארכיון השרת…",
+        "serverResults": "ארכיון השרת",
+        "loadMore": "טעינת עוד מהשרת",
+        "hint": "הקלידו כדי לחפש בכל ההודעות",
+        "contextView": "תוצאת חיפוש",
+        "previewBanner": "אתם צופים בתצוגה מקדימה של תוצאת חיפוש",
+        "goToMessage": "מעבר להודעה",
+        "loadingContext": "טוען הודעות…",
+        "errors": {
+            "failed": "החיפוש נכשל",
+            "archiveRooms": "השרת אינו תומך בחיפוש בארכיון של חדרים",
+            "archiveUnsupported": "השרת אינו תומך בחיפוש בארכיון. נסו לחפש בתוך שיחה.",
+            "serverFailed": "החיפוש בשרת נכשל"
+        }
     }
 }

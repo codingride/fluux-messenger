@@ -45,6 +45,8 @@
         "poweredBy": "Propulsé par",
         "advancedMode": "Mode avancé",
         "errors": {
+            "discoveryFailed": "La découverte du serveur {{domain}} a échoué. Une connexion à {{target}} a été tentée à la place.",
+            "discoveryFailedTcp": "La découverte du serveur {{domain}} a échoué. Une connexion TCP native à {{target}} a été tentée à la place.",
             "tlsCertTitle": "Impossible de vérifier le certificat de sécurité du serveur",
             "tlsOtherTitle": "Échec de la connexion sécurisée",
             "tlsOtherBody": "La connexion chiffrée au serveur n'a pas pu être établie. La configuration TLS du serveur n'est peut-être pas prise en charge. Vérifiez l'adresse du serveur ou contactez l'administrateur du serveur.",
@@ -72,7 +74,8 @@
         "joinRoom": "Rejoindre un salon",
         "viewProfile": "Voir le profil",
         "resizeHint": "Glisser pour redimensionner, double-clic pour réinitialiser",
-        "dismiss": "Ignorer"
+        "dismiss": "Ignorer",
+        "search": "Recherche"
     },
     "newMessage": {
         "title": "Nouveau message",
@@ -786,6 +789,8 @@
         "webPush_disabled": "Désactivé, notifications push désactivées",
         "webPushDisable": "Désactiver",
         "webPushReEnable": "Réactiver",
+        "pushStatus": "Notifications push",
+        "push_failed": "Échec de l'enregistrement, touchez pour réessayer",
         "updates": "Mises à jour",
         "storage": {
             "title": "Stockage",
@@ -1304,6 +1309,11 @@
         "searchMessages": "Rechercher dans les messages \"{{query}}\"",
         "attention": "À traiter"
     },
+    "windowControls": {
+        "minimize": "Réduire",
+        "maximize": "Agrandir",
+        "restore": "Restaurer"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Le nom affiché dans les listes de salons et l'en-tête.",
         "muc#roomconfig_roomdesc": "Une courte description de l'objet du salon.",
@@ -1460,5 +1470,32 @@
         "saved": "Enregistré. Ouvrez Fluux pour choisir une conversation et envoyer.",
         "importError": "Import impossible. Partagez un lien ou un fichier de 20 Mo maximum ; la boîte contient au plus 20 éléments.",
         "sent": "Message envoyé. Vous pouvez supprimer cet élément importé."
+    },
+    "search": {
+        "filter": {
+            "all": "Tout",
+            "conversations": "Discussions",
+            "rooms": "Salons"
+        },
+        "placeholder": "Rechercher des messages…",
+        "scopeLabel": "Recherche dans {{name}}",
+        "clearScope": "Rechercher dans toutes les conversations",
+        "searching": "Recherche en cours…",
+        "noResults": "Aucun message trouvé",
+        "searchServer": "Rechercher dans l'archive du serveur",
+        "searchingServer": "Recherche dans l'archive du serveur…",
+        "serverResults": "Archive du serveur",
+        "loadMore": "Charger plus depuis le serveur",
+        "hint": "Saisissez du texte pour rechercher dans tous les messages",
+        "contextView": "Résultat de recherche",
+        "previewBanner": "Vous consultez un aperçu d'un résultat de recherche",
+        "goToMessage": "Aller au message",
+        "loadingContext": "Chargement des messages…",
+        "errors": {
+            "failed": "Échec de la recherche",
+            "archiveRooms": "Le serveur ne prend pas en charge la recherche dans l'archive des salons",
+            "archiveUnsupported": "Le serveur ne prend pas en charge la recherche dans l'archive. Essayez de rechercher dans une conversation.",
+            "serverFailed": "Échec de la recherche sur le serveur"
+        }
     }
 }

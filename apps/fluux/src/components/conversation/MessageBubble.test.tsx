@@ -3,10 +3,12 @@
 import { roomMessageFixture } from '@/test-utils/roomMessages'
 import { messageRowId, findMessageRowElement, messageTargetRowId } from './messageRowIdentity'
 import { MessageTargetProvider } from './messageTargetContext'
+import { pickChromeSampleEl } from './useRowMetrics'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import { MessageBubble, buildReplyContext, type MessageBubbleProps } from './MessageBubble'
 import type { BaseMessage } from '@fluux/sdk'
+import { useExpandedMessagesStore } from '@/stores/expandedMessagesStore'
 import { setPeerVerified, clearPeerVerified } from '@/stores/verifiedPeerKeysStore'
 import type { DensityMode } from '@/stores/settingsStore'
 
@@ -87,6 +89,26 @@ function createDefaultProps(overrides: Partial<MessageBubbleProps> = {}): Messag
 }
 
 describe('MessageBubble', () => {
+  it('expands only the selected chat twin', () => {
+    const height = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(700)
+    useExpandedMessagesStore.getState().clear()
+    try {
+      const first = createTestMessage({ id: 'X', stanzaId: 's1', body: 'first long twin' })
+      const second = createTestMessage({ id: 'X', stanzaId: 's2', body: 'second long twin' })
+      render(<><MessageBubble {...createDefaultProps({ message: first })} /><MessageBubble {...createDefaultProps({ message: second })} /></>)
+      const firstRow = screen.getByText('first long twin').closest('[data-message-id]') as HTMLElement
+      const secondRow = screen.getByText('second long twin').closest('[data-message-id]') as HTMLElement
+      fireEvent.click(within(secondRow).getByRole('button', { name: 'chat.showMore' }))
+      expect(within(secondRow).getByRole('button', { name: 'chat.showLess' })).toBeInTheDocument()
+      expect(within(firstRow).getByRole('button', { name: 'chat.showMore' })).toBeInTheDocument()
+      expect(useExpandedMessagesStore.getState().isExpanded(messageRowId(second)!)).toBe(true)
+      expect(useExpandedMessagesStore.getState().isExpanded(messageRowId(first)!)).toBe(false)
+    } finally {
+      height.mockRestore()
+      useExpandedMessagesStore.getState().clear()
+    }
+  })
+
   describe('Touch actions', () => {
     it.each([
       { isOutgoing: false, showAvatar: true },
@@ -205,13 +227,64 @@ describe('MessageBubble', () => {
       expect(contentDiv).toBeInTheDocument()
     })
 
-    it('disables hover when hasKeyboardSelection is true', () => {
-      const props = createDefaultProps({ hasKeyboardSelection: true })
-      const { container } = render(<MessageBubble {...props} />)
+    it('does not render the row again for unchanged parent props', () => {
+      const formatTime = vi.fn(() => '14:30')
+      const props = createDefaultProps({ formatTime, isHovered: false })
+      const { rerender } = render(<MessageBubble {...props} />)
+      formatTime.mockClear()
+      rerender(<MessageBubble {...props} />)
+      expect(formatTime).not.toHaveBeenCalled()
+    })
 
-      // The outer div should not have hover:bg-fluux-hover when keyboard selection is active
-      const outerDiv = container.firstChild as HTMLElement
-      expect(outerDiv.className).not.toContain('hover:bg-fluux-hover')
+    it('keeps visual hover independent of the toolbar intent state', () => {
+      const props = createDefaultProps({ isHovered: false })
+      const { container, rerender } = render(<MessageBubble {...props} />)
+      const row = container.firstChild as HTMLElement
+      expect(row).toHaveClass('message-hover-surface')
+      expect(row).not.toHaveAttribute('data-hover-disabled')
+      const classes = row.className
+      rerender(<MessageBubble {...props} isHovered />)
+      expect(row.className).toBe(classes)
+      expect(row.querySelector('[data-message-toolbar]')).toHaveClass('opacity-100')
+      rerender(<MessageBubble {...props} />)
+      expect(row.querySelector('[data-message-toolbar]')).toHaveClass('opacity-0')
+    })
+
+    it('updates the memoized row when keyboard selection changes', () => {
+      const props = createDefaultProps({ isHovered: true })
+      const { container, rerender } = render(<MessageBubble {...props} />)
+      const row = container.firstChild as HTMLElement
+      rerender(<MessageBubble {...props} hasKeyboardSelection />)
+      expect(row).toHaveAttribute('data-hover-disabled')
+      rerender(<MessageBubble {...props} hasKeyboardSelection isSelected />)
+      expect(row.querySelector('[data-msg-chrome]')).toHaveAttribute('data-msg-selected')
+      rerender(<MessageBubble {...props} />)
+      expect(row).not.toHaveAttribute('data-hover-disabled')
+    })
+  })
+
+  describe('Row chrome sampling', () => {
+    const replyContext = {
+      senderName: 'Bob', senderColor: 'rgb(0, 255, 0)', body: 'Original message',
+      messageId: 'original-msg-1', avatarIdentifier: 'bob@example.com',
+    }
+
+    it.each([
+      ['a plain header row', {}, 'header'],
+      ['a plain continuation row', { showAvatar: false }, 'cont'],
+    ] as const)('samples chrome from %s', (_kind, overrides, shape) => {
+      const { container } = render(<MessageBubble {...createDefaultProps(overrides)} />)
+      expect(pickChromeSampleEl(container, shape)).toBe(container.querySelector('[data-msg-chrome]'))
+    })
+
+    it.each([
+      ['a reply quote card', { replyContext }],
+      ['reactions', { message: createTestMessage({ reactions: { '👍': ['bob@example.com'] } }) }],
+      ['a /me action without the sender header', { message: createTestMessage({ body: '/me waves' }) }],
+    ])('does not sample chrome from a header row with %s', (_kind, overrides) => {
+      const { container } = render(<MessageBubble {...createDefaultProps(overrides)} />)
+      expect(container.querySelector('[data-msg-chrome="header"] [data-msg-text]')).not.toBeNull()
+      expect(pickChromeSampleEl(container, 'header')).toBeNull()
     })
   })
 

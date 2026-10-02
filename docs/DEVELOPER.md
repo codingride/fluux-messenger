@@ -124,8 +124,8 @@ Local desktop builds run under a **separate dev identity** so they never collide
 
 | Build | Bundle identifier | App name |
 |-------|-------------------|----------|
-| Production (release, built in CI) | `com.processone.fluux` | Fluux Messenger |
-| Local (`tauri:dev` / `tauri:build` / `tauri:install`) | `com.processone.fluux.dev` | Fluux Messenger Dev |
+| Production (release, built in CI) | `net.processone.fluux` | Fluux Messenger |
+| Local (`tauri:dev` / `tauri:build` / `tauri:install`) | `net.processone.fluux.dev` | Fluux Messenger Dev |
 
 The override lives in `apps/fluux/src-tauri/tauri.dev.conf.json` and is merged in by the local scripts via `--config`. CI/release builds use the base config and are **never** affected. Tauri only auto-merges `tauri.<platform>.conf.json` files, so `tauri.dev.conf.json` applies only when a script passes it explicitly. (To build locally with the *production* identity, e.g. to test the release artifact, use the raw `npm run tauri build`, which uses the base config.)
 
@@ -197,6 +197,33 @@ Local builds are **ad-hoc signed** by default, which pins the grant to the binar
 Export `APPLE_SIGNING_IDENTITY="<name>"` to use a different identity. Set up the certificate **before** your first grant on the Dev app, or you will just re-click *Allow* once after switching from ad-hoc to signed.
 
 > Local dev only. The distributed release is signed with a real **Developer ID** certificate and **notarized** in CI: see [RELEASE.md](RELEASE.md). Nothing here changes the release path.
+
+## Legacy identifier migration
+
+Desktop builds before `net.processone.fluux` used `com.processone.fluux` (and `com.processone.fluux.dev`). Each
+platform keys the app's directories by identifier, including the webview's IndexedDB and localStorage, so
+`src-tauri/src/identity_migration.rs` moves them once, at startup and before the webview exists:
+
+- every `<root>/com.processone.fluux*` directory under the platform data, local data, config and cache roots (plus
+  `~/Library/WebKit`, `Logs` and `HTTPStorages` on macOS) is renamed to its `net.processone.fluux*` counterpart;
+- in the Flatpak, the data and config directories of the previous `com.processone.fluux` Flatpak are copied into the
+  new sandbox, read through a read-only `--filesystem=~/.var/app/com.processone.fluux` permission; the previous
+  Flatpak keeps its data until the user uninstalls it;
+- a pre-existing `net.processone.fluux*` directory is kept as `<identifier>.pre-migration-<timestamp>`, never merged
+  or deleted;
+- `.identity-migrated` in the app data directory records completion; a failed move leaves it absent and is retried.
+
+The keychain service name stays `com.processone.fluux`. On macOS each keychain item is bound to the code signature
+that created it, which includes the bundle identifier, so the first launch shows one system prompt per stored item.
+Once approved, the app re-creates the items under its own signature and writes `.keychain-reowned`. Windows
+Credential Manager and the Linux Secret Service do not bind items to the application.
+
+A Flatpak bundle with a new app-id installs next to the previous one rather than replacing it. Its metainfo lists
+`com.processone.fluux` under `<replaces>`. On Flathub, the `--filesystem` permission on another app's
+`~/.var/app` directory needs a linter exception; an `end-of-life-rebase` of the old ID migrates that data instead.
+
+To replay the migration, quit the app, delete both marker files and the `net.processone.fluux*` directories, and
+restore the `com.processone.fluux*` ones.
 
 ## Screenshots
 
@@ -283,7 +310,7 @@ Two things differ from a release build:
 | Code signing | None: SmartScreen warns on first run ("More info" → "Run anyway")  | Azure Trusted Signing |
 | Updater artifacts | Disabled (no signing key, no `latest.json` to serve) | `.sig` files published |
 
-Everything else matches `release.yml`, including the production identifier `com.processone.fluux` and the WiX `upgradeCode`. That means a test build installs *over* an installed Fluux Messenger and exercises the real upgrade path, which is usually what you want, but it does replace the release copy on that machine.
+Everything else matches `release.yml`, including the production identifier `net.processone.fluux` and the WiX `upgradeCode`. That means a test build installs *over* an installed Fluux Messenger and exercises the real upgrade path, which is usually what you want, but it does replace the release copy on that machine.
 
 The app reports its commit hash (embedded by `src-tauri/build.rs` as `GIT_HASH`), so you can confirm which build you actually installed. The version string still reads as the current `tauri.conf.json` version. Tauri v2 rejects non-`X.Y.Z` versions, so test builds are not separately stamped.
 
@@ -298,17 +325,21 @@ node scripts/installer-art/render.mjs            # all four
 node scripts/installer-art/render.mjs nsis       # filter by name
 ```
 
-This writes the `.bmp` files the installers consume, plus a PNG of the same pixels into `scripts/installer-art/preview/` so the artwork is reviewable in a pull request (GitHub renders PNG, not BMP). The render is deterministic: re-running it against unchanged sources produces byte-identical files, so any diff under `installer/windows/` means the artwork actually moved.
+This writes the `.bmp` files the installers consume, plus a PNG of the same pixels into `scripts/installer-art/preview/` so the artwork is reviewable in a pull request (GitHub renders PNG, not BMP). The render is deterministic: re-running it against unchanged sources produces byte-identical files, so any bitmap diff under `installer/windows/` means the artwork actually moved.
 
 Three constraints are easy to break and expensive to discover, since the result is only visible on Windows:
 
 | Constraint | Why |
 |---|---|
-| 24-bit uncompressed BMP, at the exact slot size | The only format WiX v3 and NSIS accept; anything off-size gets stretched. `render.mjs` encodes the BMP itself and asserts the dimensions, never render at 2x.  |
+| 24-bit uncompressed BMP, at the configured render size | `TARGETS` in `scripts/installer-art/render.mjs` defines the layout dimensions and capture scale; the renderer asserts the resulting bitmap dimensions. WiX artwork and the NSIS header match their native slots; the NSIS sidebar uses a higher-resolution render. |
 | The left of `wix-banner` and `wix-dialog` must stay light | WixUI draws each page's Title and Description as transparent **black** text controls on top of the bitmap, x 20-406 px on the banner, from x 180 px on the dialog. Art that reaches into those boxes makes the installer's own copy unreadable.  |
 | `nsis-header` stays on pure `#FFFFFF` | That is MUI2's default `MUI_BGCOLOR`. Any other background turns the image into a visible tile pasted onto the header bar. |
 
-Each HTML file's header comment records the dialog-unit coordinates behind those numbers. Only `nsis-sidebar` has no text over it, which is why it is the one surface carrying the full night-stage treatment.
+The HTML header comments describe the text-overlay constraints. Only `nsis-sidebar` has no text over it, which is why it is the one surface carrying the full night-stage treatment.
+
+The NSIS `installerHooks` file selects `MUI_WELCOMEFINISHPAGE_BITMAP_STRETCH=AspectFitHeight` for both welcome and finish pages. Tauri's [2.12.0 template](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.0/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi) includes it before either page is inserted. The [NSIS 3.11 loader](https://github.com/NSIS-Dev/nsis/blob/v311/Contrib/Modern%20UI%202/Pages.nsh#L266-L329) fits the image to the control height and resizes the control width with integer pixel rounding, keeping the centered mark and right-edge seam visible. Native Windows rendering still needs to be checked when changing this artwork.
+
+The NSIS window icon uses the app's multi-resolution ICO through `bundle.windows.nsis.installerIcon`. The frame sizes are defined in `apps/fluux/src-tauri/icons/generate.sh`; see [App icons](../assets/README.md#app-icons) for regeneration.
 
 The artwork deliberately contains no words beyond the brand lockup: the installers localize their own copy, so baked-in English would be wrong in 32 of the 33 shipped locales.
 

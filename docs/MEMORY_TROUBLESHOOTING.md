@@ -24,11 +24,7 @@ So a genuine leak is almost always in the UI layer (detached DOM, listeners, blo
 
 ## Why the Process Stays Running After "Close"
 
-On all platforms, clicking the window **close (X) button hides the window**. It does **not** quit the app. This is intentional: the XMPP connection stays alive so you keep receiving messages, just like other chat apps. To fully quit:
-
-- **macOS**: `⌘Q`, or **Fluux Messenger → Quit** in the menu bar
-- **Linux**: system tray icon → **Quit**
-- **Windows**: system tray icon → **Quit**
+See the [README's close and quit guidance](../README.md#closing-the-window-doesnt-quit-the-app-is-that-normal) for the behavior on each platform and how to fully quit before measuring memory.
 
 If you've quit explicitly and the process *still* lingers, that's a separate issue. Please include it in your bug report.
 
@@ -175,23 +171,23 @@ Logs are written to a daily-rotating file. Paths:
 
 | OS      | Path                                                  |
 |---------|-------------------------------------------------------|
-| macOS   | `~/Library/Logs/com.processone.fluux/`                |
-| Linux   | `~/.local/share/com.processone.fluux/logs/`           |
-| Windows | `%APPDATA%\com.processone.fluux\logs\`                |
+| macOS   | `~/Library/Logs/net.processone.fluux/`                |
+| Linux   | `~/.local/share/net.processone.fluux/logs/`           |
+| Windows | `%LOCALAPPDATA%\net.processone.fluux\logs\`                |
 
 Package them:
 
 ```bash
 # macOS
-tar czf ~/fluux-logs.tar.gz ~/Library/Logs/com.processone.fluux/
+tar czf ~/fluux-logs.tar.gz ~/Library/Logs/net.processone.fluux/
 
 # Linux
-tar czf ~/fluux-logs.tar.gz ~/.local/share/com.processone.fluux/logs/
+tar czf ~/fluux-logs.tar.gz ~/.local/share/net.processone.fluux/logs/
 ```
 
 ```powershell
 # Windows
-Compress-Archive -Path "$env:APPDATA\com.processone.fluux\logs\*" -DestinationPath "$env:USERPROFILE\fluux-logs.zip"
+Compress-Archive -Path "$env:LOCALAPPDATA\net.processone.fluux\logs\*" -DestinationPath "$env:USERPROFILE\fluux-logs.zip"
 ```
 
 Look in the log for `[renderLoopDetector]` warnings. If they fire during startup or after specific actions, the leak is very likely linked to a render storm.

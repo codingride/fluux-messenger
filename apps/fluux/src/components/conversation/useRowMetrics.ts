@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
-import { useSettingsStore } from '@/stores/settingsStore'
+import { useCallback, useRef } from 'react'
 import { useRemeasureOnWidthChange } from './messageWidthContext'
 import { predictMessageTextHeight, type FontSpec } from '@/utils/messageHeight/predictMessageTextHeight'
 import { estimateDebugLog } from '@/utils/scrollDebug'
@@ -53,7 +52,7 @@ export function pickWidthSampleEl(root: HTMLElement): HTMLElement | null {
 
 /**
  * Pick a row for chrome sampling (chrome = outer height − predicted text height): it must be
- * a PLAIN-TEXT row. Quote/code/media rows make the prediction meaningless (observed: a
+ * a PLAIN-TEXT row. Any other content makes the prediction meaningless (observed: a
  * continuation "chrome" of 369px vs the real ~6px), and own hug-width rows wrap at the bubble
  * width rather than the content width. Returns the first clean row of the shape, or null.
  */
@@ -64,11 +63,31 @@ export function pickChromeSampleEl(
   const rows = root.querySelectorAll<HTMLElement>(`[data-msg-chrome="${shape}"]`)
   for (const row of rows) {
     if (row.hasAttribute('data-msg-own')) continue
-    if (!row.querySelector('[data-msg-text]')) continue
-    if (row.querySelector('blockquote, pre, img, video, audio')) continue
-    return row
+    if (isPlainTextRow(row, shape)) return row
   }
   return null
+}
+
+/**
+ * A plain-text row holds the sender header (header rows only) followed by a body whose only
+ * element is the text. Whatever else a message shows (reply quote card, attachment, link
+ * preview, poll, reactions, delivery error, collapsed long body) adds height the text predictor
+ * cannot see. Re-windowing changes which row is mounted first, so admitting such a row makes
+ * the sampled chrome alternate between row shapes.
+ */
+function isPlainTextRow(row: HTMLElement, shape: 'header' | 'cont'): boolean {
+  const text = row.querySelector('[data-msg-text]')
+  if (!text || text.querySelector('blockquote, pre, img, video, audio')) return false
+  let body: Element = text
+  while (body.parentElement !== row) {
+    const parent = body.parentElement
+    if (!parent || parent.childElementCount !== 1) return false
+    body = parent
+  }
+  if (body === text || body !== row.lastElementChild) return false
+  const header = body.previousElementSibling
+  if (shape === 'cont') return header === null
+  return header !== null && header.hasAttribute('data-msg-sender') && header.previousElementSibling === null
 }
 
 function fontSpecFrom(el: HTMLElement): FontSpec {
@@ -91,27 +110,44 @@ function fontSpecFrom(el: HTMLElement): FontSpec {
 }
 
 /**
+ * Accepted samples that notify per content width, line box and font. The first sample sets the
+ * geometry and the next ones correct the chrome; a row shape the sampler fails to exclude would
+ * otherwise recalibrate on every re-window.
+ */
+export const MAX_CALIBRATIONS_PER_GEOMETRY = 3
+
+export interface RowMetrics {
+  /** The latest sample; estimates read it without requiring hook state updates. */
+  metricsRef: React.RefObject<RowEstimatorContext>
+  sample: () => void
+}
+
+/**
  * Samples the live row metrics needed to estimate unmounted rows: the body FontSpec, the text
  * content width, the rendered line box (WebKit floors line boxes; we read the real box), and the
  * per-shape chrome deltas (chrome = a mounted row's outer height minus its predicted text height).
- * Self-calibrating: density / character-scale / theme need no hardcoded tables. Returns a ref
- * (no re-render). Re-samples when the width signal fires or settings (fontSize / densityMode) change.
+ * Returns the metrics ref and a sampler called by mounted-row measurement and the width signal.
+ * Before the first positive-width text sample, metrics retain the fallback. The first successful sample
+ * and subsequent metric changes notify onCalibrated after updating the ref; identical samples do not,
+ * and neither do chrome-only changes past MAX_CALIBRATIONS_PER_GEOMETRY. `first` marks the first
+ * calibration of the mount.
  */
 export function useRowMetrics(
   scrollRef: React.RefObject<HTMLElement | null>,
-): React.RefObject<RowEstimatorContext> {
+  onCalibrated?: (first: boolean) => void,
+): RowMetrics {
   const ctxRef = useRef<RowEstimatorContext>(ROW_METRICS_FALLBACK)
-  const fontSize = useSettingsStore((s) => s.fontSize)
-  const densityMode = useSettingsStore((s) => s.densityMode)
+  const calibrationsRef = useRef(0)
+  const onCalibratedRef = useRef(onCalibrated)
+  onCalibratedRef.current = onCalibrated
 
   const sample = useCallback(() => {
     const root = scrollRef.current
     if (!root) return
     const textEl = pickWidthSampleEl(root)
-    if (!textEl) return // nothing mounted yet; keep current/fallback
-
+    if (!textEl || textEl.clientWidth <= 0) return
     const fontSpec = fontSpecFrom(textEl)
-    const contentWidthPx = textEl.clientWidth || ctxRef.current.contentWidthPx
+    const contentWidthPx = textEl.clientWidth
 
     // Line box height: primary = floor(lineHeightPx) — the engine-correct rendered box (WebKit
     // floors line boxes to integer px; floor(lineHeight) matches the real box for font-size
@@ -152,7 +188,15 @@ export function useRowMetrics(
     const footEl = root.querySelector<HTMLElement>('[data-row-kind="footer"]')
     if (footEl) chrome.footer = Math.round(footEl.getBoundingClientRect().height)
 
+    const previous = ctxRef.current
+    const first = previous === ROW_METRICS_FALLBACK
+    const sameGeometry = !first &&
+      previous.contentWidthPx === contentWidthPx && previous.lineBoxPx === lineBoxPx &&
+      Object.entries(fontSpec).every(([key, value]) => previous.fontSpec[key as keyof FontSpec] === value)
+    if (sameGeometry &&
+      Object.entries(chrome).every(([key, value]) => previous.chrome[key as keyof RowChrome] === value)) return
     ctxRef.current = { fontSpec, contentWidthPx, lineBoxPx, chrome }
+    calibrationsRef.current = sameGeometry ? calibrationsRef.current + 1 : 1
     estimateDebugLog('sample', {
       fontSizePx: fontSpec.fontSizePx,
       lineHeightPx: fontSpec.lineHeightPx,
@@ -160,14 +204,11 @@ export function useRowMetrics(
       lineBoxPx,
       chrome,
     })
+    if (calibrationsRef.current > MAX_CALIBRATIONS_PER_GEOMETRY) return
+    onCalibratedRef.current?.(first)
   }, [scrollRef])
 
-  // Re-sample after layout settles on width changes (debounced signal) and on settings changes.
   useRemeasureOnWidthChange(sample)
-  useEffect(() => {
-    const id = requestAnimationFrame(() => sample())
-    return () => cancelAnimationFrame(id)
-  }, [sample, fontSize, densityMode])
 
-  return ctxRef
+  return { metricsRef: ctxRef, sample }
 }

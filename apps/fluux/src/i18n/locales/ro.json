@@ -44,6 +44,8 @@
         "madeBy": "Realizat de",
         "poweredBy": "Oferit de",
         "errors": {
+            "discoveryFailed": "Descoperirea serverului pentru {{domain}} a eșuat. S-a încercat conectarea la {{target}} în schimb.",
+            "discoveryFailedTcp": "Descoperirea serverului pentru {{domain}} a eșuat. S-a încercat o conexiune TCP nativă la {{target}} în schimb.",
             "tlsCertTitle": "Nu s-a putut verifica certificatul de securitate al serverului",
             "tlsOtherTitle": "Conexiunea securizată a eșuat",
             "tlsOtherBody": "Nu s-a putut stabili conexiunea criptată cu serverul. Configurația TLS a serverului poate să nu fie acceptată. Verificați adresa serverului sau contactați administratorul serverului.",
@@ -72,7 +74,8 @@
         "joinRoom": "Intră într-o cameră",
         "viewProfile": "Vezi profil",
         "resizeHint": "Trage pentru a redimensiona, dublu-clic pentru a reseta",
-        "dismiss": "Închide"
+        "dismiss": "Închide",
+        "search": "Căutare"
     },
     "newMessage": {
         "title": "Mesaj nou",
@@ -758,6 +761,8 @@
         "webPush_disabled": "Dezactivat, notificări push dezactivate",
         "webPushDisable": "Dezactivează",
         "webPushReEnable": "Reactivează",
+        "pushStatus": "Notificări push",
+        "push_failed": "Înregistrarea a eșuat, atinge pentru a reîncerca",
         "updates": "Actualizări",
         "storage": {
             "title": "Stocare",
@@ -1305,6 +1310,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Necesită atenție"
     },
+    "windowControls": {
+        "minimize": "Minimizează",
+        "maximize": "Maximizează",
+        "restore": "Restaurează"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Numele afișat în lista camerelor și în antet.",
         "muc#roomconfig_roomdesc": "O scurtă descriere a scopului camerei.",
@@ -1461,5 +1471,32 @@
         "saved": "Salvat. Deschideți Fluux pentru a alege o conversație și a trimite.",
         "importError": "Importul a eșuat. Partajați un link sau un fișier de maximum 20 MB; se pot păstra 20 de elemente.",
         "sent": "Mesaj trimis. Puteți șterge acest element importat."
+    },
+    "search": {
+        "filter": {
+            "all": "Toate",
+            "conversations": "Conversații",
+            "rooms": "Camere"
+        },
+        "placeholder": "Caută mesaje…",
+        "scopeLabel": "Se caută în {{name}}",
+        "clearScope": "Caută în toate conversațiile",
+        "searching": "Se caută…",
+        "noResults": "Niciun mesaj găsit",
+        "searchServer": "Caută în arhiva serverului",
+        "searchingServer": "Se caută în arhiva serverului…",
+        "serverResults": "Arhiva serverului",
+        "loadMore": "Încarcă mai multe de pe server",
+        "hint": "Tastați pentru a căuta în toate mesajele",
+        "contextView": "Rezultat al căutării",
+        "previewBanner": "Vizualizați o previzualizare a unui rezultat al căutării",
+        "goToMessage": "Mergi la mesaj",
+        "loadingContext": "Se încarcă mesajele…",
+        "errors": {
+            "failed": "Căutarea a eșuat",
+            "archiveRooms": "Serverul nu acceptă căutarea în arhiva camerelor",
+            "archiveUnsupported": "Serverul nu acceptă căutarea în arhivă. Încercați să căutați într-o conversație.",
+            "serverFailed": "Căutarea pe server a eșuat"
+        }
     }
 }

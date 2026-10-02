@@ -111,7 +111,7 @@ exports[`ChatView > Snapshots > should match snapshot with messages 1`] = `
                 data-message-row-id="msg-1"
               >
                 <div
-                  class="relative group flex gap-4  -mx-4 px-4 py-0.5 transition-colors message-group-start message-group-end"
+                  class="relative message-hover-surface group flex gap-4 -mx-4 px-4 py-0.5 message-group-start message-group-end"
                   data-message-body="Hello there!"
                   data-message-from="Alice Smith"
                   data-message-id="msg-1"
@@ -240,6 +240,7 @@ exports[`ChatView > Snapshots > should match snapshot with messages 1`] = `
                     >
                       <div
                         class="flex items-center gap-1 pb-1"
+                        data-msg-sender="true"
                       >
                         <div
                           class="flex flex-1 min-w-0 items-baseline gap-2 flex-wrap"
@@ -289,7 +290,7 @@ exports[`ChatView > Snapshots > should match snapshot with messages 1`] = `
                 data-message-row-id="msg-2"
               >
                 <div
-                  class="relative group flex gap-4  -mx-4 px-4 py-0.5 transition-colors message-group-start message-group-end"
+                  class="relative message-hover-surface group flex gap-4 -mx-4 px-4 py-0.5 message-group-start message-group-end"
                   data-message-body="Hi! How are you?"
                   data-message-from="Me"
                   data-message-id="msg-2"
@@ -418,6 +419,7 @@ exports[`ChatView > Snapshots > should match snapshot with messages 1`] = `
                     >
                       <div
                         class="flex items-center gap-1 pb-1"
+                        data-msg-sender="true"
                       >
                         <div
                           class="flex flex-1 min-w-0 items-baseline gap-2 flex-wrap"

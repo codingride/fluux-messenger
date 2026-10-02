@@ -46,13 +46,15 @@ tracing = "0.1"
 # Permission schemas must be identical on every build host. Runtime registration
 # remains limited to the platforms that support native incoming shares.
 tauri-plugin-share-inbox = { path = "plugins/share-inbox" }
+tauri-plugin-push = { path = "plugins/push" }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 rustls-platform-verifier = { version = "0.7", default-features = false }
+tauri-plugin-notification = "2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 webpki-roots = "1"
-ndk-context = "0.1"
+tauri-plugin-notification = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
@@ -142,9 +144,9 @@ tauri-winrt-notification = "0.8"
 [target.'cfg(target_os = "linux")'.dependencies]
 ctor = "1.0"
 x11 = { version = "2", features = ["xlib", "xss"] }
-# Read the StatusNotifierWatcher DBus property that tells us whether a system
-# tray host will actually display our icon (see src/linux_tray.rs). Pure-Rust
-# DBus client — no system lib, no coupling to the pinned GTK/glib versions.
+# Probe the StatusNotifierWatcher before considering the XEmbed tray fallback
+# (see src/linux_tray.rs). Pure-Rust DBus client — no system lib, no coupling
+# to the pinned GTK/glib versions.
 zbus = "5"
 # Direct use of the freedesktop.org default action and ActionInvoked signal.
 # The default zbus backend is pure Rust and adds no libdbus system dependency.
@@ -190,9 +192,10 @@ strip = "debuginfo"  # Use debuginfo instead of true to keep symbols needed by T
 # Xcode 27 internalizes SwiftRs.o's C exports. Keep the runtime shim global in
 # the Tauri archive only (Brendonovich/swift-rs#80); remove this pin after release.
 swift-rs = { git = "https://github.com/alchaplinsky/swift-rs", rev = "aaf38d45ab3a4b10a5af3a3dbc64424e998fae8c" }
-# wry 0.55.1 with tauri-apps/wry#1856 backported: custom-protocol responses are
+# wry 0.57.0 with tauri-apps/wry#1856 backported: custom-protocol responses are
 # delivered on the main queue, so a WKURLSchemeTask stopped by WebKit (page
 # reload, WebContent process recycled after sleep) cannot race the did* calls
 # and abort the process (tauri-apps/wry#1822). Drop once Tauri ships a wry
 # release containing the fix (#1502).
+# For the crate-local lint allowances, see vendor/wry/FLUUX_PATCH.md.
 wry = { path = "vendor/wry" }

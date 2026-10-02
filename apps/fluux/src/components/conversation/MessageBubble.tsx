@@ -22,6 +22,7 @@ import { EncryptedPlaceholder } from './EncryptedPlaceholder'
 import { UnsupportedEncryptionNotice } from './UnsupportedEncryptionNotice'
 import { MessageReactions } from './MessageReactions'
 import { isActionMessage, type WhisperThreadPosition } from './messageGrouping'
+import { messageRowId } from './messageRowIdentity'
 import { messageRowRef, type MessageRowRef } from '@fluux/sdk'
 import { useRequestMessageTarget } from './messageTargetContext'
 import { useOwnGroupWidth } from './messageGroupWidth'
@@ -71,7 +72,7 @@ export interface MessageBubbleProps {
   isGroupEnd?: boolean
   isDarkMode?: boolean
 
-  // Hover state (controlled by parent for stable toolbar interaction)
+  // Toolbar hover intent (row highlighting is owned by CSS)
   isHovered?: boolean
   onMouseEnter?: () => void
   onMouseLeave?: () => void
@@ -137,12 +138,10 @@ export interface MessageBubbleProps {
   // Room-specific: user's nickname for IRC-style mention detection fallback
   nickname?: string
 
-  // Room-specific: known occupant nicks for IRC-style prefix mention highlighting
+  // Mention lookup and color contracts: see MessageBodyProps.
   knownNicks?: ReadonlySet<string>
-
-  // Room-specific: stable resolver giving a mention pill the same color as the
-  // mentioned person's name (roster contact's XEP-0392 color, else nick hash).
   resolveMentionColor?: (nick: string) => string | undefined
+  mentionColors?: ReadonlyMap<string, string>
 
   // XEP-0425: Whether the current user can moderate (retract) this message
   canModerate?: boolean
@@ -281,6 +280,7 @@ function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): bool
   if (prev.mentions !== next.mentions) return false
   if (prev.nickname !== next.nickname) return false
   if (prev.knownNicks !== next.knownNicks) return false
+  if (prev.mentionColors !== next.mentionColors) return false
 
   // nickExtras - ReactNode, compare by reference (accept some re-renders)
   if (prev.nickExtras !== next.nickExtras) return false
@@ -342,6 +342,7 @@ export const MessageBubble = memo(function MessageBubble({
   nickname,
   knownNicks,
   resolveMentionColor,
+  mentionColors,
   canModerate,
   isIrcGateway,
   onPollVote,
@@ -449,19 +450,13 @@ export const MessageBubble = memo(function MessageBubble({
     return myReactions.filter((emoji) => !pollEmojiSet.has(emoji))
   }, [myReactions, pollEmojiSet])
 
-  // Determine hover state: use controlled isHovered if provided, otherwise fall back to CSS hover
-  const useControlledHover = isHovered !== undefined
-  const hoverClass = useControlledHover
-    ? (isHovered ? 'bg-fluux-message-hover' : '')
-    : (hasKeyboardSelection ? '' : 'hover:bg-fluux-message-hover')
-
   // Whisper thread (XEP-0045 §7.5): a same-counterpart private run renders as one
   // bounded "private with X" container; the strip on the first row carries the label.
   const threadStart = whisperThread === 'start' || whisperThread === 'solo'
   const threadEnd = whisperThread === 'end' || whisperThread === 'solo'
   const outerRowClass = inThread
     ? `group flex gap-4 -mx-4 px-4 transition-colors ${threadStart ? 'pt-3' : ''} ${threadEnd ? 'pb-1.5' : ''}`
-    : `group flex gap-4 ${hoverClass} -mx-4 px-4 py-0.5 transition-colors ${showAvatar ? 'message-group-start' : ''}${isGroupEnd ? ' message-group-end' : ''}`
+    : `group flex gap-4 -mx-4 px-4 py-0.5 ${showAvatar ? 'message-group-start' : ''}${isGroupEnd ? ' message-group-end' : ''}`
 
   // Action capabilities — shared by the hover toolbar (MessageToolbar) and the
   // touch action menu (MessageActionSheet) so the two surfaces stay in lock-step.
@@ -543,7 +538,8 @@ export const MessageBubble = memo(function MessageBubble({
       data-message-from={senderName}
       data-message-time={formatTime(message.timestamp)}
       data-message-body={deriveCopyBody(message, t)}
-      className={`relative ${outerRowClass}${ownRowClass}`}
+      data-hover-disabled={hasKeyboardSelection || isSelected || inThread ? '' : undefined}
+      className={`relative message-hover-surface ${outerRowClass}${ownRowClass}`}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
@@ -616,13 +612,11 @@ export const MessageBubble = memo(function MessageBubble({
       <div
         ref={ownGroupRef}
         // Opacity keeps the previous focus target available while the overlay captures and restores focus.
-        className={`relative ${showActionSheet ? 'opacity-0' : ''} ${contentWidthClass} min-w-0 touch:select-none touch:[-webkit-touch-callout:none] ${isSelected ? 'bg-fluux-selection -my-0.5 py-0.5 -ms-2 ps-2 -me-4 pe-4 rounded-s' : ''}${inThread ? ` bg-fluux-private-soft border-x border-fluux-private-border px-2.5 py-1 ${threadStart ? 'border-t rounded-t-lg' : ''} ${threadEnd ? 'border-b rounded-b-lg' : ''}` : ''} ${ownTintClass}`}
+        className={`relative ${showActionSheet ? 'opacity-0' : ''} ${contentWidthClass} min-w-0 touch:select-none touch:[-webkit-touch-callout:none] ${inThread ? ` bg-fluux-private-soft border-x border-fluux-private-border px-2.5 py-1 ${threadStart ? 'border-t rounded-t-lg' : ''} ${threadEnd ? 'border-b rounded-b-lg' : ''}` : ''} ${ownTintClass}`}
         data-msg-chrome={showAvatar ? 'header' : 'cont'}
-        // Marks hug-width (w-fit) own bubbles so useRowMetrics never samples their text box
-        // as the conversation's content width (it is only as wide as the text itself).
+        // See pickWidthSampleEl in useRowMetrics for the hug-width sampling policy.
         data-msg-own={ownTint ? '' : undefined}
-        // Selected/action-sheet state: hooks the CSS that keeps quote and reply-card
-        // fills distinct from the selection tint (issue #1008).
+        // Paint selection on the outer row without changing this content box.
         data-msg-selected={isSelected ? '' : undefined}
         onTouchStart={handleContentTouchStart}
         onTouchEnd={cancelLongPress}
@@ -650,7 +644,8 @@ export const MessageBubble = memo(function MessageBubble({
         ))}
         {/* Nick header - hidden for /me action messages (nick is shown inline) */}
         {showSenderHeader && (
-          <div className="flex items-center gap-1 pb-1">
+          // Row-chrome sampling needs the sender header to tell header rows apart (useRowMetrics).
+          <div data-msg-sender className="flex items-center gap-1 pb-1">
             <div className="flex flex-1 min-w-0 items-baseline gap-2 flex-wrap">
               <UserInfoPopover contact={senderContact} jid={senderJid} occupantJid={senderOccupantJid} role={senderRole} affiliation={senderAffiliation}>
                 <span
@@ -703,9 +698,7 @@ export const MessageBubble = memo(function MessageBubble({
             type="button"
             onClick={() => requestMessageTarget(replyContext.messageId)}
             className="reply-quote-card flex items-start gap-1.5 py-1 pe-2 ps-2 mb-1.5 border-s-2 text-start min-w-0 bg-fluux-bg-secondary hover:bg-fluux-hover/50 rounded-e transition-colors cursor-pointer select-none"
-            // CSS applies the selected-state frame because selection can live on
-            // this message chrome (keyboard/action menu) or the outer MessageList
-            // row (bulk copy). Expose the sender hue once so both paths stay equal.
+            // Bulk-copy selection frames the reply card with its sender hue.
             style={replyQuoteCardStyle(replyContext.senderColor)}
           >
             <CornerUpRight
@@ -723,7 +716,7 @@ export const MessageBubble = memo(function MessageBubble({
         )}
 
         {/* Collapsible wrapper for long messages */}
-        <CollapsibleContent messageId={message.id} isSelected={isSelected} isHovered={isHovered} hasMedia={!!(message.attachment || message.linkPreview)}>
+        <CollapsibleContent messageId={messageRowId(message) ?? message.id} hasMedia={!!(message.attachment || message.linkPreview)}>
           {/* Encryption placeholders take precedence over body text so the
               sender's plaintext fallback never reaches the UI. encryptedPayload:
               an E2EE stanza we couldn't decrypt. unsupportedEncryption: a
@@ -748,6 +741,7 @@ export const MessageBubble = memo(function MessageBubble({
               nickname={nickname}
               knownNicks={knownNicks}
               resolveMentionColor={resolveMentionColor}
+              mentionColors={mentionColors}
               isDarkMode={isDarkMode}
               highlightTerms={highlightTerms}
               isCurrentMatch={isCurrentMatch}
@@ -755,7 +749,7 @@ export const MessageBubble = memo(function MessageBubble({
           )}
 
           {/* File attachments (image, video, audio, text preview, document card) - hidden for retracted */}
-          {!message.isRetracted && <MessageAttachments attachment={message.attachment} onMediaLoad={handleMediaLoad} isSelected={isSelected} isHovered={isHovered} isOwnMessage={message.isOutgoing} />}
+          {!message.isRetracted && <MessageAttachments attachment={message.attachment} onMediaLoad={handleMediaLoad} isOwnMessage={message.isOutgoing} />}
 
           {/* Link preview - hidden for retracted */}
           {!message.isRetracted && message.linkPreview && <LinkPreviewCard preview={message.linkPreview} onLoad={handleMediaLoad} isOwnMessage={message.isOutgoing} />}

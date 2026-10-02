@@ -44,6 +44,8 @@
         "madeBy": "Skapat av",
         "poweredBy": "Drivs av",
         "errors": {
+            "discoveryFailed": "Serversökning för {{domain}} misslyckades. Försökte med {{target}} i stället.",
+            "discoveryFailedTcp": "Serversökning för {{domain}} misslyckades. Försökte med direkt TCP till {{target}} i stället.",
             "tlsCertTitle": "Det gick inte att verifiera serverns säkerhetscertifikat",
             "tlsOtherTitle": "Säker anslutning misslyckades",
             "tlsOtherBody": "Den krypterade anslutningen till servern kunde inte upprättas. Serverns TLS-konfiguration kanske inte stöds. Kontrollera serveradressen eller kontakta serveradministratören.",
@@ -72,7 +74,8 @@
         "joinRoom": "Gå med i rum",
         "viewProfile": "Visa profil",
         "resizeHint": "Dra för att ändra storlek, dubbelklicka för att återställa",
-        "dismiss": "Avfärda"
+        "dismiss": "Avfärda",
+        "search": "Sök"
     },
     "newMessage": {
         "title": "Nytt meddelande",
@@ -754,6 +757,8 @@
         "webPush_disabled": "Inaktiverat, pushnotiser avstängda",
         "webPushDisable": "Inaktivera",
         "webPushReEnable": "Återaktivera",
+        "pushStatus": "Pushnotiser",
+        "push_failed": "Registreringen misslyckades, tryck för att försöka igen",
         "updates": "Uppdateringar",
         "storage": {
             "title": "Lagring",
@@ -1301,6 +1306,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Kräver uppmärksamhet"
     },
+    "windowControls": {
+        "minimize": "Minimera",
+        "maximize": "Maximera",
+        "restore": "Återställ"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Visningsnamnet som visas i rumslistor och rubriken.",
         "muc#roomconfig_roomdesc": "En kort beskrivning av rummets syfte.",
@@ -1457,5 +1467,32 @@
         "saved": "Sparat. Öppna Fluux för att välja en konversation och skicka.",
         "importError": "Det gick inte att importera. Dela en länk eller fil på högst 20 MB; inkorgen rymmer 20 objekt.",
         "sent": "Meddelandet har skickats. Du kan ta bort det importerade objektet."
+    },
+    "search": {
+        "filter": {
+            "all": "Alla",
+            "conversations": "Chattar",
+            "rooms": "Rum"
+        },
+        "placeholder": "Sök i meddelanden…",
+        "scopeLabel": "Söker i {{name}}",
+        "clearScope": "Sök i alla konversationer",
+        "searching": "Söker…",
+        "noResults": "Inga meddelanden hittades",
+        "searchServer": "Sök i serverarkivet",
+        "searchingServer": "Söker i serverarkivet…",
+        "serverResults": "Serverarkiv",
+        "loadMore": "Ladda fler från servern",
+        "hint": "Skriv för att söka i alla meddelanden",
+        "contextView": "Sökresultat",
+        "previewBanner": "Du ser en förhandsvisning av ett sökresultat",
+        "goToMessage": "Gå till meddelandet",
+        "loadingContext": "Laddar meddelanden…",
+        "errors": {
+            "failed": "Sökningen misslyckades",
+            "archiveRooms": "Servern stöder inte arkivsökning för rum",
+            "archiveUnsupported": "Servern stöder inte arkivsökning. Försök söka inom en konversation.",
+            "serverFailed": "Serversökningen misslyckades"
+        }
     }
 }

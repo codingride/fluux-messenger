@@ -15,7 +15,7 @@ pub fn post(n: NativeNotification) -> Result<(), String> {
     let identifier = super::APP_HANDLE
         .get()
         .map(|app| app.config().identifier.clone())
-        .unwrap_or_else(|| "com.processone.fluux".to_string());
+        .unwrap_or_else(|| "net.processone.fluux".to_string());
     let target = n.target;
     let mut toast = Toast::new(&identifier)
         .title(&n.title)
@@ -27,6 +27,11 @@ pub fn post(n: NativeNotification) -> Result<(), String> {
 
     if let Some(path) = n.avatar_path.as_deref() {
         toast = toast.icon(Path::new(path), IconCrop::Circular, "");
+    }
+
+    // A toast without an audio element plays the system default sound.
+    if n.silent {
+        toast = toast.sound(None);
     }
 
     toast.show().map_err(|e| e.to_string())

@@ -44,6 +44,8 @@
         "madeBy": "Sukūrė",
         "poweredBy": "Veikia su",
         "errors": {
+            "discoveryFailed": "Nepavyko aptikti {{domain}} serverio. Vietoj to bandyta prisijungti prie {{target}}.",
+            "discoveryFailedTcp": "Nepavyko aptikti {{domain}} serverio. Vietoj to bandyta tiesiogiai prisijungti prie {{target}} per TCP.",
             "tlsCertTitle": "Nepavyko patikrinti serverio saugos sertifikato",
             "tlsOtherTitle": "Saugi jungtis nepavyko",
             "tlsOtherBody": "Nepavyko užmegzti užšifruotos jungties su serveriu. Serverio TLS konfigūracija gali būti nepalaikoma. Patikrinkite serverio adresą arba susisiekite su serverio administratoriumi.",
@@ -72,7 +74,8 @@
         "joinRoom": "Prisijungti prie kambario",
         "viewProfile": "Peržiūrėti profilį",
         "resizeHint": "Vilkite, kad pakeistumėte dydį, dukart spustelėkite, kad atstatytumėte",
-        "dismiss": "Atmesti"
+        "dismiss": "Atmesti",
+        "search": "Paieška"
     },
     "newMessage": {
         "title": "Naujas pranešimas",
@@ -758,6 +761,8 @@
         "webPush_disabled": "Išjungta, push pranešimai išjungti",
         "webPushDisable": "Išjungti",
         "webPushReEnable": "Įjungti iš naujo",
+        "pushStatus": "Push pranešimai",
+        "push_failed": "Registracija nepavyko, bakstelėkite, kad bandytumėte dar kartą",
         "updates": "Atnaujinimai",
         "storage": {
             "title": "Saugykla",
@@ -1305,6 +1310,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Reikia dėmesio"
     },
+    "windowControls": {
+        "minimize": "Sumažinti",
+        "maximize": "Padidinti",
+        "restore": "Atkurti"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Rodomas pavadinimas kambarių sąraše ir antraštėje.",
         "muc#roomconfig_roomdesc": "Trumpas kambario paskirties aprašymas.",
@@ -1461,5 +1471,32 @@
         "saved": "Išsaugota. Atidarykite Fluux, pasirinkite pokalbį ir siųskite.",
         "importError": "Importuoti nepavyko. Bendrinkite vieną nuorodą arba failą iki 20 MB; telpa 20 elementų.",
         "sent": "Žinutė išsiųsta. Galite pašalinti šį importuotą elementą."
+    },
+    "search": {
+        "filter": {
+            "all": "Viskas",
+            "conversations": "Pokalbiai",
+            "rooms": "Kambariai"
+        },
+        "placeholder": "Ieškoti žinučių…",
+        "scopeLabel": "Ieškoma: {{name}}",
+        "clearScope": "Ieškoti visuose pokalbiuose",
+        "searching": "Ieškoma…",
+        "noResults": "Žinučių nerasta",
+        "searchServer": "Ieškoti serverio archyve",
+        "searchingServer": "Ieškoma serverio archyve…",
+        "serverResults": "Serverio archyvas",
+        "loadMore": "Įkelti daugiau iš serverio",
+        "hint": "Įveskite tekstą, kad ieškotumėte visose žinutėse",
+        "contextView": "Paieškos rezultatas",
+        "previewBanner": "Peržiūrite paieškos rezultato peržiūrą",
+        "goToMessage": "Eiti į žinutę",
+        "loadingContext": "Įkeliamos žinutės…",
+        "errors": {
+            "failed": "Paieška nepavyko",
+            "archiveRooms": "Serveris nepalaiko kambarių archyvo paieškos",
+            "archiveUnsupported": "Serveris nepalaiko archyvo paieškos. Pabandykite ieškoti pokalbio viduje.",
+            "serverFailed": "Paieška serveryje nepavyko"
+        }
     }
 }

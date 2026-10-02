@@ -97,21 +97,33 @@ export interface PlatformCapabilities {
   // ----- Notifications -----
 
   /**
-   * Notification permission is granted and revoked through the OS, so the app
-   * reads it from the system and can send the user to the OS settings pane —
-   * rather than requesting it in-page.
+   * Notification permission is granted and revoked through the OS.
    */
   readonly notificationsManagedByOS: boolean
   /** Push arrives over Web Push rather than the OS notification centre. */
   readonly usesWebPush: boolean
+  /**
+   * Push arrives through the platform push service (APNs), registered with an
+   * XMPP push app server (XEP-0357).
+   */
+  readonly usesNativePush: boolean
 
   // ----- Window and process -----
 
   /**
-   * The app draws its own title bar and must reserve room for the window
-   * controls. macOS only: Windows and Linux keep a native title bar.
+   * The OS paints its window controls over the content, so the app must
+   * reserve room for them. macOS only.
    */
-  readonly hasCustomTitleBar: boolean
+  readonly overlaysNativeWindowControls: boolean
+  /**
+   * The window is built without a native frame, so the app draws minimize,
+   * maximize and close itself. Windows only: Linux keeps its GTK header.
+   *
+   * States how the build configures the window, not what the window reports:
+   * `useCustomWindowChrome` confirms the frame is really absent before
+   * anything is drawn.
+   */
+  readonly drawsWindowControls: boolean
   /** The app is launched from a command line and can be passed flags. */
   readonly hasCommandLineFlags: boolean
   /** Diagnostic logs are written to files the user can open. */
@@ -204,12 +216,14 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     supportsKeyRotation: desktop,
 
     // Notifications.
-    notificationsManagedByOS: desktop,
+    notificationsManagedByOS: desktop || (shell === 'mobile' && (os === 'android' || os === 'ios')),
     usesWebPush: web,
+    usesNativePush: shell === 'mobile' && os === 'ios',
 
-    // Window and process. Only macOS overlays its window controls on the
-    // content; Windows and Linux keep a native title bar.
-    hasCustomTitleBar: desktop && os === 'macos',
+    // Window and process. macOS overlays its window controls on the content,
+    // Windows has no native frame at all, Linux keeps a native title bar.
+    overlaysNativeWindowControls: desktop && os === 'macos',
+    drawsWindowControls: desktop && os === 'windows',
     hasCommandLineFlags: desktop,
     hasNativeLogFiles: desktop,
     // Every browser tab is an instance sharing one origin.

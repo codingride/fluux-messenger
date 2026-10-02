@@ -44,6 +44,8 @@
         "madeBy": "Tegi",
         "poweredBy": "Töötab",
         "errors": {
+            "discoveryFailed": "Serveri {{domain}} tuvastamine ebaõnnestus. Selle asemel prooviti ühendust aadressiga {{target}}.",
+            "discoveryFailedTcp": "Serveri {{domain}} tuvastamine ebaõnnestus. Selle asemel prooviti otsest TCP-ühendust aadressiga {{target}}.",
             "tlsCertTitle": "Serveri turvasertifikaati ei õnnestunud kontrollida",
             "tlsOtherTitle": "Turvaline ühendus ebaõnnestus",
             "tlsOtherBody": "Serveriga ei õnnestunud luua krüpteeritud ühendust. Serveri TLS-konfiguratsioon ei pruugi olla toetatud. Kontrolli serveri aadressi või võta ühendust serveri administraatoriga.",
@@ -72,7 +74,8 @@
         "joinRoom": "Liitu toaga",
         "viewProfile": "Vaata profiili",
         "resizeHint": "Lohista suuruse muutmiseks, topeltklõps lähtestamiseks",
-        "dismiss": "Loobu"
+        "dismiss": "Loobu",
+        "search": "Otsing"
     },
     "newMessage": {
         "title": "Uus sõnum",
@@ -756,6 +759,8 @@
         "webPush_disabled": "Keelatud, push-teavitused väljas",
         "webPushDisable": "Keela",
         "webPushReEnable": "Luba uuesti",
+        "pushStatus": "Push-teavitused",
+        "push_failed": "Registreerimine ebaõnnestus, puuduta uuesti proovimiseks",
         "updates": "Värskendused",
         "storage": {
             "title": "Salvestusruum",
@@ -1303,6 +1308,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Vajab tähelepanu"
     },
+    "windowControls": {
+        "minimize": "Minimeeri",
+        "maximize": "Maksimeeri",
+        "restore": "Taasta"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Kuvatav nimi ruumide loendis ja päises.",
         "muc#roomconfig_roomdesc": "Lühike kirjeldus ruumi otstarbe kohta.",
@@ -1459,5 +1469,32 @@
         "saved": "Salvestatud. Ava Fluux, et valida vestlus ja saata.",
         "importError": "Importimine ebaõnnestus. Jaga üht linki või kuni 20 MB faili; postkast mahutab 20 üksust.",
         "sent": "Sõnum saadetud. Võid selle imporditud üksuse eemaldada."
+    },
+    "search": {
+        "filter": {
+            "all": "Kõik",
+            "conversations": "Vestlused",
+            "rooms": "Ruumid"
+        },
+        "placeholder": "Otsi sõnumeid…",
+        "scopeLabel": "Otsin: {{name}}",
+        "clearScope": "Otsi kõigist vestlustest",
+        "searching": "Otsin…",
+        "noResults": "Sõnumeid ei leitud",
+        "searchServer": "Otsi serveri arhiivist",
+        "searchingServer": "Otsin serveri arhiivist…",
+        "serverResults": "Serveri arhiiv",
+        "loadMore": "Laadi serverist veel",
+        "hint": "Tippige, et otsida kõigist sõnumitest",
+        "contextView": "Otsingutulemus",
+        "previewBanner": "Vaatate otsingutulemuse eelvaadet",
+        "goToMessage": "Ava sõnum",
+        "loadingContext": "Sõnumite laadimine…",
+        "errors": {
+            "failed": "Otsing ebaõnnestus",
+            "archiveRooms": "Server ei toeta ruumide arhiivist otsimist",
+            "archiveUnsupported": "Server ei toeta arhiivist otsimist. Proovige otsida vestluse sees.",
+            "serverFailed": "Otsing serverist ebaõnnestus"
+        }
     }
 }

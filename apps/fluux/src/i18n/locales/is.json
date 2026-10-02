@@ -44,6 +44,8 @@
         "madeBy": "Búið til af",
         "poweredBy": "Keyrt af",
         "errors": {
+            "discoveryFailed": "Leit að þjóni fyrir {{domain}} mistókst. Reynt var að tengjast {{target}} í staðinn.",
+            "discoveryFailedTcp": "Leit að þjóni fyrir {{domain}} mistókst. Reynd var bein TCP-tenging við {{target}} í staðinn.",
             "tlsCertTitle": "Ekki tókst að staðfesta öryggisvistunarskírteini þjónsins",
             "tlsOtherTitle": "Örugg tenging mistókst",
             "tlsOtherBody": "Ekki tókst að koma á dulkóðaðri tengingu við þjóninn. TLS-stilling þjónsins er hugsanlega ekki studd. Athugaðu þjónsföng eða hafðu samband við kerfisstjóra þjónsins.",
@@ -72,7 +74,8 @@
         "joinRoom": "Ganga í herbergi",
         "viewProfile": "Skoða prófíl",
         "resizeHint": "Dragðu til að breyta stærð, tvísmelltu til að endurstilla",
-        "dismiss": "Hafna"
+        "dismiss": "Hafna",
+        "search": "Leita"
     },
     "newMessage": {
         "title": "Ný skilaboð",
@@ -754,6 +757,8 @@
         "webPush_disabled": "Óvirkt, push-tilkynningar slökktar",
         "webPushDisable": "Slökkva",
         "webPushReEnable": "Endurvirkja",
+        "pushStatus": "Push-tilkynningar",
+        "push_failed": "Skráning mistókst, ýttu til að reyna aftur",
         "updates": "Uppfærslur",
         "storage": {
             "title": "Geymsla",
@@ -1301,6 +1306,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Þarfnast athygli"
     },
+    "windowControls": {
+        "minimize": "Lágmarka",
+        "maximize": "Hámarka",
+        "restore": "Endurheimta"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Birtingarnafnið sem birtist í herbergjalista og haus.",
         "muc#roomconfig_roomdesc": "Stutt lýsing á tilgangi herbergisins.",
@@ -1457,5 +1467,32 @@
         "saved": "Vistað. Opnaðu Fluux til að velja samtal og senda.",
         "importError": "Ekki tókst að flytja inn. Deildu einum tengli eða skrá að hámarki 20 MB; innhólfið rúmar 20 atriði.",
         "sent": "Skilaboð send. Þú getur fjarlægt þetta innflutta atriði."
+    },
+    "search": {
+        "filter": {
+            "all": "Allt",
+            "conversations": "Spjall",
+            "rooms": "Herbergi"
+        },
+        "placeholder": "Leita í skilaboðum…",
+        "scopeLabel": "Leita í {{name}}",
+        "clearScope": "Leita í öllum samtölum",
+        "searching": "Leita…",
+        "noResults": "Engin skilaboð fundust",
+        "searchServer": "Leita í skjalasafni þjónsins",
+        "searchingServer": "Leita í skjalasafni þjónsins…",
+        "serverResults": "Skjalasafn þjóns",
+        "loadMore": "Hlaða meiru frá þjóninum",
+        "hint": "Sláðu inn til að leita í öllum skilaboðum",
+        "contextView": "Leitarniðurstaða",
+        "previewBanner": "Þú ert að skoða forskoðun á leitarniðurstöðu",
+        "goToMessage": "Fara í skilaboð",
+        "loadingContext": "Hleð skilaboðum…",
+        "errors": {
+            "failed": "Leit mistókst",
+            "archiveRooms": "Þjónninn styður ekki leit í skjalasafni herbergja",
+            "archiveUnsupported": "Þjónninn styður ekki leit í skjalasafni. Prófaðu að leita innan samtals.",
+            "serverFailed": "Leit á þjóninum mistókst"
+        }
     }
 }

@@ -44,6 +44,8 @@
         "madeBy": "Laget av",
         "poweredBy": "Drevet av",
         "errors": {
+            "discoveryFailed": "Serveroppslag for {{domain}} mislyktes. Prøvde {{target}} i stedet.",
+            "discoveryFailedTcp": "Serveroppslag for {{domain}} mislyktes. Prøvde direkte TCP til {{target}} i stedet.",
             "tlsCertTitle": "Kunne ikke bekrefte serverens sikkerhetssertifikat",
             "tlsOtherTitle": "Sikker tilkobling mislyktes",
             "tlsOtherBody": "Den krypterte tilkoblingen til serveren kunne ikke opprettes. Serverens TLS-konfigurasjon støttes kanskje ikke. Sjekk serveradressen eller kontakt serveradministratoren.",
@@ -72,7 +74,8 @@
         "joinRoom": "Bli med i rom",
         "viewProfile": "Vis profil",
         "resizeHint": "Dra for å endre størrelse, dobbeltklikk for å tilbakestille",
-        "dismiss": "Avvis"
+        "dismiss": "Avvis",
+        "search": "Søk"
     },
     "newMessage": {
         "title": "Ny melding",
@@ -754,6 +757,8 @@
         "webPush_disabled": "Deaktivert, pushvarsler avslått",
         "webPushDisable": "Deaktiver",
         "webPushReEnable": "Aktiver på nytt",
+        "pushStatus": "Pushvarsler",
+        "push_failed": "Registreringen mislyktes, trykk for å prøve igjen",
         "updates": "Oppdateringer",
         "storage": {
             "title": "Lagring",
@@ -1301,6 +1306,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Krever oppmerksomhet"
     },
+    "windowControls": {
+        "minimize": "Minimer",
+        "maximize": "Maksimer",
+        "restore": "Gjenopprett"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Visningsnavnet som vises i romlister og overskriften.",
         "muc#roomconfig_roomdesc": "En kort beskrivelse av rommets formål.",
@@ -1457,5 +1467,32 @@
         "saved": "Lagret. Åpne Fluux for å velge en samtale og sende.",
         "importError": "Kunne ikke importere. Del én lenke eller fil på opptil 20 MB; innboksen rommer 20 elementer.",
         "sent": "Meldingen er sendt. Du kan fjerne dette importerte elementet."
+    },
+    "search": {
+        "filter": {
+            "all": "Alle",
+            "conversations": "Samtaler",
+            "rooms": "Rom"
+        },
+        "placeholder": "Søk i meldinger…",
+        "scopeLabel": "Søker i {{name}}",
+        "clearScope": "Søk i alle samtaler",
+        "searching": "Søker…",
+        "noResults": "Fant ingen meldinger",
+        "searchServer": "Søk i serverarkivet",
+        "searchingServer": "Søker i serverarkivet…",
+        "serverResults": "Serverarkiv",
+        "loadMore": "Last inn flere fra serveren",
+        "hint": "Skriv for å søke i alle meldinger",
+        "contextView": "Søkeresultat",
+        "previewBanner": "Du ser en forhåndsvisning av et søkeresultat",
+        "goToMessage": "Gå til melding",
+        "loadingContext": "Laster meldinger…",
+        "errors": {
+            "failed": "Søket mislyktes",
+            "archiveRooms": "Serveren støtter ikke arkivsøk for rom",
+            "archiveUnsupported": "Serveren støtter ikke arkivsøk. Prøv å søke i en samtale.",
+            "serverFailed": "Serversøket mislyktes"
+        }
     }
 }

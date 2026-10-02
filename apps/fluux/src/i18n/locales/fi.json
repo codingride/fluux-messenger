@@ -44,6 +44,8 @@
         "madeBy": "Tekijä",
         "poweredBy": "Käyttää",
         "errors": {
+            "discoveryFailed": "Palvelimen {{domain}} haku epäonnistui. Sen sijaan yritettiin yhteyttä osoitteeseen {{target}}.",
+            "discoveryFailedTcp": "Palvelimen {{domain}} haku epäonnistui. Sen sijaan yritettiin suoraa TCP-yhteyttä osoitteeseen {{target}}.",
             "tlsCertTitle": "Palvelimen turvasertifikaattia ei voitu varmentaa",
             "tlsOtherTitle": "Suojattu yhteys epäonnistui",
             "tlsOtherBody": "Salattua yhteyttä palvelimeen ei voitu muodostaa. Palvelimen TLS-asetuksia ei ehkä tueta. Tarkista palvelimen osoite tai ota yhteyttä palvelimen ylläpitäjään.",
@@ -72,7 +74,8 @@
         "joinRoom": "Liity huoneeseen",
         "viewProfile": "Näytä profiili",
         "resizeHint": "Vedä muuttaaksesi kokoa, kaksoisnapsauta nollataksesi",
-        "dismiss": "Hylkää"
+        "dismiss": "Hylkää",
+        "search": "Haku"
     },
     "newMessage": {
         "title": "Uusi viesti",
@@ -754,6 +757,8 @@
         "webPush_disabled": "Pois käytöstä, push-ilmoitukset pois päältä",
         "webPushDisable": "Poista käytöstä",
         "webPushReEnable": "Ota uudelleen käyttöön",
+        "pushStatus": "Push-ilmoitukset",
+        "push_failed": "Rekisteröinti epäonnistui, yritä uudelleen napauttamalla",
         "updates": "Päivitykset",
         "storage": {
             "title": "Tallennustila",
@@ -1301,6 +1306,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Vaatii huomiota"
     },
+    "windowControls": {
+        "minimize": "Pienennä",
+        "maximize": "Suurenna",
+        "restore": "Palauta"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Huoneluettelossa ja otsikossa näkyvä nimi.",
         "muc#roomconfig_roomdesc": "Lyhyt kuvaus huoneen tarkoituksesta.",
@@ -1457,5 +1467,32 @@
         "saved": "Tallennettu. Avaa Fluux, valitse keskustelu ja lähetä.",
         "importError": "Tuonti epäonnistui. Jaa yksi linkki tai enintään 20 Mt:n tiedosto; saapuneisiin mahtuu 20 kohdetta.",
         "sent": "Viesti lähetetty. Voit poistaa tämän tuodun kohteen."
+    },
+    "search": {
+        "filter": {
+            "all": "Kaikki",
+            "conversations": "Keskustelut",
+            "rooms": "Huoneet"
+        },
+        "placeholder": "Hae viesteistä…",
+        "scopeLabel": "Haetaan kohteesta {{name}}",
+        "clearScope": "Hae kaikista keskusteluista",
+        "searching": "Haetaan…",
+        "noResults": "Viestejä ei löytynyt",
+        "searchServer": "Hae palvelimen arkistosta",
+        "searchingServer": "Haetaan palvelimen arkistosta…",
+        "serverResults": "Palvelimen arkisto",
+        "loadMore": "Lataa lisää palvelimelta",
+        "hint": "Kirjoita hakeaksesi kaikista viesteistä",
+        "contextView": "Hakutulos",
+        "previewBanner": "Katselet hakutuloksen esikatselua",
+        "goToMessage": "Siirry viestiin",
+        "loadingContext": "Ladataan viestejä…",
+        "errors": {
+            "failed": "Haku epäonnistui",
+            "archiveRooms": "Palvelin ei tue huoneiden arkistohakua",
+            "archiveUnsupported": "Palvelin ei tue arkistohakua. Kokeile hakea keskustelun sisältä.",
+            "serverFailed": "Palvelinhaku epäonnistui"
+        }
     }
 }

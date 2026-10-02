@@ -98,12 +98,11 @@ export function createStoreBindings(
   // Connection Events
   // ============================================================================
 
-  // Note: connection:status store updates are handled directly by Connection.ts
-  // (setStatus/setError/setJid calls). The SDK event is emitted for external consumers
-  // but the store binding here is intentionally removed to avoid duplicate updates
-  // that cause unnecessary React re-renders during reconnection cycles.
-
-  // connection:authenticated is also handled directly by Connection.ts
+  // Lifecycle status/error/JID are owned by the connection machine. Discovery
+  // diagnostics arrive separately in the SDK event and belong to this binding.
+  on('connection:status', ({ status, discoveryFailure }) => {
+    getStores().connection.setDiscoveryFailure(status === 'error' ? discoveryFailure ?? null : null)
+  })
 
   on('connection:server-info', ({ info }) => {
     const stores = getStores()
@@ -169,6 +168,11 @@ export function createStoreBindings(
     stores.connection.setWebPushStatus(status)
   })
 
+  on('connection:push-status', ({ status }) => {
+    const stores = getStores()
+    stores.connection.setPushStatus(status)
+  })
+
   // ============================================================================
   // Chat Events (1:1 Messaging)
   // ============================================================================
@@ -198,16 +202,16 @@ export function createStoreBindings(
     stores.room.setTyping(roomJid, nick, isTyping)
   })
 
-  on('chat:reactions', ({ conversationId, messageId, reactorJid, emojis }) => {
+  on('chat:reactions', ({ conversationId, messageId, target, reactorJid, emojis }) => {
     const stores = getStores()
-    stores.chat.updateReactions(conversationId, messageId, reactorJid, emojis)
+    stores.chat.updateReactions(conversationId, target ?? messageId, reactorJid, emojis)
   })
 
-  on('chat:message-updated', ({ conversationId, messageId, updates, correctionActor, onCorrectionMissing, onCorrectionResolved }) => {
+  on('chat:message-updated', ({ conversationId, messageId, target, updates, correctionActor, onCorrectionMissing, onCorrectionResolved }) => {
     const stores = getStores()
-    if (correctionActor && (onCorrectionMissing || onCorrectionResolved)) stores.chat.updateMessage(conversationId, messageId, updates, undefined, correctionActor, onCorrectionMissing, onCorrectionResolved)
-    else if (correctionActor) stores.chat.updateMessage(conversationId, messageId, updates, undefined, correctionActor)
-    else stores.chat.updateMessage(conversationId, messageId, updates)
+    if (correctionActor && (onCorrectionMissing || onCorrectionResolved)) stores.chat.updateMessage(conversationId, target ?? messageId, updates, undefined, correctionActor, onCorrectionMissing, onCorrectionResolved)
+    else if (correctionActor) stores.chat.updateMessage(conversationId, target ?? messageId, updates, undefined, correctionActor)
+    else stores.chat.updateMessage(conversationId, target ?? messageId, updates)
   })
 
   on('chat:retraction-pending', ({ conversationId, targetId, actorJid }) => {

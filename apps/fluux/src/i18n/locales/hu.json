@@ -44,6 +44,8 @@
         "madeBy": "Készítette:",
         "poweredBy": "Hajtja:",
         "errors": {
+            "discoveryFailed": "A(z) {{domain}} kiszolgálófelderítése sikertelen. Helyette a(z) {{target}} címmel történt kapcsolódási kísérlet.",
+            "discoveryFailedTcp": "A(z) {{domain}} kiszolgálófelderítése sikertelen. Helyette közvetlen TCP-kapcsolódási kísérlet történt a(z) {{target}} címhez.",
             "tlsCertTitle": "A szerver biztonsági tanúsítványa nem ellenőrizhető",
             "tlsOtherTitle": "A biztonságos kapcsolat sikertelen",
             "tlsOtherBody": "A szerverrel nem sikerült titkosított kapcsolatot létrehozni. Lehet, hogy a szerver TLS-konfigurációja nem támogatott. Ellenőrizze a szerver címét, vagy vegye fel a kapcsolatot a szerver adminisztrátorával.",
@@ -72,7 +74,8 @@
         "joinRoom": "Csatlakozás szobához",
         "viewProfile": "Profil megtekintése",
         "resizeHint": "Húzza az átméretezéshez, dupla kattintás a visszaállításhoz",
-        "dismiss": "Elvetés"
+        "dismiss": "Elvetés",
+        "search": "Keresés"
     },
     "newMessage": {
         "title": "Új üzenet",
@@ -754,6 +757,8 @@
         "webPush_disabled": "Kikapcsolva, push értesítések kikapcsolva",
         "webPushDisable": "Kikapcsolás",
         "webPushReEnable": "Újra bekapcsolás",
+        "pushStatus": "Push értesítések",
+        "push_failed": "A regisztráció sikertelen, koppints az újrapróbáláshoz",
         "updates": "Frissítések",
         "storage": {
             "title": "Tárhely",
@@ -1301,6 +1306,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Figyelmet igényel"
     },
+    "windowControls": {
+        "minimize": "Kis méret",
+        "maximize": "Teljes méret",
+        "restore": "Előző méret"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "A szobalistákban és a fejlécben megjelenő megjelenítési név.",
         "muc#roomconfig_roomdesc": "A szoba céljának rövid leírása.",
@@ -1457,5 +1467,32 @@
         "saved": "Mentve. Nyissa meg a Fluuxot, válasszon beszélgetést, majd küldje el.",
         "importError": "Az importálás sikertelen. Egy hivatkozást vagy legfeljebb 20 MB-os fájlt osszon meg; 20 elem tárolható.",
         "sent": "Üzenet elküldve. Ezt az importált elemet törölheti."
+    },
+    "search": {
+        "filter": {
+            "all": "Összes",
+            "conversations": "Csevegések",
+            "rooms": "Szobák"
+        },
+        "placeholder": "Üzenetek keresése…",
+        "scopeLabel": "Keresés itt: {{name}}",
+        "clearScope": "Keresés az összes beszélgetésben",
+        "searching": "Keresés…",
+        "noResults": "Nem található üzenet",
+        "searchServer": "Keresés a szerver archívumában",
+        "searchingServer": "Keresés a szerver archívumában…",
+        "serverResults": "Szerverarchívum",
+        "loadMore": "További betöltése a szerverről",
+        "hint": "Írjon a keresőbe az összes üzenetben való kereséshez",
+        "contextView": "Keresési találat",
+        "previewBanner": "Egy keresési találat előnézetét látja",
+        "goToMessage": "Ugrás az üzenetre",
+        "loadingContext": "Üzenetek betöltése…",
+        "errors": {
+            "failed": "A keresés sikertelen",
+            "archiveRooms": "A szerver nem támogatja a szobák archívumában való keresést",
+            "archiveUnsupported": "A szerver nem támogatja az archívumban való keresést. Próbáljon egy beszélgetésen belül keresni.",
+            "serverFailed": "A szerveres keresés sikertelen"
+        }
     }
 }

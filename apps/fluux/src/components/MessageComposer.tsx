@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { detectRenderLoop, notifyUserInput } from '@/utils/renderLoopDetector'
 import { Send, Smile, Paperclip, Reply, X, Pencil, Loader2, Image, FileText, Trash2, BarChart3, Plus, Lock, Shield, ShieldCheck, ShieldAlert, Terminal } from 'lucide-react'
 import { useClickOutside, useEmojiAutocomplete } from '@/hooks'
+import { useFloatingLayerBounds } from '@/hooks/useFloatingLayerBounds'
 import { EmojiAutocompleteMenu } from './composer/EmojiAutocompleteMenu'
 import { usesMobileEnterKey } from './composer/mobileEnter'
 import { composerAutocompleteAriaProps, type ComposerAutocompleteAriaProps } from './composer/autocompleteAria'
@@ -75,7 +76,7 @@ export const MESSAGE_INPUT_BASE_CLASSES = 'message-input no-focus-ring flex-1 px
  * not have. Applied by MessageComposer around both the default textarea and any
  * `renderInput`, so custom inputs inherit the spacing without re-adding it.
  */
-export const MESSAGE_INPUT_FRAME_CLASSES = 'min-w-0 flex items-center py-3'
+export const MESSAGE_INPUT_FRAME_CLASSES = 'composer-input-frame min-w-0 flex items-center py-3'
 export const MESSAGE_INPUT_TEXT_CLASSES = 'text-fluux-text placeholder:text-fluux-muted'
 // For overlay-based inputs (e.g., mention highlighting) - text is transparent, caret visible via style
 export const MESSAGE_INPUT_OVERLAY_CLASSES = 'text-transparent placeholder:text-fluux-muted'
@@ -97,6 +98,7 @@ export interface ReplyInfo {
 
 export interface EditInfo {
   id: string
+  rowId?: string
   body: string
   attachment?: FileAttachment
 }
@@ -375,6 +377,8 @@ export function MessageComposer({
   const [launching, setLaunching] = useState(false)
   const [showAttachMenu, setShowAttachMenu] = useState(false)
   const attachMenuRef = useRef<HTMLDivElement>(null)
+  const attachPanelRef = useRef<HTMLDivElement>(null)
+  useFloatingLayerBounds(attachPanelRef, showAttachMenu)
   const emojiPickerRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -384,7 +388,7 @@ export function MessageComposer({
   const composingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Track which message we've already populated for editing
-  const lastEditedMessageIdRef = useRef<string | null>(null)
+  const lastEditedRowIdRef = useRef<string | null>(null)
 
   // Expose imperative handle
   useImperativeHandle(ref, () => ({
@@ -401,6 +405,18 @@ export function MessageComposer({
   const closeAttachMenu = () => setShowAttachMenu(false)
   useClickOutside(attachMenuRef, closeAttachMenu, showAttachMenu)
   const closeEmojiPicker = () => setShowEmojiPicker(false)
+  // WebKit can blur the card on mouse down and collapse the drawer before click.
+  // Keep focus on the persistent textarea: outside-click cleanup can unmount a
+  // focused attachment-menu item during the press.
+  const handleEmojiMouseDown = (event: React.MouseEvent<HTMLButtonElement>) => {
+    const card = event.currentTarget.closest('.composer-card')
+    if (
+      showEmojiPicker || event.button !== 0 || !card?.matches(':focus-within') ||
+      getComputedStyle(event.currentTarget).getPropertyValue('--composer-drawer-collapsible').trim() !== '1'
+    ) return
+    event.preventDefault()
+    inputRef.current?.focus({ preventScroll: true })
+  }
   useClickOutside(emojiPickerRef, closeEmojiPicker, showEmojiPicker)
 
   // Inline completion owns the composer overlay slot while active. Close the
@@ -425,15 +441,15 @@ export function MessageComposer({
 
   // Populate input when editing starts (only when a NEW message is being edited)
   useEffect(() => {
-    if (editingMessage && editingMessage.id !== lastEditedMessageIdRef.current) {
-      lastEditedMessageIdRef.current = editingMessage.id
+    if (editingMessage && (editingMessage.rowId ?? editingMessage.id) !== lastEditedRowIdRef.current) {
+      lastEditedRowIdRef.current = editingMessage.rowId ?? editingMessage.id
       setText(editingMessage.body)
       setEditAttachmentRemoved(false) // Reset attachment removal state
       // Focus and move cursor to end
       restoreTextareaCursor(inputRef, editingMessage.body.length)
     } else if (!editingMessage) {
       // Reset when editing is cancelled
-      lastEditedMessageIdRef.current = null
+      lastEditedRowIdRef.current = null
       setEditAttachmentRemoved(false)
     }
   }, [editingMessage, setText])
@@ -898,7 +914,7 @@ export function MessageComposer({
   const keyChanged = enc?.kind === 'blocked'
 
   return (
-    <form onSubmit={handleSubmit} className={`px-4 pt-2 ${platform().os === 'ios' ? 'pb-safe-2' : 'pb-safe'} relative`}>
+    <form onSubmit={handleSubmit} className={`composer-form px-4 pt-2 ${platform().os === 'ios' ? 'pb-safe-2' : 'pb-safe'} relative`}>
       {/* Custom content above input (e.g., mention autocomplete) */}
       {aboveInput}
 
@@ -1115,7 +1131,7 @@ export function MessageComposer({
           )}
 
           {showAttachMenu && (
-            <div className="absolute bottom-full start-0 mb-2 z-50 fluux-popover rounded-lg py-1 min-w-[180px]">
+            <div ref={attachPanelRef} className="absolute bottom-full start-0 mb-2 z-50 fluux-popover rounded-lg py-1 min-w-[180px]">
               <button
                 type="button"
                 onClick={() => {
@@ -1199,6 +1215,7 @@ export function MessageComposer({
         <div className="relative [grid-area:emoji] composer-drawer-item" ref={emojiPickerRef}>
           <button
             type="button"
+            onMouseDown={handleEmojiMouseDown}
             onClick={() => setShowEmojiPicker(!showEmojiPicker)}
             onMouseEnter={() => { void emojiPickerImport() }}
             className={`p-3 transition-colors ${showEmojiPicker ? 'text-fluux-brand' : 'text-fluux-muted hover:text-fluux-text'}`}
@@ -1223,7 +1240,7 @@ export function MessageComposer({
             to send (identity tied to the brand action); muted while empty.
             Encryption state is shown by the leading lock (not here). */}
         <div
-          className={`relative m-1 flex [grid-area:send]${launching ? ' send-launching' : ''}`}
+          className={`composer-send relative m-1 flex [grid-area:send]${launching ? ' send-launching' : ''}`}
           onAnimationEnd={(e) => {
             if (e.animationName === 'send-press') setLaunching(false)
           }}

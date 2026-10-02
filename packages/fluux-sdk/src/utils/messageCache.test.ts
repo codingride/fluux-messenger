@@ -707,6 +707,27 @@ describe('messageCache', () => {
     })
 
     describe('getMessages', () => {
+      it('stops a filtered newest-first lookup at the first match, including tied timestamps', async () => {
+        const history = Array.from({ length: 1000 }, (_, i) => createMockMessage(conversationId, {
+          id: `older-${i}`, timestamp: new Date(i + 1),
+        }))
+        const newest = createMockMessage(conversationId, { id: 'a-preview', timestamp: new Date(2000) })
+        const signal = createMockMessage(conversationId, {
+          id: 'z-signal', body: '', encryptedPayload: 'sealed', timestamp: new Date(2000),
+        })
+        await messageCache.saveMessages([...history, newest, signal])
+        const visited: string[] = []
+        const result = await messageCache.getMessages(conversationId, {
+          latest: true, limit: 1,
+          filter: message => {
+            visited.push(message.id)
+            return !!message.body
+          },
+        })
+        expect(result.map(message => message.id)).toEqual([newest.id])
+        expect(visited).toEqual([signal.id, newest.id])
+      })
+
       it('should retrieve messages for a conversation', async () => {
         const messages = [
           createMockMessage(conversationId, { id: 'get-1', timestamp: new Date('2024-01-01T10:00:00Z') }),
@@ -968,17 +989,20 @@ describe('messageCache', () => {
     })
 
     describe('getMessagesAround', () => {
-      it('keeps direct-chat client anchors and deduplicates by client ID', async () => {
+      it('anchors on the archive-distinct row a reused client id names and keeps both rows', async () => {
         await messageCache.saveMessages([
           createMockMessage(conversationId, { id: 'reused', stanzaId: 'first', timestamp: new Date(1000) }),
           createMockMessage(conversationId, { id: 'reused', stanzaId: 'second', timestamp: new Date(2000) }),
         ])
         expect((await messageCache.getMessages(conversationId)).map(message => message.stanzaId)).toEqual(['first', 'second'])
-        for (const stanzaId of [undefined, 'second', 'absent']) {
-          const window = await messageCache.getMessagesAround(conversationId, { id: 'reused', stanzaId }, { before: 0 })
-          expect(window.map(message => message.stanzaId)).toEqual(['first'])
-        }
-        expect(await messageCache.getMessagesAround(conversationId, { id: 'wrong-client', stanzaId: 'second' })).toEqual([])
+        const around = async (anchor: { id: string; stanzaId?: string }) =>
+          (await messageCache.getMessagesAround(conversationId, anchor, { before: 0 })).map(message => message.stanzaId)
+        expect(await around({ id: 'reused' })).toEqual(['first', 'second'])
+        expect(await around({ id: 'reused', stanzaId: 'first' })).toEqual(['first', 'second'])
+        expect(await around({ id: 'reused', stanzaId: 'second' })).toEqual(['second'])
+        expect(await around({ id: 'second' })).toEqual(['second'])
+        expect(await around({ id: 'reused', stanzaId: 'absent' })).toEqual([])
+        expect(await around({ id: 'wrong-client', stanzaId: 'second' })).toEqual([])
       })
 
       // Ten messages, one minute apart, ids a0..a9 in chronological order.

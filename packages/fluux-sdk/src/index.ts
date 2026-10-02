@@ -282,6 +282,7 @@ export type {
   ConnectionStatus,
   ConnectionMethod,
   ConnectOptions,
+  DiscoveryFailure,
 
   // Base message type (shared between chat and room messages)
   BaseMessage,
@@ -290,6 +291,7 @@ export type {
 
   // Chat types
   Message,
+  ChatMessageTarget,
   Conversation,
   ReplyInfo,
   ReplyTarget,
@@ -328,6 +330,11 @@ export type {
   // HTTP Upload types (XEP-0363)
   HttpUploadService,
   UploadSlot,
+
+  // Push through an app server (XEP-0357)
+  PushDeviceRegistrationRequest,
+  PushAppServerRegistration,
+  PushStatus,
 
   // Web Push types (p1:push)
   WebPushService,
@@ -523,6 +530,7 @@ export { getPresenceRank, getBestPresenceShow, getPresenceFromShow } from './uti
 export {
   CHAT_SCOPE,
   archiveReference,
+  archiveIdentityConflict,
   canonicalReference,
   createMessageLookup,
   findMessageById,
@@ -665,7 +673,7 @@ export { canSetAffiliation, canSetRole, canKick, canBan, canModerate, getAvailab
 
 // XEP-0156: Discovering Alternative XMPP Connection Methods
 export { discoverWebSocket, discoverXmppEndpoints } from './utils/websocketDiscovery'
-export type { DiscoveryResult } from './utils/websocketDiscovery'
+export type { DiscoveryResult, DiscoveryAttempt, DiscoveryDiagnostics } from './utils/websocketDiscovery'
 
 // =============================================================================
 // PLATFORM UTILITIES

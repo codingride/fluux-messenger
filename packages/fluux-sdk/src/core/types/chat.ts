@@ -160,6 +160,13 @@ export interface ConversationMetadata {
    */
   historyFloor?: Date
   /**
+   * Set while the conversation is archived: an incoming message timestamped
+   * after this moment brings it back to the active list. Never earlier than
+   * the newest message known when it was archived, so a re-delivered message
+   * the user had already seen does not unarchive it.
+   */
+  archivedAt?: Date
+  /**
    * XEP-0490: a remote device reported reading up to this stanza-id, but the
    * message is not yet in the local cache. Folded into `readPointer` once the
    * message arrives (see mergeMAMMessages).
@@ -181,3 +188,15 @@ export interface ConversationMetadata {
  * @category Chat
  */
 export interface Conversation extends ConversationEntity, ConversationMetadata {}
+
+/**
+ * A chat reference string or the identity of a selected message.
+ *
+ * Pass the held {@link Message} when a sender can reuse a client ID. The object
+ * form preserves its archive/origin discriminators through local lookups and
+ * updates; it does not change the operation's outgoing wire-reference policy.
+ * String callers retain the operation's existing reference-resolution policy.
+ *
+ * @category Chat
+ */
+export type ChatMessageTarget = string | Pick<Message, 'id' | 'stanzaId' | 'originId'>

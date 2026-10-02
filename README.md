@@ -56,6 +56,7 @@
 ### Messaging
 - **Reactions, Replies & Styling** - Emoji reactions with quick toolbar, threaded replies, and rich text formatting (bold, italic, code blocks with syntax highlighting)
 - **Emoji Autocomplete** - Type `:` and a keyword to complete emojis inline, with arrow-key navigation and Enter or Tab to insert
+- **Direct-chat History** - Messages remain separate when a sender reuses a message ID and the archive distinguishes them. See [message identity and targeting limits](docs/MESSAGE_IDENTIFIERS.md#4-a-row-is-not-a-message) for remaining edge cases.
 - **Message Retraction & Moderation** - Delete your own messages or remove room messages for all participants. Connected moderators can open **Bulk moderation** from the room management menu, filter by sender or message text, select messages, then **Review selection** before removal. The single-message removal dialog also offers **Review messages from…** when a stable author identity is available; a reused nickname does not identify the same author.
 
   Each batch contains only messages already loaded when its dialog opened. To include older messages, close the dialog, scroll back in the room, then reopen it. Messages with uncertain IDs from an older local cache remain readable, but individual and bulk moderator removal are unavailable until normal loading confirms their room-assigned IDs. Moderation does not fetch history to verify them, scan the full archive, or purge the server database.
@@ -70,6 +71,7 @@
 
 ### Group Chat & Collaboration
 - **Multi-user Chat** - Complete MUC support with roles, affiliations, custom hats (role badges), @mentions, and bookmarks
+- **Nickname Mentions** - Room mentions such as `@James` and `james:` match the person's name color even when typed in another letter case; mentions of you use your own-name color. Matching uses identities learned from occupants and loaded messages while viewing that room, remembered for the current app session after people leave or you switch rooms. An author not yet seen in that view may use a JID or nickname color until their messages load. If someone else takes a nickname, mentions follow its current holder.
 - **Permission to Speak** - In moderated rooms, visitors choose **Request voice** in place of the public message composer. Room moderators review **Voice requests** and choose **Grant voice** or **Dismiss**. Visitors can request voice again after an unanswered request or an error; the button is disabled while offline or sending. Public messaging becomes available only when the server grants permission. Dismissing a request only removes it locally; whisper permissions remain governed by the room's existing private-message policy.
 - **Private Messages in Rooms** - Mediated private messages (whispers, XEP-0045 §7.5) to a single occupant, shown as a distinct private thread you can reply to privately
 - **Quick Chat** - Instantly create ad-hoc group conversations and invite contacts by name
@@ -103,7 +105,7 @@
 - **Offline Support** - IndexedDB storage with automatic sync and stream management session resumption on reconnect
 
 ### Power User Tools
-- **Command Palette** - Keyboard-accessible launcher for conversations, contacts, rooms, and actions
+- **Command Palette** - Cmd/Ctrl+K opens a launcher for conversations, contacts, rooms, and actions. Search by contact name or username, including the currently open conversation; it stays hidden from empty-query suggestions.
 - **Keyboard Shortcuts** - Shortcuts for navigation and message actions, with a categorized help overlay and AZERTY support
 - **Built-in XMPP Console** - Live stanza inspector with exportable connection-health diagnostics for scheduler suspension, sleep, reconnection, and deferred unread-badge updates
 - **Server Administration** - Manage users, rooms, and server commands right from the client (for admins)
@@ -132,6 +134,9 @@
 |--------|-------------------------------------------------------------------------------|
 | `.exe` | Run the setup wizard (recommended)                                            |
 | `.msi` | Run `msiexec /i Fluux-Messenger_*_Windows_x64.msi` or double-click to install |
+
+See [Windows title bar](docs/APP_BAR.md#windows-the-bar-is-the-title-bar) for
+window controls, shortcuts, and the Snap Layouts hover limitation.
 
 </details>
 
@@ -231,13 +236,11 @@ We also plan to publish Fluux Messenger on F-Droid, and possibly on the Google P
 
 #### My XMPP server only listens on the standard TCP port (5222), can I still use Fluux Messenger?
 
-Yes, on the **desktop** app: it ships with a built-in WebSocket-to-TCP proxy. It first tries WebSocket (via [XEP-0156](https://xmpp.org/extensions/xep-0156.html) discovery), then falls back to TCP/TLS.
-
-The **web** version requires WebSocket on your server, with [CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) configured to allow the origin from which Fluux is served.
+Yes. See [Connection Schemes](docs/CONNECTION.md) for native TCP/TLS support by platform, WebSocket requirements, and diagnosing connection failures.
 
 #### Encrypted attachments don't open or preview in the web version
 
-The web version downloads each encrypted attachment and decrypts it in the browser before displaying it, so the host serving your uploaded files (HTTP File Upload) must **also** send [CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) headers allowing the origin from which Fluux is served. This is the same CORS requirement as the WebSocket endpoint above, applied to your file-storage host. The desktop app downloads files through its native HTTP client, so it is not affected.
+The web version downloads each encrypted attachment and decrypts it in the browser before displaying it, so the host serving your uploaded files (HTTP File Upload) must send [CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) headers allowing the origin from which Fluux is served. The desktop app downloads files through its native HTTP client, so it is not affected.
 
 ### Features & Roadmap
 
@@ -267,6 +270,12 @@ There's no formal roadmap document, but we track upcoming work through GitHub [M
 
 ### Troubleshooting
 
+#### How do I turn off notification sounds?
+
+Open **Settings → Notifications** and turn off **Play notification sounds**. The setting is saved on this device and controls both Fluux's own sounds and the sound requested with system notifications; banners can still appear when notification permission is granted. See the [Android notification limitations](docs/ANDROID_DEVELOPMENT.md#proxy-generated-configuration-and-limitations) for older Android versions.
+
+Background Web Push uses a saved copy of this preference after the tab closes. Updating that copy is best-effort: simultaneous writes from multiple tabs or storage failures can leave it out of date. If the saved copy is missing or cannot be read, background notifications request silence. The browser and operating system ultimately control notification delivery and sound.
+
 #### My antivirus flags the Windows installer as malicious, is the app safe?
 
 Yes. Two things can trigger warnings right now:
@@ -278,7 +287,11 @@ If you'd rather verify for yourself, [build the app from source](docs/DEVELOPER.
 
 #### Closing the window doesn't quit the app, is that normal?
 
-Yes. By default, closing the main window minimizes Fluux to the system tray or menu bar so it can keep your XMPP session alive and deliver notifications. To fully exit, use the **Quit** entry from the tray menu.
+Yes. On Windows and Linux, **Keep Fluux in the system tray** in **Settings → Notifications** is enabled by default. When a compatible tray is available, closing the main window hides Fluux there so it can keep your XMPP session alive and deliver notifications. Use **Show Fluux** in the tray menu to restore the window, or **Quit** to exit. Disable the setting if you want closing the window to quit.
+
+Linux supports StatusNotifier trays and, when Fluux runs on X11 without a StatusNotifier watcher, XEmbed trays such as Polybar under i3. An XWayland-only tray cannot serve a native Wayland Fluux window. If no usable tray is detected or the availability check fails, closing the window quits Fluux instead of leaving it running invisibly.
+
+On macOS, closing the window keeps Fluux running. To quit, use **Fluux Messenger → Quit Fluux Messenger** or **⌘Q**.
 
 #### On the web version, why do I have to log in again after closing the tab?
 

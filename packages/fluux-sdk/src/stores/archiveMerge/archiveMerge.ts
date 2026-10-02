@@ -90,7 +90,7 @@ export interface DurableCommitPlan {
 /** The read tracker, as an archive merge uses it. */
 export interface MergeReadTracker<M> {
   noteUnreadInputsChanged(entityId: string): void
-  dropUnreadMessage(entityId: string, source: string | RoomMessage): boolean
+  dropUnreadMessage(entityId: string, message: M): boolean
   resumeDeferredRecounts(entityId: string): void
   captureUnreadInputs(entityId: string): () => boolean
   scheduleRecount(entityId: string): void
@@ -138,12 +138,8 @@ export interface ArchiveMergePorts<M extends Message | RoomMessage> {
   /** This store's per-entity archive-save chain. */
   saves: Pick<ArchiveSaveChain, 'chain' | 'has'>
   readTracker: MergeReadTracker<M>
-  /** How the read tracker's transient overlay names `message`. */
-  unreadKey(message: M): string | RoomMessage
   /** A remote read marker that no loaded slice could order yet (XEP-0490). */
   pendingRemoteMarker(entityId: string): string | undefined
-  /** Re-derives the entity's unread count from the archive. */
-  recountUnread(entityId: string): void
   coverageOf(entityId: string): CoverageRecord | undefined
 }
 
@@ -374,9 +370,9 @@ export function createArchiveMerge<M extends Message | RoomMessage>(
             ownArchiveWrite = ports.saveRows(durableRows)
             commitGate = ports.saves.chain(entityId, ownArchiveWrite)
             durable.commitWhenDurable(commitGate)
-            if (persistableNew.length > 0) {
-              searchIndex.indexMessages(persistableNew).catch((e) => console.warn('[searchIndex] indexMessages failed:', e))
-            }
+            void ownArchiveWrite.then((committed) => {
+              if (committed && stillCurrent()) return searchIndex.indexMessages(durableRows, {}, scopeAtMerge)
+            }).catch((e) => console.warn('[searchIndex] indexMessages failed:', e))
           } else if (durable.deferred) {
             // Nothing of our own to store, but earlier in-flight pages still gate this merge's
             // transitions: chain a no-op so they apply — or are dropped — under the same rules.
@@ -402,7 +398,7 @@ export function createArchiveMerge<M extends Message | RoomMessage>(
               if (!committed || !stillCurrent()) return
               // Stored rows are countable from the archive now, so they leave the overlay.
               for (const message of durableRows) {
-                ports.readTracker.dropUnreadMessage(entityId, ports.unreadKey(message))
+                ports.readTracker.dropUnreadMessage(entityId, message)
               }
               ports.readTracker.resumeDeferredRecounts(entityId)
             })
@@ -413,7 +409,9 @@ export function createArchiveMerge<M extends Message | RoomMessage>(
           const pending = ports.pendingRemoteMarker(entityId)
           if (pending) ports.readTracker.applyRemoteDisplayed(entityId, pending, merged)
 
-          if (recount) ports.recountUnread(entityId)
+          // A page can leave coverage unchanged while its query or durable write is still
+          // pending. Retain the request so those completions can wake it.
+          if (recount) ports.readTracker.scheduleRecount(entityId)
 
           if (!coverageChanged && !(direction === 'forward' && complete)) return
           let gate = commitGate

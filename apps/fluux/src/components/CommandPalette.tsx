@@ -261,6 +261,7 @@ function CommandPaletteContent({
   detectRenderLoop('CommandPalette')
   const { t } = useTranslation()
   const [query, setQuery] = useState('')
+  const { filterMode, searchQuery } = parseQuery(query)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const selectedIndexRef = useRef(0) // Ref for synchronous access in event handlers
   const inputRef = useRef<HTMLInputElement>(null)
@@ -285,9 +286,7 @@ function CommandPaletteContent({
   const connectionStatus = useConnectionStore((s) => s.status)
   const forceOffline = connectionStatus !== 'online'
   const { setActiveConversation } = useChatStore()
-  // The entity currently open in the main pane — never propose "go to where you
-  // already are". Read as narrow selectors (change only on navigation, which
-  // closes the palette anyway).
+  // Hide the open conversation from suggestions, but keep it searchable.
   const activeConversationId = useChatStore((s) => s.activeConversationId)
   const activeRoomJid = useRoomStore((s) => s.activeRoomJid)
   // Narrow read: only re-render on a density change. Drives the entity avatar
@@ -333,7 +332,7 @@ function CommandPaletteContent({
     // 1. Conversations (contacts with active chats, sorted by recency)
     for (const conv of conversations) {
       if (conv.type !== 'chat') continue
-      if (conv.id === activeConversationId) continue // don't propose the open conversation
+      if (conv.id === activeConversationId && !searchQuery) continue
       const contact = contacts.find((c) => c.jid === conv.id)
       const preview = conv.lastMessage ? formatLocalizedPreview(conv.lastMessage, t) : undefined
       items.push({
@@ -464,11 +463,10 @@ function CommandPaletteContent({
   })()
 
   // =============================================================================
-  // Filter and group items (combined into single memo for simplicity)
+  // Filter and group items
   // =============================================================================
 
-  const { flatItems, groupedItems, filterMode, isDefaultView } = (() => {
-    const { filterMode, searchQuery } = parseQuery(query)
+  const { flatItems, groupedItems, isDefaultView } = (() => {
     const allowedTypes = getTypesForMode(filterMode)
     const isDefaultView = !searchQuery && filterMode === 'all'
 
@@ -480,7 +478,6 @@ function CommandPaletteContent({
       // Filter mode without search: show all items of matching types
       grouped = groupItemsByType(allItems.filter((i) => allowedTypes.includes(i.type)), t)
     } else {
-      // Search mode: filter by type and query
       grouped = groupItemsByType(
         allItems
           .filter((i) => allowedTypes.includes(i.type))
@@ -513,7 +510,7 @@ function CommandPaletteContent({
 
     const flat = grouped.flatMap((g) => g.items)
 
-    return { flatItems: flat, groupedItems: grouped, filterMode, isDefaultView }
+    return { flatItems: flat, groupedItems: grouped, isDefaultView }
   })()
 
   // Clamp selected index to valid range
@@ -608,7 +605,7 @@ function CommandPaletteContent({
       onClose={onClose}
       align="top"
       width="max-w-lg"
-      panelClassName="overflow-hidden"
+      panelClassName="flex flex-col overflow-hidden"
       panelInClass="command-palette-in"
       focusRef={inputRef}
       closeOnEscape={false}
@@ -624,7 +621,7 @@ function CommandPaletteContent({
             on our `hsl()`-string accent token, so a plain CSS rule is used). The
             inner input carries `no-focus-ring` so the global 2px outline doesn't
             draw a second, tighter box around just the text field. */}
-        <div className="p-3 border-b border-fluux-hover">
+        <div className="shrink-0 p-3 border-b border-fluux-hover">
           <div className="command-search-field flex items-center gap-3 px-3 py-2 rounded-lg border border-fluux-hover bg-fluux-bg/40
             transition-[box-shadow,border-color] duration-150">
             <Search className="size-5 text-fluux-muted flex-shrink-0" />
@@ -643,7 +640,7 @@ function CommandPaletteContent({
         </div>
 
         {/* Results */}
-        <div ref={listRef} className="max-h-[60vh] overflow-y-auto py-2" onMouseMove={handleMouseMove}>
+        <div ref={listRef} className="min-h-0 max-h-[calc((100vh-var(--fluux-window-titlebar-height))*0.6)] overflow-y-auto py-2" onMouseMove={handleMouseMove}>
           {flatItems.length === 0 ? (
             <div className="px-4 py-8 text-center text-fluux-muted">
               {t('commandPalette.noResults')}
@@ -737,7 +734,7 @@ function CommandPaletteContent({
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-2 border-t border-fluux-hover text-xs text-fluux-muted">
+        <div className="shrink-0 px-4 py-2 border-t border-fluux-hover text-xs text-fluux-muted">
           <div className="flex items-center gap-3 mb-1.5">
             {filterMode === 'all' ? (
               <>

@@ -44,6 +44,8 @@
         "madeBy": "Creato da",
         "poweredBy": "Realizzato con",
         "errors": {
+            "discoveryFailed": "Il rilevamento del server {{domain}} non è riuscito. È stata tentata una connessione a {{target}} come alternativa.",
+            "discoveryFailedTcp": "Il rilevamento del server {{domain}} non è riuscito. È stata tentata una connessione TCP nativa a {{target}} come alternativa.",
             "tlsCertTitle": "Impossibile verificare il certificato di sicurezza del server",
             "tlsOtherTitle": "Connessione sicura non riuscita",
             "tlsOtherBody": "Impossibile stabilire la connessione cifrata con il server. La configurazione TLS del server potrebbe non essere supportata. Controlla l'indirizzo del server o contatta l'amministratore del server.",
@@ -72,7 +74,8 @@
         "joinRoom": "Entra nella stanza",
         "viewProfile": "Visualizza profilo",
         "resizeHint": "Trascina per ridimensionare, doppio clic per reimpostare",
-        "dismiss": "Ignora"
+        "dismiss": "Ignora",
+        "search": "Cerca"
     },
     "newMessage": {
         "title": "Nuovo messaggio",
@@ -758,6 +761,8 @@
         "webPush_disabled": "Disattivato, notifiche push disattivate",
         "webPushDisable": "Disattiva",
         "webPushReEnable": "Riattiva",
+        "pushStatus": "Notifiche push",
+        "push_failed": "Registrazione non riuscita, tocca per riprovare",
         "updates": "Aggiornamenti",
         "storage": {
             "title": "Archiviazione",
@@ -1305,6 +1310,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Richiede attenzione"
     },
+    "windowControls": {
+        "minimize": "Riduci a icona",
+        "maximize": "Ingrandisci",
+        "restore": "Ripristina"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Il nome visualizzato nell'elenco delle stanze e nell'intestazione.",
         "muc#roomconfig_roomdesc": "Una breve descrizione dello scopo della stanza.",
@@ -1461,5 +1471,32 @@
         "saved": "Salvato. Apri Fluux per scegliere una conversazione e inviare.",
         "importError": "Importazione non riuscita. Condividi un link o un file fino a 20 MB; sono consentiti 20 elementi.",
         "sent": "Messaggio inviato. Puoi eliminare questo elemento importato."
+    },
+    "search": {
+        "filter": {
+            "all": "Tutto",
+            "conversations": "Chat",
+            "rooms": "Stanze"
+        },
+        "placeholder": "Cerca messaggi…",
+        "scopeLabel": "Ricerca in {{name}}",
+        "clearScope": "Cerca in tutte le conversazioni",
+        "searching": "Ricerca in corso…",
+        "noResults": "Nessun messaggio trovato",
+        "searchServer": "Cerca nell'archivio del server",
+        "searchingServer": "Ricerca nell'archivio del server…",
+        "serverResults": "Archivio del server",
+        "loadMore": "Carica altri dal server",
+        "hint": "Digita per cercare in tutti i messaggi",
+        "contextView": "Risultato della ricerca",
+        "previewBanner": "Stai visualizzando l'anteprima di un risultato di ricerca",
+        "goToMessage": "Vai al messaggio",
+        "loadingContext": "Caricamento dei messaggi…",
+        "errors": {
+            "failed": "Ricerca non riuscita",
+            "archiveRooms": "Il server non supporta la ricerca nell'archivio delle stanze",
+            "archiveUnsupported": "Il server non supporta la ricerca nell'archivio. Prova a cercare all'interno di una conversazione.",
+            "serverFailed": "Ricerca sul server non riuscita"
+        }
     }
 }

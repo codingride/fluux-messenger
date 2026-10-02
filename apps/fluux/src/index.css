@@ -302,11 +302,9 @@
 
   /* Selection */
   --fluux-selection-bg: hsla(var(--fluux-accent-h), var(--fluux-accent-s), var(--fluux-accent-l), 0.25);
-  /* Extra fill laid over a quote/reply card when its message row is selected, to
-     keep the card distinct from the selection tint (issue #1008). Dark mode
-     needs none — the card's opaque --fluux-bg-secondary already contrasts with
-     the lighter selection tint; the .light override supplies the accent nudge
-     where the two would otherwise collide. */
+  /* See the bulk-copy quote/reply framing rules below for selection scope.
+     Dark mode needs no overlay: the card's opaque --fluux-bg-secondary already
+     contrasts with the lighter selection tint. */
   --fluux-quote-selected-overlay: transparent;
 
   /* Search highlight */
@@ -809,6 +807,21 @@ em-emoji-picker {
 .command-group-label { padding-block: 6px; }
 [data-density="compact"] .command-group-label { padding-block: 3px; }
 
+/* Row feedback follows the pointer independently of toolbar hover intent.
+ * Keep the capability query aligned with useHasHover so taps cannot latch it.
+ * Fades inherit the same highlight; their unhighlighted surfaces differ. */
+@media (hover: hover) and (pointer: fine) {
+  .message-hover-surface:not([data-hover-disabled]):hover {
+    --message-row-highlight: var(--fluux-message-hover);
+    background-color: var(--message-row-highlight);
+  }
+}
+
+.message-hover-surface:has([data-msg-chrome][data-msg-selected]) {
+  --message-row-highlight: var(--fluux-selection);
+  background-color: var(--message-row-highlight);
+}
+
 /* Message group-start spacing. The vertical gap before a new sender group;
  * tightens in compact. Comfortable keeps the current 16px. */
 .message-group-start { padding-top: 16px; }
@@ -1072,31 +1085,20 @@ html, body {
   opacity: 0.85;
 }
 
-/* Selection-aware quote/reply framing (issue #1008). When a message row is
-   selected it gets a translucent accent selection tint; in light themes that
-   lands almost exactly on the quote/reply card's own --fluux-bg-secondary,
-   erasing the card. Two cues restore the separation, both scoped to the
-   selected row via [data-msg-selected]:
-     1. A gentle accent fill nudge in light mode (transparent in dark, where no
-        collision exists) — the "differentiated fill" look.
-     2. An accent frame (inset ring) that stays high-contrast against both the
-        fill and the selection tint in every theme and both modes — the frame is
-        what guarantees the card is always readable as a distinct block.
-   The reply card exposes its sender colour through --fluux-quote-frame-color
-   (see MessageBubble); the blockquote uses the brand accent it already borders
-   with. MessageList also sets data-msg-selected on bulk-copy rows, so keyboard,
-   action-sheet, and copy-range selection share this exact treatment. */
-[data-msg-selected] .blockquote-decorated,
-[data-msg-selected] .reply-quote-card {
+/* Bulk-copy selection keeps quote/reply cards distinct from the range tint
+   (issue #1008). Keyboard selection only paints the row background; its content
+   and quote styling must remain identical to the unselected message. */
+.message-row[data-msg-selected] .blockquote-decorated,
+.message-row[data-msg-selected] .reply-quote-card {
   background-image: linear-gradient(
     var(--fluux-quote-selected-overlay),
     var(--fluux-quote-selected-overlay)
   );
 }
-[data-msg-selected] .blockquote-decorated {
+.message-row[data-msg-selected] .blockquote-decorated {
   box-shadow: inset 0 0 0 1px var(--fluux-brand);
 }
-[data-msg-selected] .reply-quote-card {
+.message-row[data-msg-selected] .reply-quote-card {
   box-shadow: inset 0 0 0 1px var(--fluux-quote-frame-color, var(--fluux-brand));
 }
 
@@ -1184,9 +1186,11 @@ html, body {
  * sit on a top row and the secondary controls (+ / lock / emoji) form a drawer
  * beneath it that is collapsed while idle and extends on focus. On wide widths
  * it is the single comfortable row. Container-query + :focus-within driven off
- * `.composer-card`; no JS. RTL mirrors automatically (areas follow the inline
- * axis). */
+ * `.composer-card`; --composer-drawer-collapsible exposes the active layout to
+ * MessageComposer's handleEmojiMouseDown focus guard. RTL mirrors automatically
+ * (areas follow the inline axis). */
 .composer-actions {
+  --composer-drawer-collapsible: 1;
   display: grid;
   align-items: center;
   grid-template-columns: auto 1fr auto;
@@ -1221,6 +1225,7 @@ html, body {
 
 @container (min-width: 420px) {
   .composer-actions {
+    --composer-drawer-collapsible: 0;
     grid-template-columns: auto auto 1fr auto auto;
     grid-template-areas: "add lock input emoji send";
   }
@@ -1232,6 +1237,39 @@ html, body {
     pointer-events: auto;
     visibility: visible;
     transition: max-height 160ms ease, opacity 160ms ease;
+  }
+}
+
+/* Compact touch composer: preserve the controls' 44px hit areas while trimming
+ * surrounding spacing. The form sits outside the card's query container, so
+ * its spacing follows viewport width; input/send spacing follows card width. */
+@media (hover: none), (pointer: coarse) {
+  @media (max-width: 419.98px) {
+    .composer-form {
+      padding-top: 0.25rem;
+    }
+    .composer-form.pb-safe {
+      padding-bottom: 0.5rem;
+    }
+    .composer-form.pb-safe-2 {
+      padding-bottom: 0.25rem;
+    }
+    @supports (padding-bottom: env(safe-area-inset-bottom)) {
+      .composer-form.pb-safe {
+        padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+      }
+      .composer-form.pb-safe-2 {
+        padding-bottom: calc(0.25rem + env(safe-area-inset-bottom));
+      }
+    }
+  }
+  @container (max-width: 419.98px) {
+    .composer-input-frame {
+      padding-block: 0.5rem;
+    }
+    .composer-send {
+      margin-block: 0;
+    }
   }
 }
 
@@ -1338,6 +1376,104 @@ input[type="range"]::-moz-range-thumb {
 [data-tauri-drag-region] {
   -webkit-app-region: drag;
   app-region: drag;
+}
+
+/* Frameless window (Windows): the top strip of the page is the title bar.
+   `data-window-chrome` is set once the window reports it has no native frame;
+   everything below is inert until then, and on every other platform. */
+:root {
+  --fluux-window-titlebar-height: 0px;
+}
+
+:root[data-window-chrome="custom"] {
+  --fluux-window-titlebar-height: 2.5rem;
+}
+
+/* WebView2 treats an `app-region: drag` box as the real caption: drag, snap,
+   double-click maximize, and the system menu on right-click. */
+:root[data-window-chrome="custom"] .window-drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+/* A drag box swallows every click inside its bounds, whatever is painted over
+   it, and since WebView2 152 its descendants inherit it
+   (MicrosoftEdge/WebView2Feedback#5696). Controls inside a drag region and
+   floating layers that can reach the top strip therefore opt out by name. The
+   control list is the one Tauri's own drag handler treats as clickable. */
+:root[data-window-chrome="custom"] :is(.window-drag-region, [data-tauri-drag-region]) :is(a, button, input, select, textarea, label, summary, [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="checkbox"], [role="radio"], [role="switch"], [role="option"]),
+:root[data-window-chrome="custom"] :is(.window-controls, [data-modal="true"], [role="dialog"], [role="menu"], [role="listbox"]) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* A full-window overlay stops below the title bar strip. Painted over it, the
+   overlay would put its own top controls under the window buttons and inside
+   the drag region. */
+.fixed-below-titlebar {
+  position: fixed;
+  inset: var(--fluux-window-titlebar-height) 0 0;
+}
+
+/* Painted over a transparent strip, so the fills derive from the glyph colour
+   rather than from a surface token that may match what is underneath. */
+.window-controls {
+  position: fixed;
+  top: 0;
+  inset-inline-end: 0;
+  /* Above every layer, the crash-recovery screen (9999) included. */
+  z-index: 10000;
+  display: flex;
+  height: var(--fluux-window-titlebar-height);
+  color: var(--fluux-text-normal);
+}
+
+.window-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+.window-controls[data-window-focused="false"] .window-control:not(:hover) {
+  opacity: 0.5;
+}
+
+.window-control:hover {
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.window-control:active {
+  background-color: color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.window-control:focus-visible {
+  outline: 2px solid var(--fluux-focus-ring);
+  outline-offset: -2px;
+}
+
+/* The close colours Windows itself uses. */
+.window-control-close:hover {
+  background-color: #c42b1c;
+  color: #fff;
+}
+
+.window-control-close:active {
+  background-color: #b3271a;
+  color: #fff;
+}
+
+@media (forced-colors: active) {
+  .window-control:hover,
+  .window-control:active {
+    forced-color-adjust: none;
+    background-color: Highlight;
+    color: HighlightText;
+  }
+
+  .window-control:focus-visible {
+    outline-color: Highlight;
+  }
 }
 
 /* Message highlight animation for reply navigation */

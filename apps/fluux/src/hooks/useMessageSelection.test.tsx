@@ -85,7 +85,7 @@ describe('useMessageSelection', () => {
     act(() => {
       result.current.handleKeyDown({ key: 'Enter', preventDefault: vi.fn() } as unknown as React.KeyboardEvent)
     })
-    expect(onEnterPressed).toHaveBeenCalledWith('shared')
+    expect(onEnterPressed).toHaveBeenCalledWith('shared:occupant-a')
   })
 
   it('clears a vanished selected row before navigating the remaining rows', () => {
@@ -216,6 +216,27 @@ describe('useMessageSelection', () => {
   // Keyboard selection moves the highlight without moving DOM focus, so the
   // hook scrolls the selected row into view explicitly.
   describe('scroll-into-view on selection', () => {
+    it('reports a completed keyboard scroll after scrolling the selected row', () => {
+      const events: string[] = []
+      const element = document.createElement('div')
+      element.dataset.messageId = 'msg-1'
+      element.scrollIntoView = () => { events.push('scroll') }
+      document.body.append(element)
+      const { result, unmount } = renderHook(() => useMessageSelection(createMessages(2), mockScrollRef, {
+        onKeyboardScrolled: () => { events.push('input-end') },
+      }))
+      act(() => result.current.handleKeyDown({
+        key: 'ArrowDown', altKey: false, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+      } as unknown as React.KeyboardEvent))
+      expect(events).toEqual(['scroll', 'input-end'])
+      act(() => result.current.clearSelection())
+      events.length = 0
+      act(() => result.current.setSelectedMessageId('msg-1'))
+      expect(events).toEqual(['scroll'])
+      unmount()
+      element.remove()
+    })
+
     it('scrolls the selected row into view', () => {
       const scrollIntoView = vi.fn()
       Element.prototype.scrollIntoView = scrollIntoView
@@ -318,7 +339,7 @@ describe('useMessageSelection', () => {
       })
     })
 
-    it('uses custom room handles for visibility and scrolling while Enter receives the message ID', () => {
+    it('uses custom room handles for visibility, scrolling and expansion', () => {
       const visible = { id: 'shared', occupantId: 'first', body: 'Visible' }
       const offscreen = { id: 'shared', occupantId: 'second', body: 'Offscreen' }
       const visibleElement = appendRow(visible, 20)
@@ -340,7 +361,7 @@ describe('useMessageSelection', () => {
       expect(result.current.selectedMessageId).toBe(messageRowId(offscreen))
       expect(offscreenElement.scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'nearest' })
       act(() => result.current.handleKeyDown(keyEvent('Enter')))
-      expect(onEnterPressed).toHaveBeenCalledExactlyOnceWith('shared')
+      expect(onEnterPressed).toHaveBeenCalledExactlyOnceWith(messageRowId(offscreen))
     })
   })
 

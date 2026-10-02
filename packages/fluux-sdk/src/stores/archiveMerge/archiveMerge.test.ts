@@ -26,10 +26,9 @@ describe.each<ArchiveMergeKind>(['chat', 'room'])('archive merge durable commit 
   let saveOutcome: boolean
   let chained: Array<Promise<boolean>>
   let savesPending: boolean
-  let dropped: Array<string | RoomMessage>
+  let dropped: AnyMessage[]
   let resumed: string[]
   let scheduled: string[]
-  let recounted: string[]
   let markerRetries: Array<{ stanzaId: string; merged: AnyMessage[] }>
   let pendingMarker: string | undefined
   let coverage: CoverageRecord | undefined
@@ -53,9 +52,7 @@ describe.each<ArchiveMergeKind>(['chat', 'room'])('archive merge durable commit 
       scheduleRecount: (id) => { scheduled.push(id) },
       applyRemoteDisplayed: (_id, stanzaId, merged) => { markerRetries.push({ stanzaId, merged }) },
     },
-    unreadKey: (message) => (kind === 'room' ? (message as RoomMessage) : message.id),
     pendingRemoteMarker: () => pendingMarker,
-    recountUnread: (id) => { recounted.push(id) },
     coverageOf: () => coverage,
   })
 
@@ -101,7 +98,6 @@ describe.each<ArchiveMergeKind>(['chat', 'room'])('archive merge durable commit 
     dropped = []
     resumed = []
     scheduled = []
-    recounted = []
     markerRetries = []
     pendingMarker = undefined
     coverage = undefined
@@ -279,9 +275,26 @@ describe.each<ArchiveMergeKind>(['chat', 'room'])('archive merge durable commit 
       await vi.waitFor(() => expect(applied).toHaveLength(1))
     })
 
-    it('indexes the rows it stored for search', () => {
+    it('indexes new and patched rows after storing them for search', async () => {
+      const patched = msg('patched', 2000, 'arch-patched')
+      run().storePage(facts({ patched: [patched] }))
+      expect(vi.mocked(searchIndex.indexMessages)).not.toHaveBeenCalled()
+      await Promise.all(chained)
+      expect(vi.mocked(searchIndex.indexMessages)).toHaveBeenCalledWith([msg('m1', 1000, 'arch-1'), patched], {}, 'me@example.com')
+    })
+
+    it('does not index rows whose cache write failed', async () => {
+      saveOutcome = false
       run().storePage(facts())
-      expect(vi.mocked(searchIndex.indexMessages)).toHaveBeenCalledWith([msg('m1', 1000, 'arch-1')])
+      await Promise.all(chained)
+      expect(vi.mocked(searchIndex.indexMessages)).not.toHaveBeenCalled()
+    })
+
+    it('does not index rows after their entity is replaced', async () => {
+      run().storePage(facts())
+      current = false
+      await Promise.all(chained)
+      expect(vi.mocked(searchIndex.indexMessages)).not.toHaveBeenCalled()
     })
   })
 
@@ -294,7 +307,7 @@ describe.each<ArchiveMergeKind>(['chat', 'room'])('archive merge durable commit 
       merge.settled({ merged, recount: false })
       await vi.waitFor(() => expect(resumed).toEqual([ENTITY]))
       // The rows are countable from the archive now, so they leave the transient overlay.
-      expect(dropped).toEqual([kind === 'room' ? merged[0] : 'm1'])
+      expect(dropped).toEqual([merged[0]])
     })
 
     it('keeps the rows in the overlay when the write failed', async () => {
@@ -325,11 +338,11 @@ describe.each<ArchiveMergeKind>(['chat', 'room'])('archive merge durable commit 
       expect(markerRetries).toEqual([{ stanzaId: 'arch-1', merged }])
     })
 
-    it('re-derives the unread count from the archive when the page asked for it', () => {
+    it('schedules an unread recount when the page asked for it', () => {
       const merge = make().begin(ENTITY, merged, PAGE, true, 'backward')
       merge.storePage(facts())
       merge.settled({ merged, recount: true })
-      expect(recounted).toEqual([ENTITY])
+      expect(scheduled).toEqual([ENTITY])
     })
 
     it('reports nothing and schedules nothing for a merge that never reached its rows', () => {
@@ -339,7 +352,7 @@ describe.each<ArchiveMergeKind>(['chat', 'room'])('archive merge durable commit 
       merge.settled({ merged, recount: false })
       expect(stored).toEqual([])
       expect(dropped).toEqual([])
-      expect(recounted).toEqual([])
+      expect(scheduled).toEqual([])
     })
   })
 })

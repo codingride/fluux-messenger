@@ -44,6 +44,8 @@
         "madeBy": "Erstellt von",
         "poweredBy": "Betrieben von",
         "errors": {
+            "discoveryFailed": "Die Serversuche für {{domain}} ist fehlgeschlagen. Stattdessen wurde {{target}} versucht.",
+            "discoveryFailedTcp": "Die Serversuche für {{domain}} ist fehlgeschlagen. Stattdessen wurde eine native TCP-Verbindung zu {{target}} versucht.",
             "tlsCertTitle": "Das Sicherheitszertifikat des Servers konnte nicht überprüft werden",
             "tlsOtherTitle": "Sichere Verbindung fehlgeschlagen",
             "tlsOtherBody": "Die verschlüsselte Verbindung zum Server konnte nicht hergestellt werden. Die TLS-Konfiguration des Servers wird möglicherweise nicht unterstützt. Prüfe die Serveradresse oder wende dich an den Serveradministrator.",
@@ -72,7 +74,8 @@
         "joinRoom": "Raum beitreten",
         "viewProfile": "Profil anzeigen",
         "resizeHint": "Ziehen zum Ändern der Größe, Doppelklick zum Zurücksetzen",
-        "dismiss": "Verwerfen"
+        "dismiss": "Verwerfen",
+        "search": "Suche"
     },
     "newMessage": {
         "title": "Neue Nachricht",
@@ -756,6 +759,8 @@
         "webPush_disabled": "Deaktiviert, Push-Benachrichtigungen aus",
         "webPushDisable": "Deaktivieren",
         "webPushReEnable": "Erneut aktivieren",
+        "pushStatus": "Push-Benachrichtigungen",
+        "push_failed": "Registrierung fehlgeschlagen, zum Wiederholen tippen",
         "updates": "Aktualisierungen",
         "storage": {
             "title": "Speicher",
@@ -1303,6 +1308,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Benötigt Aufmerksamkeit"
     },
+    "windowControls": {
+        "minimize": "Minimieren",
+        "maximize": "Maximieren",
+        "restore": "Wiederherstellen"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Der Anzeigename in der Raumliste und der Kopfzeile.",
         "muc#roomconfig_roomdesc": "Eine kurze Beschreibung des Raumzwecks.",
@@ -1459,5 +1469,32 @@
         "saved": "Gespeichert. Öffne Fluux, um eine Unterhaltung auszuwählen und zu senden.",
         "importError": "Import fehlgeschlagen. Teile einen Link oder eine Datei bis 20 MB; der Eingang fasst 20 Elemente.",
         "sent": "Nachricht gesendet. Du kannst diesen importierten Inhalt entfernen."
+    },
+    "search": {
+        "filter": {
+            "all": "Alle",
+            "conversations": "Chats",
+            "rooms": "Räume"
+        },
+        "placeholder": "Nachrichten durchsuchen…",
+        "scopeLabel": "Suche in {{name}}",
+        "clearScope": "Alle Unterhaltungen durchsuchen",
+        "searching": "Suche läuft…",
+        "noResults": "Keine Nachrichten gefunden",
+        "searchServer": "Serverarchiv durchsuchen",
+        "searchingServer": "Serverarchiv wird durchsucht…",
+        "serverResults": "Serverarchiv",
+        "loadMore": "Mehr vom Server laden",
+        "hint": "Tippen, um alle Nachrichten zu durchsuchen",
+        "contextView": "Suchergebnis",
+        "previewBanner": "Sie sehen eine Vorschau eines Suchergebnisses",
+        "goToMessage": "Zur Nachricht gehen",
+        "loadingContext": "Nachrichten werden geladen…",
+        "errors": {
+            "failed": "Suche fehlgeschlagen",
+            "archiveRooms": "Der Server unterstützt keine Archivsuche für Räume",
+            "archiveUnsupported": "Der Server unterstützt keine Archivsuche. Versuchen Sie, innerhalb einer Unterhaltung zu suchen.",
+            "serverFailed": "Serversuche fehlgeschlagen"
+        }
     }
 }

@@ -44,6 +44,8 @@
         "madeBy": "Vytvoril",
         "poweredBy": "Poháňané",
         "errors": {
+            "discoveryFailed": "Vyhľadanie servera {{domain}} zlyhalo. Namiesto toho sa vyskúšalo pripojenie k {{target}}.",
+            "discoveryFailedTcp": "Vyhľadanie servera {{domain}} zlyhalo. Namiesto toho sa vyskúšalo natívne pripojenie TCP k {{target}}.",
             "tlsCertTitle": "Nepodarilo sa overiť bezpečnostný certifikát servera",
             "tlsOtherTitle": "Bezpečné pripojenie zlyhalo",
             "tlsOtherBody": "Nepodarilo sa nadviazať šifrované pripojenie k serveru. Konfigurácia TLS servera nemusí byť podporovaná. Skontrolujte adresu servera alebo kontaktujte správcu servera.",
@@ -72,7 +74,8 @@
         "joinRoom": "Pripojiť sa k miestnosti",
         "viewProfile": "Zobraziť profil",
         "resizeHint": "Potiahnutím zmeníte veľkosť, dvojklikom obnovíte",
-        "dismiss": "Zamietnuť"
+        "dismiss": "Zamietnuť",
+        "search": "Hľadať"
     },
     "newMessage": {
         "title": "Nová správa",
@@ -759,6 +762,8 @@
         "webPush_disabled": "Deaktivované, push notifikácie vypnuté",
         "webPushDisable": "Deaktivovať",
         "webPushReEnable": "Znovu aktivovať",
+        "pushStatus": "Push notifikácie",
+        "push_failed": "Registrácia zlyhala, ťuknutím to skúste znova",
         "updates": "Aktualizácie",
         "storage": {
             "title": "Úložisko",
@@ -1306,6 +1311,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Vyžaduje pozornosť"
     },
+    "windowControls": {
+        "minimize": "Minimalizovať",
+        "maximize": "Maximalizovať",
+        "restore": "Obnoviť"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Zobrazovaný názov v zozname miestností a v hlavičke.",
         "muc#roomconfig_roomdesc": "Krátky popis účelu miestnosti.",
@@ -1462,5 +1472,32 @@
         "saved": "Uložené. Otvorte Fluux, vyberte konverzáciu a odošlite.",
         "importError": "Import zlyhal. Zdieľajte jeden odkaz alebo súbor do 20 MB; schránka pojme 20 položiek.",
         "sent": "Správa odoslaná. Túto importovanú položku môžete odstrániť."
+    },
+    "search": {
+        "filter": {
+            "all": "Všetko",
+            "conversations": "Chaty",
+            "rooms": "Miestnosti"
+        },
+        "placeholder": "Hľadať správy…",
+        "scopeLabel": "Hľadá sa v: {{name}}",
+        "clearScope": "Hľadať vo všetkých konverzáciách",
+        "searching": "Hľadá sa…",
+        "noResults": "Nenašli sa žiadne správy",
+        "searchServer": "Hľadať v archíve servera",
+        "searchingServer": "Hľadá sa v archíve servera…",
+        "serverResults": "Archív servera",
+        "loadMore": "Načítať viac zo servera",
+        "hint": "Zadajte text na hľadanie vo všetkých správach",
+        "contextView": "Výsledok hľadania",
+        "previewBanner": "Prezeráte si náhľad výsledku hľadania",
+        "goToMessage": "Prejsť na správu",
+        "loadingContext": "Načítavajú sa správy…",
+        "errors": {
+            "failed": "Hľadanie zlyhalo",
+            "archiveRooms": "Server nepodporuje hľadanie v archíve miestností",
+            "archiveUnsupported": "Server nepodporuje hľadanie v archíve. Skúste hľadať vo vnútri konverzácie.",
+            "serverFailed": "Hľadanie na serveri zlyhalo"
+        }
     }
 }

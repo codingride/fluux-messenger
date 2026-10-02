@@ -44,6 +44,8 @@
         "madeBy": "Magħmul minn",
         "poweredBy": "Ipprovdut minn",
         "errors": {
+            "discoveryFailed": "It-tfittxija tas-server għal {{domain}} falliet. Minflok ġiet ippruvata konnessjoni ma’ {{target}}.",
+            "discoveryFailedTcp": "It-tfittxija tas-server għal {{domain}} falliet. Minflok ġiet ippruvata konnessjoni TCP nattiva ma’ {{target}}.",
             "tlsCertTitle": "Ma setax jiġi vverifikat iċ-ċertifikat tas-sigurtà tal-server",
             "tlsOtherTitle": "Il-konnessjoni sigura falliet",
             "tlsOtherBody": "Ma setgħetx tiġi stabbilita konnessjoni kriptata mal-server. Il-konfigurazzjoni TLS tal-server jista' ma tkunx appoġġjata. Iċċekkja l-indirizz tal-server jew ikkuntattja l-amministratur tal-server.",
@@ -72,7 +74,8 @@
         "joinRoom": "Idħol f'kamra",
         "viewProfile": "Ara profil",
         "resizeHint": "Iġbed biex tibdel id-daqs, ikklikkja darbtejn biex tirrisettja",
-        "dismiss": "Warrab"
+        "dismiss": "Warrab",
+        "search": "Fittex"
     },
     "newMessage": {
         "title": "Messaġġ ġdid",
@@ -762,6 +765,8 @@
         "webPush_disabled": "Mitfi, notifiki push mitfija",
         "webPushDisable": "Itfi",
         "webPushReEnable": "Erġa' ixgħel",
+        "pushStatus": "Notifiki push",
+        "push_failed": "Ir-reġistrazzjoni falliet, agħfas biex terġa' tipprova",
         "updates": "Aġġornamenti",
         "storage": {
             "title": "Ħażna",
@@ -1309,6 +1314,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Jeħtieġ attenzjoni"
     },
+    "windowControls": {
+        "minimize": "Imminimizza",
+        "maximize": "Immassimizza",
+        "restore": "Irrestawra"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "L-isem tal-wiri muri fil-lista tal-kmamar u fl-header.",
         "muc#roomconfig_roomdesc": "Deskrizzjoni qasira tal-għan tal-kamra.",
@@ -1465,5 +1475,32 @@
         "saved": "Issejvjat. Iftaħ Fluux biex tagħżel konverżazzjoni u tibgħat.",
         "importError": "L-importazzjoni falliet. Aqsam link waħda jew fajl sa 20 MB; hemm post għal 20 oġġett.",
         "sent": "Messaġġ mibgħut. Tista’ tħassar dan l-oġġett importat."
+    },
+    "search": {
+        "filter": {
+            "all": "Kollox",
+            "conversations": "Chats",
+            "rooms": "Kmamar"
+        },
+        "placeholder": "Fittex messaġġi…",
+        "scopeLabel": "Qed tfittex f'{{name}}",
+        "clearScope": "Fittex fil-konversazzjonijiet kollha",
+        "searching": "Qed tfittex…",
+        "noResults": "Ma nstab l-ebda messaġġ",
+        "searchServer": "Fittex fl-arkivju tas-server",
+        "searchingServer": "Qed tfittex fl-arkivju tas-server…",
+        "serverResults": "Arkivju tas-server",
+        "loadMore": "Tella' aktar mis-server",
+        "hint": "Ittajpja biex tfittex fil-messaġġi kollha",
+        "contextView": "Riżultat tat-tiftix",
+        "previewBanner": "Qed tara previżjoni ta' riżultat tat-tiftix",
+        "goToMessage": "Mur għall-messaġġ",
+        "loadingContext": "Qed jitgħabbew il-messaġġi…",
+        "errors": {
+            "failed": "It-tiftix falla",
+            "archiveRooms": "Is-server ma jappoġġax it-tiftix fl-arkivju tal-kmamar",
+            "archiveUnsupported": "Is-server ma jappoġġax it-tiftix fl-arkivju. Ipprova fittex ġewwa konversazzjoni.",
+            "serverFailed": "It-tiftix fis-server falla"
+        }
     }
 }

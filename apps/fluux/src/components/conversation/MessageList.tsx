@@ -5,11 +5,11 @@
  * - Date separators between message groups
  * - New message markers for unread messages
  * - Scroll position preservation across conversation switches
- * - Auto-scroll on new messages (when at bottom)
  * - Lazy loading of older messages via scroll-to-top
  * - Typing indicator at bottom
  *
- * Scroll behavior is handled by useMessageListScroll hook.
+ * Scroll behavior is handled by useMessageListScroll under
+ * docs/2026-07-23-scroll-positioning-contract.md.
  */
 import { findMessageRowIndex, type MessageRowRef } from '@fluux/sdk'
 import { useMemo, useRef, useEffect, useLayoutEffect, useCallback, type ReactNode } from 'react'
@@ -65,7 +65,7 @@ import { VirtualRowSizeHistory } from './virtualRowGrowth'
 import { Loader2, ChevronUp, ChevronDown, MessageCircle } from 'lucide-react'
 import { Tooltip } from '../Tooltip'
 import { MessageSelectionBar } from './MessageSelectionBar'
-import { messageRowId, messageRowKey } from './messageRowIdentity'
+import { messageRowId, messageRowKey, messageRowKeys } from './messageRowIdentity'
 
 // ============================================================================
 // TYPES
@@ -170,6 +170,9 @@ export interface MessageListProps<T extends BaseMessage> {
   /** Disables all auto-scroll behaviors. Used by read-only preview views
    *  (search context, activity context) that manage their own scroll positioning. */
   staticMode?: boolean
+  /** Static previews may override row handles, React keys and deduplication.
+   *  The returned ID must be unique within the preview and match its scroll targets. */
+  getStaticMessageId?: (message: T) => string
   /** ID of the last message sent by the user (for send animation) */
   lastSentMessageId?: string | null
   /** Epoch ms of the newest message before a history gap (incomplete forward catch-up) */
@@ -194,6 +197,7 @@ export interface MessageListProps<T extends BaseMessage> {
 
 export function MessageList<T extends BaseMessage>({
   messages,
+  getStaticMessageId,
   conversationId,
   interiorPlacementVersion = 0,
   firstNewMessageRow,
@@ -272,19 +276,20 @@ export function MessageList<T extends BaseMessage>({
         return true
       }
       // The `!msg.id` guard above means the key is always present here.
-      const rowKey = messageRowKey(msg) ?? msg.id
+      const rowKey = staticMode && getStaticMessageId ? getStaticMessageId(msg) : messageRowKey(msg) ?? msg.id
       if (seen.has(rowKey)) {
         return false
       }
       seen.add(rowKey)
       return true
     })
-  }, [messages])
+  }, [messages, staticMode, getStaticMessageId])
 
   // Group messages by date for rendering with separators. Memoized so the virtualizer
   // (and the legacy map) receive a stable array when messages are unchanged — an unstable
   // ref here amplifies the @tanstack measure-settling into a render burst.
   const groupedMessages = useMemo(() => groupMessagesByDate(deduplicatedMessages), [deduplicatedMessages])
+  const rowKeys = useMemo(() => messageRowKeys(deduplicatedMessages), [deduplicatedMessages])
 
   // Compute derived values for scroll hook
   const firstMessageId = deduplicatedMessages[0]
@@ -355,15 +360,20 @@ export function MessageList<T extends BaseMessage>({
         ? buildMessageListItems(groupedMessages, {
             firstNewRowId,
             showAvatar: shouldShowAvatar,
+            rowKeys,
             showHeader,
             showFooter,
           })
         : { items: [] as RenderItem<T>[], indexById: new Map<string, number>() },
-    [virtualized, hasContent, groupedMessages, firstNewRowId, showHeader, showFooter],
+    [virtualized, hasContent, groupedMessages, firstNewRowId, rowKeys, showHeader, showFooter],
   )
-  // Sample live row metrics for the per-item height estimator. Returns a ref (no re-render);
-  // falls back to ROW_METRICS_FALLBACK under jsdom / before any rows are mounted.
-  const rowMetricsRef = useRowMetrics(scrollContainerRef)
+  // The first calibration corrects an unread-divider landing written from fallback estimates, so
+  // its spacer commits before the divider is re-asserted. Later ones are batched: a synchronous
+  // re-render re-windows the list, and the rows it mounts queue the next sample.
+  const { metricsRef: rowMetricsRef, sample: sampleRowMetrics } = useRowMetrics(scrollContainerRef, first => {
+    virtualizer.refreshEstimates?.(first)
+    if (first) reassertUnreadMarker()
+  })
 
   // --------------------------------------------------------------------------
   // PERSISTENT HEIGHT CACHE (virtualized path only)
@@ -494,7 +504,7 @@ export function MessageList<T extends BaseMessage>({
     [virtualized],
   )
 
-  const virtualizer = useTanstackMessageVirtualizer({ items: virtualItems, indexById, scrollRef: scrollContainerRef, estimateSize, initialMeasurements, onMeasured })
+  const virtualizer = useTanstackMessageVirtualizer({ items: virtualItems, indexById, scrollRef: scrollContainerRef, estimateSize, sampleEstimateMetrics: sampleRowMetrics, initialMeasurements, onMeasured })
   const activeVirtualizer = virtualized ? virtualizer : undefined
 
   // Settled-height snapshot on unmount (conversation switch). @tanstack measures each row via a
@@ -601,6 +611,8 @@ export function MessageList<T extends BaseMessage>({
     showScrollToBottom,
     markerAboveViewport,
     scrollToMarker,
+    observeKeyboardNavigation,
+    reassertUnreadMarker,
   } = useMessageListScroll({
     conversationId,
     messageCount: deduplicatedMessages.length,
@@ -647,12 +659,13 @@ export function MessageList<T extends BaseMessage>({
     const controller: ActiveMessageListController = {
       requestMessageTarget,
       scrollToBottom,
+      observeKeyboardNavigation,
     }
     setActiveMessageListController(controller)
     return () => {
       if (getActiveMessageListController() === controller) setActiveMessageListController(null)
     }
-  }, [requestMessageTarget, scrollToBottom, staticMode])
+  }, [requestMessageTarget, scrollToBottom, observeKeyboardNavigation, staticMode])
 
   // Expose the full load-earlier trigger (saves anchor + calls onScrollToTop) so
   // tests can fire it without scrolling to 0, which would change findAnchorElement's
@@ -776,9 +789,7 @@ export function MessageList<T extends BaseMessage>({
             data-message-row-alias={msg.localRowRef && messageRowId(msg.localRowRef)}
             data-stanza-id={msg.stanzaId}
             data-origin-id={msg.originId}
-            // Bulk-copy selection lives on the virtualized row, outside
-            // MessageBubble. Share the same semantic marker as keyboard/action
-            // selection so nested quote/reply cards receive identical framing.
+            // Bulk-copy selection lives on the outer row and frames quote/reply cards.
             data-msg-selected={copySelectedIds.has(rowId) ? '' : undefined}
             style={msg.id === lastSentMessageId ? { animation: 'message-send var(--fluux-duration-slow) var(--fluux-ease-standard)' } : undefined}
           >
@@ -925,7 +936,7 @@ export function MessageList<T extends BaseMessage>({
                 <DateSeparator date={group.date} />
               </div>
               {group.messages.map((msg, idx) => {
-                const rowId = messageRowId(msg) ?? msg.id
+                const rowId = staticMode && getStaticMessageId ? getStaticMessageId(msg) : messageRowId(msg) ?? msg.id
                 const showNewMarker = firstNewRowId === rowId
 
                 // Show gap marker at the boundary where the forward catch-up stopped.
@@ -943,7 +954,7 @@ export function MessageList<T extends BaseMessage>({
                 // `key={undefined}` counts as a MISSING key for React (it warns
                 // and falls back to positional reconciliation), so an id-less
                 // message needs another stable identifier.
-                const rowKey = messageRowKey(msg) || msg.stanzaId || msg.originId || `${group.date}-pos-${idx}`
+                const rowKey = staticMode && getStaticMessageId ? rowId : rowKeys.get(msg) || msg.stanzaId || msg.originId || `${group.date}-pos-${idx}`
 
                 return (
                   <div

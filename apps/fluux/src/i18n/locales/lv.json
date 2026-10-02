@@ -44,6 +44,8 @@
         "madeBy": "Izveidoja",
         "poweredBy": "Darbina",
         "errors": {
+            "discoveryFailed": "Neizdevās atrast serveri domēnam {{domain}}. Tā vietā tika mēģināts savienoties ar {{target}}.",
+            "discoveryFailedTcp": "Neizdevās atrast serveri domēnam {{domain}}. Tā vietā tika mēģināts tiešs TCP savienojums ar {{target}}.",
             "tlsCertTitle": "Neizdevās pārbaudīt servera drošības sertifikātu",
             "tlsOtherTitle": "Drošais savienojums neizdevās",
             "tlsOtherBody": "Neizdevās izveidot šifrētu savienojumu ar serveri. Servera TLS konfigurācija var nebūt atbalstīta. Pārbaudiet servera adresi vai sazinieties ar servera administratoru.",
@@ -72,7 +74,8 @@
         "joinRoom": "Pievienoties istabai",
         "viewProfile": "Skatīt profilu",
         "resizeHint": "Velciet, lai mainītu izmēru, dubultklikšķis, lai atiestatītu",
-        "dismiss": "Noraidīt"
+        "dismiss": "Noraidīt",
+        "search": "Meklēt"
     },
     "newMessage": {
         "title": "Jauna ziņa",
@@ -757,6 +760,8 @@
         "webPush_disabled": "Atspējots, push paziņojumi izslēgti",
         "webPushDisable": "Atspējot",
         "webPushReEnable": "Iespējot atkārtoti",
+        "pushStatus": "Push paziņojumi",
+        "push_failed": "Reģistrācija neizdevās, pieskarieties, lai mēģinātu vēlreiz",
         "updates": "Atjauninājumi",
         "storage": {
             "title": "Krātuve",
@@ -1304,6 +1309,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Nepieciešama uzmanība"
     },
+    "windowControls": {
+        "minimize": "Minimizēt",
+        "maximize": "Maksimizēt",
+        "restore": "Atjaunot"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Attēlojamais nosaukums istabu sarakstā un galvenē.",
         "muc#roomconfig_roomdesc": "Īss istabas mērķa apraksts.",
@@ -1460,5 +1470,32 @@
         "saved": "Saglabāts. Atveriet Fluux, lai izvēlētos sarunu un nosūtītu.",
         "importError": "Neizdevās importēt. Kopīgojiet vienu saiti vai failu līdz 20 MB; var glabāt 20 vienumus.",
         "sent": "Ziņojums nosūtīts. Varat dzēst šo importēto vienumu."
+    },
+    "search": {
+        "filter": {
+            "all": "Viss",
+            "conversations": "Tērzēšanas",
+            "rooms": "Istabas"
+        },
+        "placeholder": "Meklēt ziņas…",
+        "scopeLabel": "Meklē: {{name}}",
+        "clearScope": "Meklēt visās sarunās",
+        "searching": "Meklē…",
+        "noResults": "Ziņas nav atrastas",
+        "searchServer": "Meklēt servera arhīvā",
+        "searchingServer": "Meklē servera arhīvā…",
+        "serverResults": "Servera arhīvs",
+        "loadMore": "Ielādēt vairāk no servera",
+        "hint": "Ievadiet tekstu, lai meklētu visās ziņās",
+        "contextView": "Meklēšanas rezultāts",
+        "previewBanner": "Jūs skatāt meklēšanas rezultāta priekšskatījumu",
+        "goToMessage": "Doties uz ziņu",
+        "loadingContext": "Ielādē ziņas…",
+        "errors": {
+            "failed": "Meklēšana neizdevās",
+            "archiveRooms": "Serveris neatbalsta istabu arhīva meklēšanu",
+            "archiveUnsupported": "Serveris neatbalsta arhīva meklēšanu. Mēģiniet meklēt sarunas iekšienē.",
+            "serverFailed": "Meklēšana serverī neizdevās"
+        }
     }
 }

@@ -158,8 +158,7 @@ fn apply_loopback_proxy_bypass(window: &tauri::WebviewWindow) {
                     default_proxy.as_deref(),
                     &["localhost", "127.0.0.1", "::1"],
                 );
-                manager
-                    .set_network_proxy_settings(NetworkProxyMode::Custom, Some(&mut settings));
+                manager.set_network_proxy_settings(NetworkProxyMode::Custom, Some(&mut settings));
                 tracing::info!(
                     default_proxy = default_proxy.as_deref().unwrap_or("(direct)"),
                     "Applied loopback proxy bypass to WebView website data manager"
@@ -202,15 +201,16 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener::OpenerExt;
 
 mod download;
+mod identity_migration;
 mod invoke_headers;
-mod tls;
-mod upload;
-mod xmpp_proxy;
+mod mcp;
+mod notifications;
 mod openpgp;
 mod openpgp_backup;
 mod openpgp_storage;
-mod notifications;
-mod mcp;
+mod tls;
+mod upload;
+mod xmpp_proxy;
 
 // Runtime deep-link registration is only required for Linux development and
 // portable distributions; package-managed installs export a canonical desktop
@@ -396,8 +396,96 @@ fn get_idle_time() -> Result<u64, String> {
     idle::get_idle_seconds()
 }
 
-// Keyring service name for storing credentials
+// Keyring service name for storing credentials. It predates the
+// `net.processone` identifier and stays as is: existing items are looked up
+// by service name.
 const KEYRING_SERVICE: &str = "com.processone.fluux";
+
+// Shared by every build identity, so a development build logs next to the
+// release one. `apps/fluux/src/anomaly/sinks/tauri.ts` reads the same path.
+const LOG_DIR_NAME: &str = "net.processone.fluux";
+
+fn log_identity_migration(report: &identity_migration::DirsReport) {
+    if report.already_done {
+        return;
+    }
+    for dir in &report.moved {
+        tracing::info!("Identity migration: moved data to {}", dir.display());
+    }
+    for dir in &report.set_aside {
+        tracing::warn!("Identity migration: kept previous {}", dir.display());
+    }
+    for error in &report.errors {
+        tracing::error!("Identity migration: {error}; retrying on next launch");
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct KeyringStore;
+
+#[cfg(target_os = "macos")]
+impl identity_migration::SecretStore for KeyringStore {
+    fn get(&self, account: &str) -> Result<Option<String>, String> {
+        match Entry::new(KEYRING_SERVICE, account).and_then(|entry| entry.get_password()) {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn delete(&self, account: &str) -> Result<(), String> {
+        match Entry::new(KEYRING_SERVICE, account).and_then(|entry| entry.delete_credential()) {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn set(&self, account: &str, secret: &str) -> Result<(), String> {
+        Entry::new(KEYRING_SERVICE, account)
+            .and_then(|entry| entry.set_password(secret))
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Runs once per identity, before the window opens, so the keychain prompts
+/// for items created under the legacy identifier come up together instead of
+/// interrupting the login flow. See [`identity_migration::reown_secrets`].
+#[cfg(target_os = "macos")]
+fn reown_legacy_keychain_items(identifier: &str) {
+    use identity_migration::{reown_secrets, SecretStore, KEYCHAIN_MARKER};
+
+    if identity_migration::legacy_identifier(identifier).is_none() {
+        return;
+    }
+    let Some(marker_dir) = identity_migration::marker_dir(identifier) else {
+        return;
+    };
+    if marker_dir.join(KEYCHAIN_MARKER).exists() {
+        return;
+    }
+
+    let store = KeyringStore;
+    let fixed = ["last_user".to_string(), MCP_TOKEN_KEYRING_USER.to_string()];
+    let result = reown_secrets(&store, &fixed).and_then(|count| {
+        let Some(jid) = store.get("last_user")? else {
+            return Ok(count);
+        };
+        let per_user = [jid.clone(), openpgp_storage::keyring_account(&jid)];
+        Ok(count + reown_secrets(&store, &per_user)?)
+    });
+
+    match result {
+        Ok(count) => {
+            tracing::info!("Identity migration: re-owned {count} keychain item(s)");
+            if let Err(e) = identity_migration::write_marker(&marker_dir, KEYCHAIN_MARKER, "") {
+                tracing::error!("Identity migration: could not write keychain marker: {e}");
+            }
+        }
+        Err(e) => tracing::warn!(
+            "Identity migration: keychain items not re-owned ({e}); retrying on next launch"
+        ),
+    }
+}
 
 /// Credentials stored in the OS keychain
 #[derive(Serialize, Deserialize)]
@@ -646,7 +734,10 @@ async fn mcp_start_server(
     preferred_port: Option<u16>,
 ) -> Result<mcp::server::McpServerInfo, String> {
     let token = mcp_load_or_create_token(false).await?;
-    let executor = Arc::new(mcp::bridge::TauriBridgeExecutor::new(app, pending.inner().clone()));
+    let executor = Arc::new(mcp::bridge::TauriBridgeExecutor::new(
+        app,
+        pending.inner().clone(),
+    ));
     mcp::server::start(executor, preferred_port, token).await
 }
 
@@ -659,7 +750,10 @@ async fn mcp_reset_token(
     preferred_port: Option<u16>,
 ) -> Result<mcp::server::McpServerInfo, String> {
     let token = mcp_load_or_create_token(true).await?;
-    let executor = Arc::new(mcp::bridge::TauriBridgeExecutor::new(app, pending.inner().clone()));
+    let executor = Arc::new(mcp::bridge::TauriBridgeExecutor::new(
+        app,
+        pending.inner().clone(),
+    ));
     mcp::server::start(executor, preferred_port, token).await
 }
 
@@ -1078,10 +1172,8 @@ mod macos {
 
                     // Also emit immediately - if app is in foreground, JS will handle it
                     // and the pending wake will be cleared when activation fires
-                    let _ = wake_handle.emit(
-                        "system-did-wake",
-                        WakeEventPayload { display_active },
-                    );
+                    let _ =
+                        wake_handle.emit("system-did-wake", WakeEventPayload { display_active });
                 }),
             );
         }
@@ -1220,7 +1312,7 @@ fn tray_available(app: &tauri::AppHandle) -> bool {
     let built = app.tray_by_id(MAIN_TRAY_ID).is_some();
     #[cfg(target_os = "linux")]
     {
-        built && linux_tray::status_notifier_host_registered()
+        built && app.state::<linux_tray::TrayHostProbe>().registered()
     }
     #[cfg(target_os = "windows")]
     {
@@ -1332,6 +1424,12 @@ fn main() {
     // macOS/Windows this is the earliest hook before the webview is created.
     ensure_loopback_no_proxy();
 
+    let context = tauri::generate_context!();
+    let identifier = context.config().identifier.clone();
+    // Must run before anything opens the app's directories: the log file
+    // below, the plugins, and the webview's storage.
+    let identity_migration = identity_migration::migrate_platform_dirs(&identifier);
+
     // Parse CLI flags early, before tracing subscriber init
     let args: Vec<String> = std::env::args().collect();
     let clear_storage = args
@@ -1380,13 +1478,15 @@ fn main() {
         eprintln!("  -h, --help            Show this help message");
         eprintln!();
         eprintln!("Logs are always written to a daily-rotating file in:");
-        eprintln!("  macOS:   ~/Library/Logs/com.processone.fluux/");
-        eprintln!("  Linux:   ~/.local/share/com.processone.fluux/logs/");
-        eprintln!("  Windows: %APPDATA%\\com.processone.fluux\\logs\\");
+        eprintln!("  macOS:   ~/Library/Logs/{LOG_DIR_NAME}/");
+        eprintln!("  Linux:   ~/.local/share/{LOG_DIR_NAME}/logs/");
+        eprintln!("  Windows: %LOCALAPPDATA%\\{LOG_DIR_NAME}\\logs\\");
         eprintln!();
         eprintln!("Environment variables:");
         eprintln!("  RUST_LOG              Override log filter (e.g. RUST_LOG=debug)");
-        eprintln!("  FLUUX_DISABLE_GPU     Disable compositing mode (Linux, for NVIDIA EGL issues)");
+        eprintln!(
+            "  FLUUX_DISABLE_GPU     Disable compositing mode (Linux, for NVIDIA EGL issues)"
+        );
         std::process::exit(0);
     }
 
@@ -1398,15 +1498,15 @@ fn main() {
             .unwrap_or_else(|| std::path::PathBuf::from("."))
     } else {
         // Platform log directory:
-        //   macOS:   ~/Library/Logs/com.processone.fluux/
-        //   Linux:   ~/.local/share/com.processone.fluux/logs/  (or $XDG_DATA_HOME)
-        //   Windows: %APPDATA%\com.processone.fluux\logs\
+        //   macOS:   ~/Library/Logs/net.processone.fluux/
+        //   Linux:   ~/.local/share/net.processone.fluux/logs/  (or $XDG_DATA_HOME)
+        //   Windows: %LOCALAPPDATA%\net.processone.fluux\logs\
         let base = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let dir = base.join("com.processone.fluux").join("logs");
+        let dir = base.join(LOG_DIR_NAME).join("logs");
 
         #[cfg(target_os = "macos")]
         let dir = dirs::home_dir()
-            .map(|h| h.join("Library").join("Logs").join("com.processone.fluux"))
+            .map(|h| h.join("Library").join("Logs").join(LOG_DIR_NAME))
             .unwrap_or(dir);
 
         dir
@@ -1492,6 +1592,12 @@ fn main() {
         eprintln!("Log file: {}", log_dir.display());
     }
 
+    if let Some(report) = &identity_migration {
+        log_identity_migration(report);
+    }
+    #[cfg(target_os = "macos")]
+    reown_legacy_keychain_items(&identifier);
+
     // Print startup diagnostics when verbose or logging to file
     if verbose || log_file_path.is_some() {
         print_startup_diagnostics();
@@ -1533,7 +1639,11 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_window_state::Builder::new().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(window_behavior::persisted_window_state())
+                .build(),
+        )
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_http::init())
@@ -1940,6 +2050,18 @@ fn main() {
             // close handler below quits gracefully instead. See linux_tray.rs.
             #[cfg(target_os = "linux")]
             {
+                use webkit2gtk::glib::{prelude::ObjectExt, Object};
+
+                let main_window = app.get_webview_window("main").unwrap();
+                // GtkWindow:screen identifies the actual backend on the main
+                // thread; DISPLAY may refer only to XWayland in a Wayland app.
+                let x11 = main_window
+                    .gtk_window()
+                    .ok()
+                    .and_then(|window| window.property::<Option<Object>>("screen"))
+                    .is_some_and(|screen| screen.type_().name() == "GdkX11Screen");
+                app.manage(linux_tray::TrayHostProbe::new(x11));
+
                 let show_item = MenuItem::with_id(app, "show", "Show Fluux", true, None::<&str>)?;
                 let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
                 let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
@@ -2100,7 +2222,6 @@ fn main() {
                 // Keep the icon alive for the app's lifetime when it built.
                 let _tray = tray.ok();
 
-                let main_window = app.get_webview_window("main").unwrap();
                 let window = main_window.clone();
                 let last_window_state_for_close = last_window_state.clone();
                 let window_hidden_to_tray_for_close = window_hidden_to_tray.clone();
@@ -2117,7 +2238,9 @@ fn main() {
                         let keep_in_tray = app_handle_for_close
                             .state::<window_behavior::WindowBehavior>()
                             .keep_in_tray();
-                        let host_registered = linux_tray::status_notifier_host_registered();
+                        let host_registered = app_handle_for_close
+                            .state::<linux_tray::TrayHostProbe>()
+                            .registered();
                         if !linux_tray::should_hide_to_tray(
                             keep_in_tray,
                             tray_built,
@@ -2318,7 +2441,7 @@ fn main() {
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(move |_app_handle, _event| {

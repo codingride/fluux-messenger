@@ -1,6 +1,7 @@
+import type { DiscoveryFailure } from '../core/types/connection'
 import { createStore } from 'zustand/vanilla'
 import { subscribeWithSelector } from 'zustand/middleware'
-import type { ConnectionStatus, ConnectionMethod, PresenceShow, ServerInfo, ResourcePresence, HttpUploadService, WebPushService, WebPushStatus, ProfileDetails } from '../core/types'
+import type { ConnectionStatus, ConnectionMethod, PresenceShow, ServerInfo, ResourcePresence, HttpUploadService, WebPushService, WebPushStatus, PushStatus, ProfileDetails } from '../core/types'
 
 // Re-export for convenience
 export type { ServerInfo, ServerIdentity, HttpUploadService, WebPushService, WebPushStatus } from '../core/types'
@@ -51,6 +52,7 @@ interface ConnectionState {
   isVerifying: boolean
   jid: string | null
   error: string | null
+  discoveryFailure: DiscoveryFailure | null
   reconnectAttempt: number
   reconnectTargetTime: number | null
   serverInfo: ServerInfo | null
@@ -71,6 +73,8 @@ interface ConnectionState {
   webPushServices: WebPushService[]
   /** Whether push notifications are enabled (persisted in localStorage) */
   webPushEnabled: boolean
+  // XEP-0357 push through an app server
+  pushStatus: PushStatus
   // MAM fulltext search capability
   mamFulltextSearch: boolean
   // Window visibility - used to determine if user can see new messages
@@ -80,6 +84,7 @@ interface ConnectionState {
   setStatus: (status: ConnectionStatus) => void
   setIsVerifying: (isVerifying: boolean) => void
   setJid: (jid: string | null) => void
+  setDiscoveryFailure: (failure: DiscoveryFailure | null) => void
   setError: (error: string | null) => void
   setReconnectState: (attempt: number, reconnectTargetTime: number | null) => void
   setServerInfo: (info: ServerInfo | null) => void
@@ -99,6 +104,7 @@ interface ConnectionState {
   setWebPushStatus: (status: WebPushStatus) => void
   setWebPushServices: (services: WebPushService[]) => void
   setWebPushServicesAndStatus: (services: WebPushService[], status: WebPushStatus) => void
+  setPushStatus: (status: PushStatus) => void
   setWebPushEnabled: (enabled: boolean) => void
   // MAM fulltext search capability
   setMAMFulltextSearch: (supported: boolean) => void
@@ -112,6 +118,7 @@ const initialState = {
   isVerifying: false,
   jid: null,
   error: null,
+  discoveryFailure: null as DiscoveryFailure | null,
   reconnectAttempt: 0,
   reconnectTargetTime: null,
   serverInfo: null as ServerInfo | null,
@@ -126,6 +133,7 @@ const initialState = {
   httpUploadService: null as HttpUploadService | null,
   webPushStatus: 'unavailable' as WebPushStatus,
   webPushServices: [] as WebPushService[],
+  pushStatus: 'unknown' as PushStatus,
   webPushEnabled: (() => {
     try {
       const stored = localStorage.getItem('fluux-webpush-enabled')
@@ -143,6 +151,7 @@ export const connectionStore = createStore<ConnectionState>()(
   setStatus: (status) => set({ status }),
   setIsVerifying: (isVerifying) => set({ isVerifying }),
   setJid: (jid) => set({ jid }),
+  setDiscoveryFailure: (discoveryFailure) => set({ discoveryFailure }),
   setError: (error) => set({ error }),
   setReconnectState: (attempt, reconnectTargetTime) => set({ reconnectAttempt: attempt, reconnectTargetTime }),
   setServerInfo: (info) => set({ serverInfo: info }),
@@ -183,6 +192,7 @@ export const connectionStore = createStore<ConnectionState>()(
   setWebPushStatus: (status) => set({ webPushStatus: status }),
   setWebPushServices: (services) => set({ webPushServices: services }),
   setWebPushServicesAndStatus: (services, status) => set({ webPushServices: services, webPushStatus: status }),
+  setPushStatus: (status) => set({ pushStatus: status }),
   setWebPushEnabled: (enabled) => {
     try { localStorage.setItem('fluux-webpush-enabled', String(enabled)) } catch { /* ignore storage errors */ }
     set({ webPushEnabled: enabled })

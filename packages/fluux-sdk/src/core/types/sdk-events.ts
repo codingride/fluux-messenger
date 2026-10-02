@@ -1,3 +1,5 @@
+import type { ChatMessageTarget } from './chat'
+import type { DiscoveryFailure } from './connection'
 import type { MessageActor } from '../../utils/messageIdentity'
 /**
  * Comprehensive SDK event types for event-based decoupling.
@@ -18,6 +20,7 @@ import type { RoomJoinReason } from '../errors'
 import type { ServerInfo } from './discovery'
 import type { HttpUploadService } from './upload'
 import type { WebPushService, WebPushStatus } from './webpush'
+import type { PushStatus } from './push'
 import type { AdminCommand, AdminSession, ServerStats } from './admin'
 import type { PageInfo } from './pagination'
 import type { HistoryQueryDirection } from './pagination'
@@ -33,6 +36,7 @@ export interface ConnectionEvents {
   'connection:status': {
     status: 'connecting' | 'online' | 'offline' | 'error' | 'reconnecting'
     error?: string
+    discoveryFailure?: DiscoveryFailure | null
   }
 
   /** Successfully authenticated */
@@ -101,6 +105,11 @@ export interface ConnectionEvents {
   'connection:webpush-status': {
     status: WebPushStatus
   }
+
+  /** Push through an app server (XEP-0357) status changed */
+  'connection:push-status': {
+    status: PushStatus
+  }
 }
 
 // ============================================================================
@@ -136,6 +145,7 @@ export interface ChatEvents {
   'chat:reactions': {
     conversationId: string
     messageId: string
+    target?: Exclude<ChatMessageTarget, string>
     reactorJid: string
     emojis: string[]
     /** true = live delivery or own-echo; false = MAM history replay */
@@ -148,6 +158,7 @@ export interface ChatEvents {
   'chat:message-updated': {
     conversationId: string
     messageId: string
+    target?: Exclude<ChatMessageTarget, string>
     // Partial<StoredMessage>, not Partial<Message>: a correction update carries
     // internal impl-state (correctionStanzaIds) alongside the public fields.
     correctionActor?: MessageActor

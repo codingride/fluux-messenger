@@ -14,7 +14,7 @@ import { useConnectionActions } from './useConnectionActions'
  *
  * **Performance:** `useConnection()` subscribes to the full connection store
  * (~16 fields). Components that only need the connection lifecycle should
- * prefer `useConnectionStatus()` (status/jid/error) and `useConnectionActions()`
+ * prefer `useConnectionStatus()` and `useConnectionActions()`
  * (connect/disconnect/...) to avoid re-rendering on unrelated field changes
  * such as `connectionMethod`, `serverInfo`, or own-profile updates.
  *
@@ -113,6 +113,8 @@ export function useConnection() {
   // Web Push (p1:push:webpush)
   const webPushStatus = useConnectionStore((s) => s.webPushStatus)
   const webPushEnabled = useConnectionStore((s) => s.webPushEnabled)
+  // Push through an app server (XEP-0357)
+  const pushStatus = useConnectionStore((s) => s.pushStatus)
 
   // Connection actions (no store subscriptions of their own)
   const actions = useConnectionActions()
@@ -147,6 +149,8 @@ export function useConnection() {
       // Web Push (p1:push:webpush)
       webPushStatus,
       webPushEnabled,
+      // Push through an app server (XEP-0357)
+      pushStatus,
 
       // Computed
       isConnected: status === 'online',
@@ -174,6 +178,7 @@ export function useConnection() {
       httpUploadService,
       webPushStatus,
       webPushEnabled,
+      pushStatus,
       supportsPasswordChange,
       actions,
     ]

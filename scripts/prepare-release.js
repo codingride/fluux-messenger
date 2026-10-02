@@ -70,6 +70,11 @@ const changelogEntries = parseChangelogTs(
   fs.readFileSync(path.join(ROOT, CHANGELOG_TS), 'utf-8'),
 )
 const currentChangelogEntry = changelogEntries.find((e) => e.version === baseVersion)
+if (currentChangelogEntry?.date === 'Unreleased') {
+  console.error(`Cannot prepare v${version}: set the real release date (YYYY-MM-DD) by hand for v${baseVersion} in ${CHANGELOG_TS}; its date is still Unreleased.`)
+  process.exit(1)
+}
+
 // Canonical release date (already trimmed by the parser); fall back to today
 // only when the entry hasn't been added to changelog.ts yet.
 const releaseDate = currentChangelogEntry?.date || new Date().toISOString().split('T')[0]
@@ -217,7 +222,7 @@ if (fs.existsSync(aurSrcinfo)) {
 // Flatpak metainfo — add a new release entry, or correct the date of an
 // existing one, using the canonical changelog.ts date (not "today", which
 // drifts when the release is tagged on a different day than it is dated).
-const flatpakMetainfo = path.join(ROOT, 'packaging/flatpak/com.processone.fluux.metainfo.xml')
+const flatpakMetainfo = path.join(ROOT, 'packaging/flatpak/net.processone.fluux.metainfo.xml')
 if (fs.existsSync(flatpakMetainfo)) {
   let metainfo = fs.readFileSync(flatpakMetainfo, 'utf-8')
   const escaped = baseVersion.replace(/\./g, '\\.')

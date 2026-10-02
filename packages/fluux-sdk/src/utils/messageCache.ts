@@ -20,8 +20,11 @@ import type { Message } from '../core/types/chat'
 import type { RoomMessage } from '../core/types/room'
 import { isNoLocalStore, captureContentSource, resolveCorrectionUpdates, compareCorrectionRevisions, canReplaceCorrection, sameCorrection, mergeCorrectionMetadata, correctionContent, type CorrectionUpdates, type MessageImplState } from '../core/types/message-internal'
 import { captureStorageScope, getStorageScopeJid } from './storageScope'
+import { notifyChatIdentityChange } from './chatIdentityObserver'
 import {
   archiveIdentityConflict,
+  chatArchiveConflict,
+  sameChatMessage,
   selectRoomReference,
   adoptDeliveryEvidence,
   canMergeOccupantSet,
@@ -376,7 +379,7 @@ function getDB(scopeJid: string | null = getStorageScopeJid()): Promise<IDBPData
  * in every key it derives. Chat identity keys are deliberately unscoped (see the
  * module note in `messageIdentity.ts`: they are also the retraction ledger's
  * aliases and the unread overlay's, a spelling that cannot move), so the
- * conversation is added HERE, at the store boundary, and nowhere else. Without it
+ * conversation is added by this helper at the storage boundary. Without it
  * two OUTGOING messages to different peers share `from` — our own JID — and would
  * collide on a reused client id, which is the defect this keying closes.
  */
@@ -950,6 +953,15 @@ async function findChatRowsForTier(
 }
 
 /**
+ * What a caller knows about the chat row it means beyond its client id: the exact
+ * `cacheKey` it resolved earlier, or the archive identity of the copy it holds.
+ * Among rows carrying that client-id alias, object selectors reject conflicts
+ * under {@link chatArchiveConflict}, then prefer an exact stanza-id match, an
+ * origin-id match, or the first remaining compatible row, in that order.
+ */
+export type ChatRowSelector = string | Partial<Pick<Message, 'stanzaId' | 'originId'>>
+
+/**
  * The row carrying client `id`, optionally narrowed to its owner.
  *
  * A bare client id names no single row — it repeats across conversations, and a
@@ -957,26 +969,32 @@ async function findChatRowsForTier(
  * "a row known by this id", exactly as the pre-v5 primary-key lookup did. The
  * `ids` index is used rather than the row's own `id` field so a merged row stays
  * findable by every id it absorbed.
+ *
+ * Qualified selection follows {@link ChatRowSelector}.
  */
 async function findChatRowById(
   store: ChatMessageReader,
   id: string,
   conversationId: string,
   from?: string,
-  expectedCacheKey?: string
+  selected?: ChatRowSelector
 ): Promise<StoredMessage | undefined> {
-  if (expectedCacheKey) {
-    const exact = await store.get(expectedCacheKey)
+  if (typeof selected === 'string' && selected) {
+    const exact = await store.get(selected)
     return exact?.conversationId === conversationId &&
       (from === undefined || exact.from === from) &&
       exact.ids.includes(id)
       ? exact
       : undefined
   }
-  const matches = await store.index('ids').getAll(id)
-  return matches.find(
-    (row) => row.conversationId === conversationId && (from === undefined || row.from === from)
+  const identity = typeof selected === 'object' ? selected : undefined
+  const matches = (await store.index('ids').getAll(id)).filter(
+    (row) => row.conversationId === conversationId && (from === undefined || row.from === from) &&
+      (!identity || !chatArchiveConflict(row, identity))
   )
+  return (identity?.stanzaId ? matches.find(row => row.stanzaId === identity.stanzaId) : undefined)
+    ?? (identity?.originId ? matches.find(row => row.originId === identity.originId) : undefined)
+    ?? matches[0]
 }
 
 async function findChatRowsByReference(
@@ -1014,16 +1032,10 @@ async function findChatRowsByIdentity(
       probe.tier,
       probe.reference
     )
-    // `ids` is not keyed by sender, but the fallback rung is `from`+`id`. Pin it,
-    // or an incoming message would match a row the ladder never named. Then drop
-    // any row the archive already proves is a DIFFERENT message: this rung has no
-    // uniqueness guarantee, and folding two of them together is what lets a
-    // re-issued client id inherit an earlier message's tombstone.
-    const candidates = probe.tier === 'fallback'
-      ? matches.filter(
-          (row) => row.from === message.from && !archiveIdentityConflict(row, message)
-        )
-      : matches
+    // The `ids` index is not sender-scoped, so the fallback rung must also match
+    // `from`. Every tier must pass chatArchiveConflict.
+    const candidates = matches.filter(row =>
+      (probe.tier !== 'fallback' || row.from === message.from) && !chatArchiveConflict(row, message))
     if (candidates.length > 0) return candidates
   }
   return []
@@ -1227,14 +1239,21 @@ async function upsertStoredChatRow(
   matches: readonly StoredMessage[],
   scopeJid?: string | null,
   excludeKey?: string
-): Promise<void> {
+): Promise<{ previous: StoredMessage[]; current: StoredMessage }> {
   let merged = incoming
-  for (const row of matches) merged = mergeChatRows(merged, row)
-  if (excludeKey && excludeKey !== merged.cacheKey) await store.delete(excludeKey)
+  const accepted: StoredMessage[] = []
   for (const row of matches) {
+    if (chatArchiveConflict(merged, row)) continue
+    merged = mergeChatRows(merged, row)
+    accepted.push(row)
+  }
+  if (excludeKey && excludeKey !== merged.cacheKey) await store.delete(excludeKey)
+  for (const row of accepted) {
     if (row.cacheKey !== merged.cacheKey) await store.delete(row.cacheKey)
   }
-  await store.put(enforceRetraction(merged, chatScopeOf(merged, scopeJid)))
+  const current = enforceRetraction(merged, chatScopeOf(merged, scopeJid))
+  await store.put(current)
+  return { previous: accepted, current }
 }
 
 function reconcileHistoryRow<T extends (StoredMessage | StoredRoomMessage) & CanonicalRow>(page: T, held: T): T {
@@ -1282,7 +1301,7 @@ export async function resolveMessagesForIndex(
     const matches = message.type === 'chat'
       ? await findChatRowsByIdentity(tx.objectStore(MESSAGES_STORE), incoming as StoredMessage)
       : await findRoomRowsByIdentity(tx.objectStore(ROOM_MESSAGES_STORE), incoming as StoredRoomMessage)
-    const candidates = matches.filter(row => !archiveIdentityConflict(row, incoming) &&
+    const candidates = matches.filter(row => !(message.type === 'chat' ? chatArchiveConflict : archiveIdentityConflict)(row, incoming) &&
       (message.type === 'chat' ? chatMessageAuthor(row, { actorJid: message.from })
         : roomMessageAuthor(row as StoredRoomMessage, { actorJid: message.from, actorOccupantId: message.occupantId })))
     if (candidates.length > 1) { results.push(null); continue }
@@ -1295,6 +1314,7 @@ export async function resolveMessagesForIndex(
     const row = recovery ? { ...current } : reconcileHistoryRow(incoming, current)
     Object.assign(row, {
       id: current.id, from: current.from, timestamp: current.timestamp,
+      ...(message.type === 'chat' ? { stanzaId: current.stanzaId, originId: current.originId } : {}),
       ...(message.type === 'groupchat' ? {
         receivedAt: (current as StoredRoomMessage).receivedAt, isDelayed: current.isDelayed, isOutgoing: current.isOutgoing,
       } : {}),
@@ -1340,7 +1360,7 @@ export async function reconcileChatHistoryMessages(
       const tx = db.transaction(MESSAGES_STORE)
       void tx.done.catch(() => {})
       await reconcileHistoryCacheRows(rows, row => findChatRowsByIdentity(tx.store, row),
-        (row, cached) => !archiveIdentityConflict(row, cached) && chatMessageAuthor(cached, { actorJid: row.from }))
+        (row, cached) => !chatArchiveConflict(row, cached) && chatMessageAuthor(cached, { actorJid: row.from }))
       await tx.done
     } catch {
       rows = messages.map(serializeMessage)
@@ -1350,7 +1370,7 @@ export async function reconcileChatHistoryMessages(
   return rows.map(row => {
     for (const message of current) {
       if (message.conversationId === row.conversationId && chatMessageAuthor(message, { actorJid: row.from }) &&
-          sameLogicalMessage(CHAT_SCOPE, row, message) && !archiveIdentityConflict(row, message)) {
+          sameChatMessage(row, message)) {
         row = reconcileHistoryRow(row, serializeMessage(message))
       }
     }
@@ -1411,14 +1431,25 @@ async function upsertChatRowByIdentity(
   store: ChatMessageStore,
   message: Message,
   scopeJid?: string | null
-): Promise<void> {
+): Promise<{ previous: StoredMessage[]; current: StoredMessage }> {
   const incoming = serializeMessage(message)
-  await upsertStoredChatRow(
-    store,
-    incoming,
-    await findChatRowsByIdentity(store, incoming),
-    scopeJid
-  )
+  const matches = await findChatRowsByIdentity(store, incoming)
+  return upsertStoredChatRow(store, incoming, matches, scopeJid)
+}
+
+async function reconcileChatIndexChanges(
+  changes: { previous: StoredMessage[]; current: StoredMessage }[],
+  scopeJid: string | null,
+): Promise<void> {
+  await Promise.all(changes.map(async ({ previous, current }) => {
+    const changed = previous.filter(row => row.cacheKey !== current.cacheKey || !identityFieldsEqual(row, current))
+    if (!changed.length) return
+    try {
+      await notifyChatIdentityChange(changed.map(deserializeMessage), deserializeMessage(current), scopeJid)
+    } catch (error) {
+      console.warn('[searchIndex] Failed to reconcile chat identity:', error)
+    }
+  }))
 }
 
 /**
@@ -1429,8 +1460,9 @@ export async function saveMessageWithResult(message: Message): Promise<boolean> 
   try {
     const db = await getDB(scopeJid)
     const tx = db.transaction(MESSAGES_STORE, 'readwrite')
-    await upsertChatRowByIdentity(tx.store, message, scopeJid)
+    const change = await upsertChatRowByIdentity(tx.store, message, scopeJid)
     await tx.done
+    await reconcileChatIndexChanges([change], scopeJid)
     return true
   } catch (error) {
     if (isIndexedDBAvailable()) {
@@ -1460,11 +1492,12 @@ export async function saveMessages(messages: Message[]): Promise<boolean> {
     const db = await getDB(scopeJid)
     const tx = db.transaction(MESSAGES_STORE, 'readwrite')
     const store = tx.objectStore(MESSAGES_STORE)
-
+    const changes = []
     for (const msg of messages) {
-      await upsertChatRowByIdentity(store, msg, scopeJid)
+      changes.push(await upsertChatRowByIdentity(store, msg, scopeJid))
     }
     await tx.done
+    await reconcileChatIndexChanges(changes, scopeJid)
     return true
   } catch (error) {
     if (isIndexedDBAvailable()) {
@@ -1504,13 +1537,13 @@ export async function getMessagesWithEncryptedPayload(): Promise<CachedChatMessa
 }
 
 /**
- * Get a conversation-scoped message by its client-generated ID. An
- * `expectedCacheKey` preserves a previously resolved archive-distinct row.
+ * Get a conversation-scoped message by its client-generated ID. A `selected`
+ * row (see {@link ChatRowSelector}) picks among archive-distinct rows.
  */
 export async function getMessage(
   conversationId: string,
   id: string,
-  expectedCacheKey?: string
+  selected?: ChatRowSelector
 ): Promise<Message | null> {
   try {
     const db = await getDB(getStorageScopeJid())
@@ -1519,7 +1552,7 @@ export async function getMessage(
       id,
       conversationId,
       undefined,
-      expectedCacheKey
+      selected
     )
     return stored ? deserializeMessage(stored) : null
   } catch (error) {
@@ -1657,10 +1690,12 @@ function entityTimestampRange(
 /**
  * Get messages for a conversation with optional pagination.
  * Messages are returned in chronological order (oldest first).
+ * The optional filter runs before counting toward the limit; the cursor stops
+ * as soon as enough matching renderable messages have been collected.
  */
 export async function getMessages(
   conversationId: string,
-  options: GetMessagesOptions = {}
+  options: GetMessagesOptions & { filter?: (message: Message) => boolean } = {}
 ): Promise<Message[]> {
   try {
     const db = await getDB(getStorageScopeJid())
@@ -1692,8 +1727,9 @@ export async function getMessages(
         // retraction) that older builds persisted before the parse-time guard.
         // They have nothing to render and must not fill the limit or anchor a
         // catch-up cursor as the newest message. See isRenderableStoredMessage.
-        if (isRenderableStoredMessage(message)) {
+        if (isRenderableStoredMessage(message) && (!options.filter || options.filter(message))) {
           results.push(message)
+          if (limit && results.length >= limit) break
         }
       }
       cursor = await cursor.continue()
@@ -1746,8 +1782,9 @@ export interface GetMessagesAroundOptions {
  * to a message that isn't in the recent slice.
  *
  * @param anchorRow - The anchor ROW. Its `id` is a client id (`message.id`, as carried by
- *   `data-message-id`); the stanza-id index is a fallback so a server stanza id (e.g. a navigation
- *   target) also resolves.
+ *   `data-message-id`); its archive/origin discriminator is passed to {@link ChatRowSelector}.
+ *   For an unqualified reference only, the stanza-id index is a fallback so a server stanza id
+ *   (e.g. a navigation target) also resolves.
  *   1:1 messages have no XEP-0421 occupant, so `occupantId` is not consulted here.
  */
 export async function getMessagesAround(
@@ -1757,32 +1794,28 @@ export async function getMessagesAround(
 ): Promise<Message[]> {
   const { before = AROUND_CONTEXT_BEFORE, after } = options
 
-  let anchor = await getMessage(conversationId, anchorRow.id)
-  if (!anchor) anchor = await getMessageByStanzaId(conversationId, anchorRow.id)
+  let anchor = await getMessage(conversationId, anchorRow.id, anchorRow)
+  if (!anchor && !anchorRow.stanzaId && !anchorRow.originId) anchor = await getMessageByStanzaId(conversationId, anchorRow.id)
   if (!anchor) return []
 
   const t = anchor.timestamp.getTime()
-  // Context above + the anchor itself: the `before + 1` newest messages with timestamp <= t.
-  // (upperBound is exclusive, so `t + 1` includes the anchor sitting at exactly t.)
-  const olderAndAnchor = await getMessages(conversationId, {
-    before: new Date(t + 1),
-    limit: before + 1,
+  const db = await getDB(getStorageScopeJid())
+  const tied = (await db.getAllFromIndex(MESSAGES_STORE, 'conv_timestamp', IDBKeyRange.only([conversationId, t])))
+    .map(deserializeMessage).filter(isRenderableStoredMessage)
+  const anchorIndex = tied.findIndex(message => chatCacheKey(message) === chatCacheKey(anchor!))
+  if (anchorIndex < 0) return []
+  const preceding = tied.slice(0, anchorIndex)
+  const following = tied.slice(anchorIndex + 1)
+  const olderCount = Math.max(0, before - preceding.length)
+  const newerCount = after === undefined ? undefined : Math.max(0, after - following.length)
+  const older = olderCount === 0 ? [] : await getMessages(conversationId, { before: new Date(t), limit: olderCount })
+  const newer = newerCount === 0 ? [] : await getMessages(conversationId, {
+    after: new Date(t), ...(newerCount !== undefined ? { limit: newerCount } : {}),
   })
-  // Tail: messages strictly newer than the anchor. Capped by `after` (oldest-first from the
-  // anchor) for a bounded window, or uncapped to reach the latest message.
-  const newer = await getMessages(conversationId, {
-    after: new Date(t),
-    ...(after !== undefined ? { limit: after } : {}),
-  })
-
-  const seen = new Set<string>()
-  const merged: Message[] = []
-  for (const m of [...olderAndAnchor, ...newer]) {
-    if (seen.has(m.id)) continue
-    seen.add(m.id)
-    merged.push(m)
-  }
-  return merged
+  const beforeRows = [...older, ...preceding]
+  const afterRows = [...following, ...newer]
+  return [...beforeRows.slice(Math.max(0, beforeRows.length - before)), anchor,
+    ...(after === undefined ? afterRows : afterRows.slice(0, after))]
 }
 
 /**
@@ -1989,6 +2022,7 @@ export async function getCorrectionReferences(
 export async function applyChatCorrection(
   conversationId: string, targetId: string, updates: Partial<Message> & MessageImplState, actor: MessageActor,
   scopeJid: string | null = getStorageScopeJid(),
+  selected?: Pick<Message, 'id' | 'stanzaId' | 'originId'>,
 ): Promise<(Message & MessageImplState) | null | undefined> {
   if (!isIndexedDBAvailable()) return undefined
   const db = await getDB(scopeJid)
@@ -1997,7 +2031,9 @@ export async function applyChatCorrection(
   void completion.catch(() => {})
   const store = tx.store
   const resolution = await findChatRowsByReference(store, conversationId, targetId)
-  const existing = resolution?.candidates.find(row => chatMessageAuthor(row, actor))
+  const existing = selected
+    ? await findChatRowById(store, selected.id, conversationId, actor.actorJid, selected)
+    : resolution?.candidates.find(row => chatMessageAuthor(row, actor))
   let result: (Message & MessageImplState) | null | undefined = existing || resolution?.authoritative ? null : undefined
   if (existing) {
     const write = correctionWrite(db, `${MESSAGES_STORE}:${existing.cacheKey}`, updates)
@@ -2063,7 +2099,7 @@ export async function applyRoomCorrection(
 /**
  * Update specific fields of a message, resolving its conversation- and
  * sender-scoped row through the `ids` alias so a caller holding a pre-merge id
- * still finds it. `expectedCacheKey` selects a previously resolved row exactly
+ * still finds it. `selected` (see {@link ChatRowSelector}) picks the intended row
  * when a same-sender client id has several archive-distinct rows.
  *
  * Chat twin of {@link updateRoomMessage}, and it splits the same two ways when an
@@ -2081,19 +2117,20 @@ export async function updateMessage(
   updates: Partial<Message> & MessageImplState,
   from: string,
   scopeJid: string | null = getStorageScopeJid(),
-  expectedCacheKey?: string
+  selected?: ChatRowSelector
 ): Promise<void> {
   try {
     const db = await getDB(scopeJid)
     const tx = db.transaction(MESSAGES_STORE, 'readwrite')
     const store = tx.objectStore(MESSAGES_STORE)
-    const existing = await findChatRowById(store, id, conversationId, from, expectedCacheKey)
+    const existing = await findChatRowById(store, id, conversationId, from, selected)
     if (!existing) { await tx.done; return }
 
     const applicable = applicableCorrectionUpdates(existing, updates, scopeJid)
     if (!applicable) { await tx.done; return }
     const updated = { ...deserializeMessage(existing), ...applicable } as Message
     const serialized = serializeMessage(updated)
+    let change: { previous: StoredMessage[]; current: StoredMessage } | undefined
     // Dates the caller may have passed as epoch millis rather than Date objects.
     serialized.timestamp =
       updates.timestamp instanceof Date ? updates.timestamp.getTime() : existing.timestamp
@@ -2126,9 +2163,11 @@ export async function updateMessage(
       // in, and its row is dropped when the key moved.
       const matches = (await findChatRowsByIdentity(store, serialized))
         .filter((row) => row.cacheKey !== existing.cacheKey)
-      await upsertStoredChatRow(store, serialized, matches, scopeJid, existing.cacheKey)
+      const merged = await upsertStoredChatRow(store, serialized, matches, scopeJid, existing.cacheKey)
+      change = { previous: [existing, ...merged.previous], current: merged.current }
     }
     await tx.done
+    if (change) await reconcileChatIndexChanges([change], scopeJid)
   } catch (error) {
     if (isIndexedDBAvailable()) {
       console.warn('Failed to update message:', error)
@@ -2149,12 +2188,15 @@ export async function updateMessageReactions(
   messageId: string,
   reactorJid: string,
   emojis: string[],
+  selected?: Pick<Message, 'id' | 'stanzaId' | 'originId'>,
 ): Promise<boolean> {
   const scopeJid = getStorageScopeJid()
   try {
     const db = await getDB(scopeJid)
     const tx = db.transaction(MESSAGES_STORE, 'readwrite')
-    const existing = (await findChatRowsByReference(tx.store, conversationId, messageId))?.candidates[0]
+    const existing = selected
+      ? await findChatRowById(tx.store, selected.id, conversationId, undefined, selected)
+      : (await findChatRowsByReference(tx.store, conversationId, messageId))?.candidates[0]
     if (!existing) {
       await tx.done
       return false
@@ -2249,9 +2291,10 @@ export interface ChatMessageCopy {
  * target can bridge several archive copies through different aliases, and it
  * re-expands from each row it discovers.
  *
- * The absorbed `ids` come back with each row because the SEARCH INDEX keys chat
- * documents by client id: once the cache merges two rows, a document written
- * under the id that lost is reachable only through this list. Chat twin of
+ * The absorbed `ids` and `identityKeys` come back with each row because the
+ * SEARCH INDEX keys a chat document by the canonical key the row had when it was
+ * indexed: once the cache merges two rows, a document written under the key that
+ * lost is reachable only through these lists. Chat twin of
  * {@link findRoomMessageCopies}.
  */
 export async function findChatMessageCopies(
@@ -2275,11 +2318,9 @@ export async function findChatMessageCopies(
         )
         // See findChatRowsByIdentity: `ids` is not keyed by sender, and the rung
         // must not bridge two messages the archive separates.
-        const candidates = probe.tier === 'fallback'
-          ? matches.filter(
-              (row) => row.from === probed.from && !archiveIdentityConflict(row, probed)
-            )
-          : matches
+        const candidates = matches.filter(row =>
+          (probe.tier !== 'fallback' || row.from === probed.from) &&
+          !chatArchiveConflict(row, probed) && !chatArchiveConflict(row, message))
         // Keyed by cacheKey, not id: a merged row carries several ids, and two
         // rows can legitimately share one.
         for (const row of candidates) {
@@ -2425,20 +2466,20 @@ export async function areRetractedInCache(
 }
 
 /**
- * Delete a conversation- and sender-scoped message by client ID. An
- * `expectedCacheKey` preserves an already-resolved archive-distinct row.
+ * Delete a conversation- and sender-scoped message by client ID. A `selected`
+ * row (see {@link ChatRowSelector}) picks among archive-distinct rows.
  */
 export async function deleteMessage(
   conversationId: string,
   id: string,
   from: string,
   scopeJid: string | null = getStorageScopeJid(),
-  expectedCacheKey?: string
+  selected?: ChatRowSelector
 ): Promise<void> {
   try {
     const db = await getDB(scopeJid)
     const tx = db.transaction(MESSAGES_STORE, 'readwrite')
-    const existing = await findChatRowById(tx.store, id, conversationId, from, expectedCacheKey)
+    const existing = await findChatRowById(tx.store, id, conversationId, from, selected)
     if (existing) await tx.store.delete(existing.cacheKey)
     await tx.done
   } catch (error) {

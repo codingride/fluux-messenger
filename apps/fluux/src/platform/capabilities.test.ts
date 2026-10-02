@@ -17,7 +17,7 @@ describe('deriveCapabilities', () => {
   ]
 
   it('grants exactly its own capabilities on the web, whatever the OS', () => {
-    for (const os of ['macos', 'windows', 'linux', 'other'] as const) {
+    for (const os of ['macos', 'windows', 'linux', 'ios', 'android', 'other'] as const) {
       const granted = Object.entries(deriveCapabilities('web', os))
         .filter(([key, value]) => value === true && key !== 'shell' && key !== 'os')
         .map(([key]) => key)
@@ -47,12 +47,36 @@ describe('deriveCapabilities', () => {
     expect(deriveCapabilities('web', 'macos').nativeXmppProxy).toBe(false)
   })
 
-  it('reserves the custom title bar for desktop macOS', () => {
-    expect(deriveCapabilities('desktop', 'macos').hasCustomTitleBar).toBe(true)
-    // Windows and Linux keep a native title bar; there is nothing to reserve.
-    expect(deriveCapabilities('desktop', 'windows').hasCustomTitleBar).toBe(false)
-    expect(deriveCapabilities('desktop', 'linux').hasCustomTitleBar).toBe(false)
-    expect(deriveCapabilities('web', 'macos').hasCustomTitleBar).toBe(false)
+  it('reserves room for overlaid window controls on desktop macOS only', () => {
+    expect(deriveCapabilities('desktop', 'macos').overlaysNativeWindowControls).toBe(true)
+    expect(deriveCapabilities('desktop', 'windows').overlaysNativeWindowControls).toBe(false)
+    expect(deriveCapabilities('desktop', 'linux').overlaysNativeWindowControls).toBe(false)
+    expect(deriveCapabilities('web', 'macos').overlaysNativeWindowControls).toBe(false)
+  })
+
+  it('draws the window controls on desktop Windows only', () => {
+    expect(deriveCapabilities('desktop', 'windows').drawsWindowControls).toBe(true)
+    // macOS keeps its traffic lights and Linux its GTK header.
+    expect(deriveCapabilities('desktop', 'macos').drawsWindowControls).toBe(false)
+    expect(deriveCapabilities('desktop', 'linux').drawsWindowControls).toBe(false)
+    expect(deriveCapabilities('web', 'windows').drawsWindowControls).toBe(false)
+  })
+
+  it('uses native notifications on desktop, Android and iOS', () => {
+    for (const os of ['macos', 'windows', 'linux'] as const) {
+      expect(deriveCapabilities('desktop', os).notificationsManagedByOS).toBe(true)
+    }
+    expect(deriveCapabilities('mobile', 'android').notificationsManagedByOS).toBe(true)
+    expect(deriveCapabilities('mobile', 'ios').notificationsManagedByOS).toBe(true)
+    expect(deriveCapabilities('mobile', 'other').notificationsManagedByOS).toBe(false)
+    expect(deriveCapabilities('web', 'android').notificationsManagedByOS).toBe(false)
+  })
+
+  it('uses native push on iOS only', () => {
+    expect(deriveCapabilities('mobile', 'ios').usesNativePush).toBe(true)
+    expect(deriveCapabilities('mobile', 'android').usesNativePush).toBe(false)
+    expect(deriveCapabilities('web', 'ios').usesNativePush).toBe(false)
+    expect(deriveCapabilities('desktop', 'macos').usesNativePush).toBe(false)
   })
 
   it('reserves taskbar attention for desktop Windows', () => {
@@ -149,7 +173,9 @@ describe('experimental mobile shell', () => {
       'interceptsInAppNavigation',
       'keyNeedsSessionPassphrase',
       'nativeXmppProxy',
+      'notificationsManagedByOS',
       'opensLinksInSystemBrowser',
+      ...(os === 'ios' ? ['usesNativePush'] : []),
     ])
   })
 })

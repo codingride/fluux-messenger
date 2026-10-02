@@ -114,7 +114,7 @@ import { Blocking } from './modules/Blocking'
 import { Ignore } from './modules/Ignore'
 import { ConversationSync } from './modules/ConversationSync'
 import { Mds } from './modules/Mds'
-import { WebPush } from './modules/WebPush'
+import { Push } from './modules/Push'
 import { EntityTime } from './modules/EntityTime'
 import { LastActivity } from './modules/LastActivity'
 import { MAM } from './modules/MAM'
@@ -335,7 +335,7 @@ export class XMPPClient {
    * Web Push module (p1:push).
    * Handles VAPID-based push notification registration with ejabberd Business Edition.
    */
-  public push!: WebPush
+  public push!: Push
 
 
 
@@ -726,7 +726,7 @@ export class XMPPClient {
     this.ignore = new Ignore(moduleDeps)
     const conversationSync = new ConversationSync(moduleDeps)
     const mds = new Mds(moduleDeps)
-    this.push = new WebPush(moduleDeps)
+    this.push = new Push(moduleDeps)
     this.#internal = {
       on: (event, handler) => this.subscribeToBus(event, handler as ClientEvents[typeof event]),
       mam, mds, conversationSync, entityTime, lastActivity, pubsub,
@@ -742,7 +742,7 @@ export class XMPPClient {
       roster: this.contacts,
       muc: this.rooms,
       profile: this.profile,
-      webPush: this.push,
+      push: this.push,
       conversationSync: this.#internal.conversationSync,
       getStores: () => this.stores,
       getCurrentJid: () => this.currentJid,
@@ -1101,7 +1101,8 @@ export class XMPPClient {
       ignoreStore.getState().rehydrate()
     }
 
-    // Open the search index DB and backfill from message cache if needed (one-time migration)
+    // Connection does not wait for local search initialization; backfill policy
+    // belongs to backfillFromMessageCache.
     void (async () => {
       try {
         await initSearchIndex(scopedJid)

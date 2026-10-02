@@ -30,6 +30,13 @@ export interface VirtualWindowItem {
 
 export interface MessageVirtualizer {
   cancelPendingScroll?(): void
+  /**
+   * Re-derive the estimates of unmeasured rows from the current metrics. Offsets read afterwards
+   * use the new estimates either way; `sync` also commits the re-render before returning, which
+   * a caller positioning against the rendered content height needs. A batched refresh joins
+   * React's next render instead of nesting one inside the current measurement.
+   */
+  refreshEstimates?(sync: boolean): void
   retainMessage?(id: string | null): void
   /**
    * Watch the virtualizer's own scroll writes. Returning `false` from a `before` phase refuses
@@ -49,9 +56,8 @@ export interface MessageVirtualizer {
   setAutomaticScrollAdjustmentEnabled?(enabled: boolean): void
   /** Rows to render: visible range, overscan, and any retained message, with start offsets. */
   getVirtualItems(): VirtualWindowItem[]
-  /** Stable estimated total content height. Equals the scroll container's scrollHeight
-   *  (the content wrapper is rendered at this height), so scrollHeight-based behaviors
-   *  keep working unchanged. */
+  /** Total content height from measured rows and current estimates. The caller renders the
+   *  content wrapper at this height so scrollHeight-based behavior follows recalibration. */
   getTotalSize(): number
   /** Total number of items (including header/footer/dates). Used for scroll-to-last. */
   itemCount: number

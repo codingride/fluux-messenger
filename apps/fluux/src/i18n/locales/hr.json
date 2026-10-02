@@ -44,6 +44,8 @@
         "madeBy": "Izradio",
         "poweredBy": "Pokreće",
         "errors": {
+            "discoveryFailed": "Otkrivanje poslužitelja za {{domain}} nije uspjelo. Umjesto toga pokušana je veza s {{target}}.",
+            "discoveryFailedTcp": "Otkrivanje poslužitelja za {{domain}} nije uspjelo. Umjesto toga pokušana je izravna TCP veza s {{target}}.",
             "tlsCertTitle": "Nije moguće provjeriti sigurnosni certifikat poslužitelja",
             "tlsOtherTitle": "Sigurna veza nije uspjela",
             "tlsOtherBody": "Nije moguće uspostaviti kriptiranu vezu s poslužiteljem. TLS konfiguracija poslužitelja možda nije podržana. Provjerite adresu poslužitelja ili kontaktirajte administratora poslužitelja.",
@@ -72,7 +74,8 @@
         "joinRoom": "Pridruži se sobi",
         "viewProfile": "Prikaži profil",
         "resizeHint": "Povucite za promjenu veličine, dvostruki klik za resetiranje",
-        "dismiss": "Odbaci"
+        "dismiss": "Odbaci",
+        "search": "Traži"
     },
     "newMessage": {
         "title": "Nova poruka",
@@ -756,6 +759,8 @@
         "webPush_disabled": "Onemogućeno, push obavijesti isključene",
         "webPushDisable": "Onemogući",
         "webPushReEnable": "Ponovno omogući",
+        "pushStatus": "Push obavijesti",
+        "push_failed": "Registracija nije uspjela, dodirnite za ponovni pokušaj",
         "updates": "Ažuriranja",
         "storage": {
             "title": "Pohrana",
@@ -1303,6 +1308,11 @@
         "searchMessages": "Search messages for \"{{query}}\"",
         "attention": "Zahtijeva pažnju"
     },
+    "windowControls": {
+        "minimize": "Minimiziraj",
+        "maximize": "Maksimiziraj",
+        "restore": "Vrati"
+    },
     "dataFormHints": {
         "muc#roomconfig_roomname": "Prikazano ime na popisu soba i u zaglavlju.",
         "muc#roomconfig_roomdesc": "Kratki opis namjene sobe.",
@@ -1459,5 +1469,32 @@
         "saved": "Spremljeno. Otvorite Fluux, odaberite razgovor i pošaljite.",
         "importError": "Uvoz nije uspio. Podijelite jednu poveznicu ili datoteku do 20 MB; pretinac prima 20 stavki.",
         "sent": "Poruka je poslana. Ovu uvezenu stavku možete ukloniti."
+    },
+    "search": {
+        "filter": {
+            "all": "Sve",
+            "conversations": "Razgovori",
+            "rooms": "Sobe"
+        },
+        "placeholder": "Traži poruke…",
+        "scopeLabel": "Traženje u: {{name}}",
+        "clearScope": "Traži u svim razgovorima",
+        "searching": "Traženje…",
+        "noResults": "Nema pronađenih poruka",
+        "searchServer": "Traži u arhivi poslužitelja",
+        "searchingServer": "Traženje u arhivi poslužitelja…",
+        "serverResults": "Arhiva poslužitelja",
+        "loadMore": "Učitaj više s poslužitelja",
+        "hint": "Upišite tekst za pretraživanje svih poruka",
+        "contextView": "Rezultat pretrage",
+        "previewBanner": "Pregledavate pregled rezultata pretrage",
+        "goToMessage": "Idi na poruku",
+        "loadingContext": "Učitavanje poruka…",
+        "errors": {
+            "failed": "Pretraga nije uspjela",
+            "archiveRooms": "Poslužitelj ne podržava pretragu arhive soba",
+            "archiveUnsupported": "Poslužitelj ne podržava pretragu arhive. Pokušajte pretraživati unutar razgovora.",
+            "serverFailed": "Pretraga poslužitelja nije uspjela"
+        }
     }
 }

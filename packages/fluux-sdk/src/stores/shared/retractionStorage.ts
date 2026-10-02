@@ -92,7 +92,7 @@ export async function retractChatMessageInStorage(
       message,
     })
   }
-  for (const { cacheKey, message: target, ids } of targets.values()) {
+  for (const { cacheKey, message: target, ids, identityKeys } of targets.values()) {
     const targetRetractedAt = target.retractedAt ?? retractedAt
     noteRetractedIdentity(
       scope,
@@ -106,9 +106,9 @@ export async function retractChatMessageInStorage(
       { ...updates, isRetracted: true, retractedAt: targetRetractedAt },
       target.from,
       storageScope,
-      cacheKey || undefined
+      cacheKey || target
     )
-    await searchIndex.removeMessage(target, storageScope, { ids })
+    await searchIndex.removeMessage(target, storageScope, { ids, identityKeys })
   }
 }
 
