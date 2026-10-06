@@ -10,6 +10,7 @@
         "ignore": "Déan neamhaird",
         "options": "Roghanna",
         "download": "Íoslódáil",
+        "share": "Comhroinn",
         "downloadFailed": "Theip ar an íoslódáil",
         "optional": "roghnach",
         "create": "Cruthaigh",
@@ -763,8 +764,29 @@
         "webPush_disabled": "Díchumasaithe, fógraí brú as",
         "webPushDisable": "Díchumasaigh",
         "webPushReEnable": "Athchumasaigh",
-        "pushStatus": "Fógraí brú",
-        "push_failed": "Theip ar an gclárú, tapáil chun triail eile a bhaint as",
+        "iosPermission": {
+            "granted": "Ceadaithe ag iOS",
+            "grantedDescription": "Is féidir le Fluux foláirimh a thaispeáint",
+            "denied": "Blocáilte ag iOS",
+            "deniedDescription": "Ceadaigh Fluux i Socruithe iOS",
+            "notDetermined": "Gan cead fós",
+            "notDeterminedDescription": "Ceadaigh do Fluux foláirimh a thaispeáint",
+            "openSettings": "Socruithe iOS"
+        },
+        "closedAppPush": {
+            "title": "Nuair atá an aip dúnta",
+            "enabled": "Cuireann do fhreastalaí ({{server}}) an fón seo ar an eolas",
+            "off": "As: ní thagann aon rud nuair atá an aip dúnta",
+            "activating": "Á chasadh air…",
+            "failed": "Níorbh fhéidir é a chasadh air",
+            "retry": "Bain triail eile as",
+            "unsupported": "Ní thacaíonn do fhreastalaí ({{server}}) leis seo",
+            "needsPermission": "Ceadaigh fógraí in iOS ar dtús",
+            "offline": "Ar fáil nuair a bheidh tú ceangailte"
+        },
+        "soundsSection": "Fuaimeanna",
+        "soundInApp": "Seinn fuaimeanna san aip",
+        "soundInAppDescription": "Nuair atá Fluux oscailte, do theachtaireachtaí nua agus d'iarratais teagmhála",
         "updates": "Nuashonruithe",
         "storage": {
             "title": "Stóráil",
@@ -1178,6 +1200,8 @@
     },
     "upload": {
         "attachFile": "Ceangail comhad",
+        "cameraUsage": "Úsáideann Fluux an ceamara chun na grianghraif agus na físeáin a sheolann tú a thógáil.",
+        "microphoneUsage": "Úsáideann Fluux an micreafón chun fuaim na bhfíseán a sheolann tú a thaifeadadh.",
         "notSupported": "Ní thacaíonn an freastalaí seo le huaslódáil comhad",
         "fileTooLarge": "Tá an comhad rómhór (uasmhéid {{max}}MB)",
         "failed": "Theip ar uaslódáil",

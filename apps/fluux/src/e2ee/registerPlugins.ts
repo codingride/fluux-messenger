@@ -25,9 +25,9 @@ export async function registerE2EEPlugins(client: XMPPClient): Promise<void> {
   if (manager.getPlugin('openpgp')) return
 
   try {
-    if (platform().nativeKeychain) {
-      // Desktop: Rust crypto via Tauri IPC. Key is managed by the OS keychain;
-      // no user passphrase needed for day-to-day use.
+    if (platform().nativeOpenpgp) {
+      // Desktop and iOS: Rust crypto via Tauri IPC. Key is managed by the OS
+      // keychain; no user passphrase needed for day-to-day use.
       const { invoke } = await import('@tauri-apps/api/core')
       const plugin = new SequoiaPgpPlugin({ invoke })
       await manager.register(plugin)

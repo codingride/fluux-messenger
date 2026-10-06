@@ -38,8 +38,17 @@ export interface PlatformCapabilities {
 
   /** Credentials live in the OS keychain instead of browser storage. */
   readonly nativeKeychain: boolean
+  /** OpenPGP runs natively, with its key unlocked by a secret in the OS keychain. */
+  readonly nativeOpenpgp: boolean
+  /** The FAST token lives in the OS keychain instead of browser storage. */
+  readonly keychainSessionSecrets: boolean
   /** Attachments are saved through a native file dialog, not a download link. */
   readonly nativeDownloads: boolean
+  /**
+   * Files leave the app through the system share sheet (save to Photos or Files, send to another
+   * app) rather than a save dialog or a download link.
+   */
+  readonly savesThroughShareSheet: boolean
   /** Media is cached on the filesystem instead of in CacheStorage. */
   readonly nativeMediaCache: boolean
   /** Images can be read from the system clipboard through the OS. */
@@ -157,6 +166,12 @@ export interface PlatformCapabilities {
    * stalled timers, so a wake past a threshold is recovered by reloading.
    */
   readonly webviewStallsAfterSleep: boolean
+  /**
+   * The OS suspends the app in the background: its timers stop and its socket
+   * may be closed, while the network stays up. A return to the foreground is
+   * the wake, so it is checked at once rather than through sleep detection.
+   */
+  readonly suspendedInBackground: boolean
 
   // ----- Shell integration -----
 
@@ -170,6 +185,11 @@ export interface PlatformCapabilities {
   readonly syncsNativeTitleBarTheme: boolean
   /** The unread count goes on a dock or taskbar badge. */
   readonly hasNativeAppBadge: boolean
+  /**
+   * Every scroll the reader makes starts with an input event the app observes (touch), so
+   * scrolling that arrives without one comes from the engine.
+   */
+  readonly scrollInputAlwaysObserved: boolean
   /** A native context menu opens on right-click unless suppressed. */
   readonly hasNativeContextMenu: boolean
   /** Uploads are streamed by the native side rather than by fetch. */
@@ -188,13 +208,18 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
   const desktop = shell === 'desktop'
   const native = desktop || shell === 'mobile'
   const web = shell === 'web'
+  const ios = shell === 'mobile' && os === 'ios'
+  const nativeOpenpgp = desktop || ios
   return {
     shell,
     os,
     nativeXmppProxy: desktop || (shell === 'mobile' && (os === 'ios' || os === 'android')),
-    nativeKeychain: desktop,
+    nativeKeychain: desktop || (shell === 'mobile' && os === 'ios'),
+    nativeOpenpgp,
+    keychainSessionSecrets: shell === 'mobile' && os === 'ios',
     nativeDownloads: desktop,
-    nativeMediaCache: desktop,
+    nativeMediaCache: desktop || ios,
+    savesThroughShareSheet: ios,
     nativeClipboardImages: desktop,
     nativeFileDrop: desktop,
     notificationsNeedFileUrls: desktop,
@@ -210,10 +235,10 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     storageIsDurable: desktop,
     hasStableInstallIdentity: native,
 
-    // Encryption. The key is in the OS keychain on desktop, so nothing has to
-    // be unlocked per session there.
-    keyNeedsSessionPassphrase: !desktop,
-    supportsKeyRotation: desktop,
+    // Encryption. The native engine keeps the key's secret in the OS keychain,
+    // so nothing has to be unlocked per session there.
+    keyNeedsSessionPassphrase: !nativeOpenpgp,
+    supportsKeyRotation: nativeOpenpgp,
 
     // Notifications.
     notificationsManagedByOS: desktop || (shell === 'mobile' && (os === 'android' || os === 'ios')),
@@ -233,6 +258,7 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     hasNativeConnectionKeepalive: desktop,
     needsWebviewReloadBeforeRelogin: desktop,
     webviewStallsAfterSleep: desktop,
+    suspendedInBackground: shell === 'mobile',
 
     // Shell integration.
     hasOSIdleDetection: desktop,
@@ -240,8 +266,9 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     hasWindowFullscreenEvents: desktop,
     syncsNativeTitleBarTheme: desktop,
     hasNativeAppBadge: desktop,
+    scrollInputAlwaysObserved: shell === 'mobile',
     hasNativeContextMenu: desktop,
-    nativeUploads: desktop,
+    nativeUploads: desktop || ios,
     hasMcpBridge: desktop,
   }
 }

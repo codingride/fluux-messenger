@@ -11,6 +11,7 @@
         "block": "Bloquear",
         "options": "Opções",
         "download": "Transferir",
+        "share": "Partilhar",
         "downloadFailed": "Falha no download",
         "optional": "opcional",
         "create": "Criar",
@@ -761,8 +762,29 @@
         "webPush_disabled": "Desativado, notificações push desativadas",
         "webPushDisable": "Desativar",
         "webPushReEnable": "Reativar",
-        "pushStatus": "Notificações push",
-        "push_failed": "Falha no registo, toque para tentar novamente",
+        "iosPermission": {
+            "granted": "Permitidas pelo iOS",
+            "grantedDescription": "O Fluux pode mostrar alertas",
+            "denied": "Bloqueadas pelo iOS",
+            "deniedDescription": "Permita o Fluux nas Definições do iOS",
+            "notDetermined": "Ainda não permitidas",
+            "notDeterminedDescription": "Permita que o Fluux mostre alertas",
+            "openSettings": "Definições do iOS"
+        },
+        "closedAppPush": {
+            "title": "Quando a app está fechada",
+            "enabled": "O seu servidor ({{server}}) avisa este telefone",
+            "off": "Desativado: nada chega com a app fechada",
+            "activating": "A ativar…",
+            "failed": "Não foi possível ativar",
+            "retry": "Tentar novamente",
+            "unsupported": "O seu servidor ({{server}}) não o suporta",
+            "needsPermission": "Permita primeiro as notificações no iOS",
+            "offline": "Disponível após ligar"
+        },
+        "soundsSection": "Sons",
+        "soundInApp": "Reproduzir sons na app",
+        "soundInAppDescription": "Com o Fluux aberto, para novas mensagens e pedidos de contacto",
         "updates": "Atualizações",
         "storage": {
             "title": "Armazenamento",
@@ -1176,6 +1198,8 @@
     },
     "upload": {
         "attachFile": "Anexar ficheiro",
+        "cameraUsage": "O Fluux usa a câmara para tirar as fotos e os vídeos que envia.",
+        "microphoneUsage": "O Fluux usa o microfone para gravar o som dos vídeos que envia.",
         "notSupported": "O envio de ficheiros não é suportado por este servidor",
         "fileTooLarge": "O ficheiro é demasiado grande (máx. {{max}}MB)",
         "failed": "Falha no envio",

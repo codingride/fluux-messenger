@@ -14,6 +14,7 @@ import type {
   ProxyAdapter,
   PrivacyOptions,
   PresenceOptions,
+  SystemState,
 } from './types'
 import {
   presenceMachine,
@@ -150,6 +151,8 @@ interface InternalSurface {
   mam: MAM
   mds: Mds
   conversationSync: ConversationSync
+  /** Fetches and merges the conversation list outside a fresh session's setup. */
+  refreshConversationList(): Promise<void>
   entityTime: EntityTime
   lastActivity: LastActivity
   pubsub: PubSub
@@ -730,6 +733,7 @@ export class XMPPClient {
     this.#internal = {
       on: (event, handler) => this.subscribeToBus(event, handler as ClientEvents[typeof event]),
       mam, mds, conversationSync, entityTime, lastActivity, pubsub,
+      refreshConversationList: () => this.sessionLifecycle.refreshConversationList(),
     }
     internalSurfaces.set(this, this.#internal)
 
@@ -1253,6 +1257,8 @@ export class XMPPClient {
    *   - 'sleeping': System is going to sleep. SDK may gracefully disconnect.
    *   - 'visible': App became visible/foreground. SDK verifies connection.
    *   - 'hidden': App went to background.
+   *   - 'foreground': A mobile app suspended in the background is back. SDK checks
+   *     the connection with a short timeout and reconnects at once if it is dead.
    * @param sleepDurationMs - Optional duration of sleep/inactivity in milliseconds.
    *   If provided and exceeds SM session timeout (~10 min), skips verification and
    *   immediately triggers reconnect (the SM session is definitely expired).
@@ -1271,7 +1277,7 @@ export class XMPPClient {
    * ```
    */
   async notifySystemState(
-    state: 'awake' | 'sleeping' | 'visible' | 'hidden',
+    state: SystemState,
     sleepDurationMs?: number
   ): Promise<void> {
     // Signal presence machine for relevant states.

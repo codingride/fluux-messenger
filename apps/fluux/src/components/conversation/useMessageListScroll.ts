@@ -16,6 +16,7 @@
 import type { MessageRowRef } from '@fluux/sdk'
 import { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react'
 import { AT_BOTTOM_THRESHOLD } from '@/utils/scrollStateManager'
+import { platform } from '@/platform'
 import type { ControllerFrameLoopRegistration } from './controllerFrameLoop'
 import { readUserScrollInput, useScrollContainerBinding } from './useScrollContainerBinding'
 import { useViewportResizeReconciliation } from './useViewportResizeReconciliation'
@@ -249,6 +250,8 @@ export interface UseMessageListScrollResult {
    *  pill's click handler; also the routine the conversation-switch entry effect uses. No-op when
    *  there is no current marker. */
   scrollToMarker: () => void
+  /** When the reader last scrolled this conversation themselves, 0 if never. */
+  lastUserInputAt: () => number
 }
 
 // ============================================================================
@@ -323,7 +326,7 @@ export function useMessageListScroll({
   const isAtBottomRef = externalIsAtBottomRef || internalIsAtBottomRef
   const viewportSessionRef = useRef<ViewportSession | null>(null)
   if (viewportSessionRef.current === null) {
-    viewportSessionRef.current = new ViewportSession(conversationId)
+    viewportSessionRef.current = new ViewportSession(conversationId, platform().scrollInputAlwaysObserved)
   }
   const scrollPersistenceRef = useRef<ScrollPersistenceAdapter | null>(null)
   if (scrollPersistenceRef.current === null) {
@@ -2241,6 +2244,11 @@ export function useMessageListScroll({
     })
   }, [firstNewMessageId, conversationId, buildUnreadMarkerExecutor])
 
+  const lastUserInputAt = useCallback(
+    () => viewportSessionRef.current?.lastUserIntentAt(conversationId) ?? 0,
+    [conversationId],
+  )
+
   // ==========================================================================
   // RETURN
   // ==========================================================================
@@ -2262,5 +2270,6 @@ export function useMessageListScroll({
     markerAboveViewport,
     bottomVisibleMessageId,
     scrollToMarker,
+    lastUserInputAt,
   }
 }

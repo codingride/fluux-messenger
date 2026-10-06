@@ -1790,6 +1790,82 @@ test.describe('Sliding window (load-older past the cap)', () => {
   })
 })
 
+// ── Opening a conversation from a push notification ──
+//
+// A push tap opens the conversation before the app has fetched the pushed message: entry restores
+// the saved position, and the message lands below it during catch-up. The tap's arrival jump must
+// bring the first unread message into view once catch-up is done; without it the view stays put.
+test.describe('Push open arrival jump', () => {
+  for (const requested of [true, false]) {
+    test(`${requested ? 'jumps' : 'does not jump'} to the message that arrives during catch-up${requested ? '' : ' without a push tap'}`, async ({ page }) => {
+      await loadDemo(page)
+      await navigateToStressRoom(page)
+
+      await scrollToBottom(page)
+      await page.waitForTimeout(400)
+      await page.evaluate((jid) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const rs = (window as any).__roomStore.getState()
+        const msgs = rs.messages.get(jid) ?? []
+        const last = msgs[msgs.length - 1]
+        if (last) rs.advanceReadPointer(jid, { id: last.id, occupantId: last.occupantId })
+      }, STRESS_ROOM_JID)
+
+      // Leave scrolled up, so re-entry restores a saved position above the live edge.
+      const box = await page.locator('[data-message-list]').first().boundingBox()
+      if (box) await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await wheelAwayFromBottom(page, AT_BOTTOM_OK_PX * 4, -1200)
+      await page.waitForTimeout(700)
+      await page.evaluate(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        void (window as any).__roomStore.getState().activateRoom(null)
+      })
+      await page.waitForTimeout(300)
+
+      // The tap: request the jump, open the room while its catch-up runs.
+      await page.evaluate(([jid, request]) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const w = window as any
+        if (request) w.__arrivalJumpStore.getState().request(jid)
+        w.__roomStore.getState().setRoomMAMLoading(jid, true)
+      }, [STRESS_ROOM_JID, requested] as const)
+      await navigateToStressRoom(page)
+      await page.waitForTimeout(900)
+
+      // Catch-up delivers the pushed message, then completes.
+      const pushedId = `pushed-${Date.now()}`
+      await page.evaluate(([jid, id]) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const w = window as any
+        w.__demoClient.emitSDK('room:message', {
+          roomJid: jid,
+          message: {
+            type: 'groupchat', id, from: `${jid}/PushBot`, nick: 'PushBot',
+            body: 'the message announced by the push', timestamp: new Date(),
+            isOutgoing: false, roomJid: jid,
+          },
+          incrementUnread: true,
+        })
+        w.__roomStore.getState().setRoomMAMLoading(jid, false)
+      }, [STRESS_ROOM_JID, pushedId] as const)
+      await page.waitForTimeout(1500)
+      await syncEngineGeometry(page)
+
+      const pushedVisible = await page.evaluate((id) => {
+        const s = document.querySelector('[data-message-list]') as HTMLElement | null
+        const row = document.querySelector(`[data-message-id="${id}"]`) as HTMLElement | null
+        if (!s || !row) return false
+        const sr = s.getBoundingClientRect()
+        const rr = row.getBoundingClientRect()
+        return rr.bottom > sr.top && rr.top < sr.bottom
+      }, pushedId)
+      expect(pushedVisible, requested
+        ? 'the pushed message must be in view once catch-up is done'
+        : 'without a push tap, entry keeps the saved position (control)').toBe(requested)
+    })
+  }
+})
+
 // ── Jump-to-last-read pill: survives a jump-to-present and returns to the divider (#870) ──
 //
 // Reproduces the "dead pill": read a room to the bottom, leave, receive MANY new messages
@@ -3580,3 +3656,103 @@ for (const virtualized of [false, true]) {
     })
   }
 }
+
+// ── Row-height estimation work on a conversation switch ──────────────────────────────────────────
+
+type PredictionWork = { requests: number; prepares: number; layouts: number; maxChars: number }
+type PredictionWorkWindow = Window & {
+  __predictionWork: PredictionWork
+  __fluuxPredictionWork: (event: 'request' | 'prepare' | 'layout', chars: number) => void
+}
+
+test.describe('Row-height estimation cost', () => {
+  test('re-opening long pasted logs reuses the cached text predictions', async ({ page }) => {
+    await loadDemo(page)
+    const AVA = 'ava@fluux.chat'
+    const EMMA = 'emma@fluux.chat'
+    const JAMES = 'james@fluux.chat'
+    await page.evaluate(() => document.fonts.ready.then(() => undefined))
+    await activateChat(page, JAMES)
+    await page.evaluate(() => {
+      const scope = window as unknown as PredictionWorkWindow
+      scope.__predictionWork = { requests: 0, prepares: 0, layouts: 0, maxChars: 0 }
+      scope.__fluuxPredictionWork = (event, chars) => {
+        // Only the synthetic pasted logs reach the predictor's 3000-character prefix bound.
+        if (chars < 3000) return
+        const work = scope.__predictionWork
+        if (event === 'request') work.requests++
+        if (event === 'prepare') {
+          work.prepares++
+          work.maxChars = Math.max(work.maxChars, chars)
+        }
+        if (event === 'layout') work.layouts++
+      }
+    })
+
+    // Eighty pasted logs of ~32 KB of plain text each (no code fence), then forty short replies;
+    // the control has eighty one-line messages in their place.
+    await page.evaluate(([jid, control]) => {
+      const line = '2026-10-02 10:31:45.123 [info] <0.1234.0>@mod_mam:process_iq/3:412 archive query for user@process-one.net done in 17ms'
+      const log = Array.from({ length: 280 }, (_, i) => line.replace('17ms', `${i}ms`)).join('\n')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const client = (window as any).__demoClient
+      const store = (window as unknown as { __chatStore: typeof chatStore }).__chatStore
+      const now = Date.now()
+      for (const [conversationId, head] of [[jid, (i: number) => `${i}\n${log}`], [control, (i: number) => `Plain message ${i}`]] as const) {
+        const bodies = [
+          ...Array.from({ length: 80 }, (_, i) => ({ id: `long-log-${i}`, body: head(i) })),
+          ...Array.from({ length: 40 }, (_, i) => ({ id: `short-${i}`, body: `Short reply ${i}` })),
+        ]
+        bodies.forEach(({ id, body }, i) => client.emitSDK('chat:message', {
+          message: {
+            type: 'chat', conversationId, from: conversationId, id: `${conversationId}-${id}`, body,
+            timestamp: new Date(now - (bodies.length - i) * 60_000), isOutgoing: false,
+          },
+        }))
+        // This scenario opens at the live edge; an unread boundary would mount the pasted logs.
+        store.getState().markReadToNewest(conversationId)
+      }
+    }, [AVA, EMMA] as const)
+
+    const readWork = () => page.evaluate(() => ({
+      ...(window as unknown as PredictionWorkWindow).__predictionWork,
+    }))
+    const evidence: unknown[] = []
+    try {
+      // Warm fallback and calibrated geometry; a switch must reach the visible short tail.
+      for (const jid of [EMMA, AVA]) {
+        await activateChat(page, jid)
+        await expect(page.locator(`.message-row[data-message-id="${jid}-short-39"]`)).toBeInViewport()
+      }
+      await expect(page.locator(`.message-row[data-message-id^="${AVA}-long-log-"]`)).toHaveCount(0)
+      const cold = await readWork()
+      evidence.push({ phase: 'cold', ...cold })
+      expect(cold.requests).toBeGreaterThan(0)
+      expect(cold.prepares).toBeGreaterThan(0)
+      expect(cold.layouts).toBe(cold.prepares)
+      expect(cold.maxChars).toBeLessThanOrEqual(3000)
+
+      for (let open = 0; open < 3; open++) {
+        await activateChat(page, JAMES)
+        const before = await readWork()
+        await activateChat(page, AVA)
+        await expect(page.locator(`.message-row[data-message-id="${AVA}-short-39"]`)).toBeInViewport()
+        await expect(page.locator(`.message-row[data-message-id^="${AVA}-long-log-"]`)).toHaveCount(0)
+        const after = await readWork()
+        const delta = {
+          requests: after.requests - before.requests,
+          prepares: after.prepares - before.prepares,
+          layouts: after.layouts - before.layouts,
+        }
+        evidence.push({ phase: 'reopen', open, ...delta })
+        expect(delta.requests, 're-open must exercise long-row prediction').toBeGreaterThan(0)
+        expect(delta.prepares, 'warm long rows must reuse predictions').toBe(0)
+        expect(delta.layouts).toBe(0)
+      }
+    } finally {
+      await test.info().attach('long-log-prediction-work', {
+        body: JSON.stringify(evidence, null, 2), contentType: 'application/json',
+      })
+    }
+  })
+})

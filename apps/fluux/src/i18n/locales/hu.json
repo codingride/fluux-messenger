@@ -10,6 +10,7 @@
         "ignore": "Mellőzés",
         "options": "Beállítások",
         "download": "Letöltés",
+        "share": "Megosztás",
         "downloadFailed": "A letöltés sikertelen",
         "optional": "nem kötelező",
         "create": "Létrehozás",
@@ -757,8 +758,29 @@
         "webPush_disabled": "Kikapcsolva, push értesítések kikapcsolva",
         "webPushDisable": "Kikapcsolás",
         "webPushReEnable": "Újra bekapcsolás",
-        "pushStatus": "Push értesítések",
-        "push_failed": "A regisztráció sikertelen, koppints az újrapróbáláshoz",
+        "iosPermission": {
+            "granted": "Az iOS engedélyezi",
+            "grantedDescription": "A Fluux megjeleníthet értesítéseket",
+            "denied": "Az iOS letiltja",
+            "deniedDescription": "Engedélyezze a Fluuxot az iOS beállításaiban",
+            "notDetermined": "Még nincs engedélyezve",
+            "notDeterminedDescription": "Engedélyezze, hogy a Fluux értesítéseket jelenítsen meg",
+            "openSettings": "iOS beállítások"
+        },
+        "closedAppPush": {
+            "title": "Amikor az alkalmazás zárva van",
+            "enabled": "A szervere ({{server}}) értesíti ezt a telefont",
+            "off": "Ki: zárt alkalmazásnál semmi sem érkezik",
+            "activating": "Bekapcsolás…",
+            "failed": "Nem sikerült bekapcsolni",
+            "retry": "Újra",
+            "unsupported": "A szervere ({{server}}) ezt nem támogatja",
+            "needsPermission": "Előbb engedélyezze az értesítéseket az iOS-ben",
+            "offline": "Csatlakozás után érhető el"
+        },
+        "soundsSection": "Hangok",
+        "soundInApp": "Hangok lejátszása az alkalmazásban",
+        "soundInAppDescription": "Amikor a Fluux nyitva van, új üzeneteknél és kapcsolatkéréseknél",
         "updates": "Frissítések",
         "storage": {
             "title": "Tárhely",
@@ -1172,6 +1194,8 @@
     },
     "upload": {
         "attachFile": "Fájl csatolása",
+        "cameraUsage": "A Fluux a kamerát használja az általad küldött fotók és videók készítéséhez.",
+        "microphoneUsage": "A Fluux a mikrofont használja az általad küldött videók hangjának felvételéhez.",
         "notSupported": "A fájlfeltöltést nem támogatja ez a szerver",
         "fileTooLarge": "A fájl túl nagy (maximum {{max}} MB)",
         "failed": "A feltöltés sikertelen",

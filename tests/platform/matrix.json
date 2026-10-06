@@ -27,6 +27,7 @@
         "nativeHttpFetch",
         "nativeKeychain",
         "nativeMediaCache",
+        "nativeOpenpgp",
         "nativeUploads",
         "nativeXmppProxy",
         "needsWebviewReloadBeforeRelogin",
@@ -63,6 +64,7 @@
         "nativeHttpFetch",
         "nativeKeychain",
         "nativeMediaCache",
+        "nativeOpenpgp",
         "nativeUploads",
         "nativeXmppProxy",
         "needsWebviewReloadBeforeRelogin",
@@ -99,6 +101,7 @@
         "nativeHttpFetch",
         "nativeKeychain",
         "nativeMediaCache",
+        "nativeOpenpgp",
         "nativeUploads",
         "nativeXmppProxy",
         "needsWebviewReloadBeforeRelogin",
@@ -120,10 +123,18 @@
       "capabilities": [
         "hasStableInstallIdentity",
         "interceptsInAppNavigation",
-        "keyNeedsSessionPassphrase",
+        "keychainSessionSecrets",
+        "nativeKeychain",
+        "nativeMediaCache",
+        "nativeOpenpgp",
+        "nativeUploads",
         "nativeXmppProxy",
         "notificationsManagedByOS",
         "opensLinksInSystemBrowser",
+        "savesThroughShareSheet",
+        "scrollInputAlwaysObserved",
+        "supportsKeyRotation",
+        "suspendedInBackground",
         "usesNativePush"
       ]
     },
@@ -138,7 +149,9 @@
         "keyNeedsSessionPassphrase",
         "nativeXmppProxy",
         "notificationsManagedByOS",
-        "opensLinksInSystemBrowser"
+        "opensLinksInSystemBrowser",
+        "scrollInputAlwaysObserved",
+        "suspendedInBackground"
       ]
     },
     {
@@ -203,11 +216,14 @@
       "hasNativeConnectionKeepalive",
       "needsWebviewReloadBeforeRelogin",
       "webviewStallsAfterSleep",
+      "suspendedInBackground",
       "hasStableInstallIdentity",
       "needsTabCoordination"
     ],
     "secrets": [
       "nativeKeychain",
+      "nativeOpenpgp",
+      "keychainSessionSecrets",
       "keyNeedsSessionPassphrase",
       "supportsKeyRotation"
     ],
@@ -218,7 +234,8 @@
       "nativeFileDrop",
       "nativeHttpFetch",
       "nativeUploads",
-      "storageIsDurable"
+      "storageIsDurable",
+      "savesThroughShareSheet"
     ],
     "notifications": [
       "notificationsNeedFileUrls",
@@ -242,7 +259,8 @@
       "hasWindowFullscreenEvents",
       "syncsNativeTitleBarTheme",
       "hasNativeContextMenu",
-      "hasMcpBridge"
+      "hasMcpBridge",
+      "scrollInputAlwaysObserved"
     ]
   },
   "scenarios": [

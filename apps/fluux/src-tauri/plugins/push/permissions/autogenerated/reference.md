@@ -1,11 +1,14 @@
 ## Default Permission
 
-Register this device for remote push notifications, receive its token updates and the notifications the user taps.
+Register this device for remote push notifications, receive its token updates and the notifications the user taps, share the sender names that title them, set the app icon badge, and remove the notifications of a conversation once read.
 
 #### This default permission set includes the following:
 
 - `allow-register`
 - `allow-take-pending-tap`
+- `allow-set-sender-names`
+- `allow-set-badge`
+- `allow-dismiss-notifications`
 - `allow-register-listener`
 - `allow-remove-listener`
 
@@ -17,6 +20,32 @@ Register this device for remote push notifications, receive its token updates an
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`push:allow-dismiss-notifications`
+
+</td>
+<td>
+
+Enables the dismiss_notifications command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:deny-dismiss-notifications`
+
+</td>
+<td>
+
+Denies the dismiss_notifications command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>
@@ -92,6 +121,58 @@ Enables the remove_listener command without any pre-configured scope.
 <td>
 
 Denies the remove_listener command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:allow-set-badge`
+
+</td>
+<td>
+
+Enables the set_badge command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:deny-set-badge`
+
+</td>
+<td>
+
+Denies the set_badge command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:allow-set-sender-names`
+
+</td>
+<td>
+
+Enables the set_sender_names command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:deny-set-sender-names`
+
+</td>
+<td>
+
+Denies the set_sender_names command without any pre-configured scope.
 
 </td>
 </tr>

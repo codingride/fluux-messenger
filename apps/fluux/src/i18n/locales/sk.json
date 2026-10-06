@@ -10,6 +10,7 @@
         "ignore": "Ignorovať",
         "options": "Možnosti",
         "download": "Stiahnuť",
+        "share": "Zdieľať",
         "downloadFailed": "Sťahovanie zlyhalo",
         "optional": "voliteľné",
         "create": "Vytvoriť",
@@ -762,8 +763,29 @@
         "webPush_disabled": "Deaktivované, push notifikácie vypnuté",
         "webPushDisable": "Deaktivovať",
         "webPushReEnable": "Znovu aktivovať",
-        "pushStatus": "Push notifikácie",
-        "push_failed": "Registrácia zlyhala, ťuknutím to skúste znova",
+        "iosPermission": {
+            "granted": "Povolené systémom iOS",
+            "grantedDescription": "Fluux môže zobrazovať upozornenia",
+            "denied": "Blokované systémom iOS",
+            "deniedDescription": "Povoľte Fluux v Nastaveniach iOS",
+            "notDetermined": "Zatiaľ nepovolené",
+            "notDeterminedDescription": "Povoľte Fluux zobrazovať upozornenia",
+            "openSettings": "Nastavenia iOS"
+        },
+        "closedAppPush": {
+            "title": "Keď je aplikácia zatvorená",
+            "enabled": "Váš server ({{server}}) upozorní tento telefón",
+            "off": "Vypnuté: pri zatvorenej aplikácii nič nepríde",
+            "activating": "Zapína sa…",
+            "failed": "Zapnutie zlyhalo",
+            "retry": "Skúsiť znova",
+            "unsupported": "Váš server ({{server}}) to nepodporuje",
+            "needsPermission": "Najprv povoľte oznámenia v iOS",
+            "offline": "Dostupné po pripojení"
+        },
+        "soundsSection": "Zvuky",
+        "soundInApp": "Prehrávať zvuky v aplikácii",
+        "soundInAppDescription": "Keď je Fluux otvorený, pri nových správach a žiadostiach o kontakt",
         "updates": "Aktualizácie",
         "storage": {
             "title": "Úložisko",
@@ -1177,6 +1199,8 @@
     },
     "upload": {
         "attachFile": "Priložiť súbor",
+        "cameraUsage": "Fluux používa fotoaparát na zhotovovanie fotiek a videí, ktoré odosielate.",
+        "microphoneUsage": "Fluux používa mikrofón na nahrávanie zvuku videí, ktoré odosielate.",
         "notSupported": "Nahrávanie súborov nie je podporované týmto serverom",
         "fileTooLarge": "Súbor je príliš veľký (max {{max}}MB)",
         "failed": "Nahrávanie zlyhalo",
