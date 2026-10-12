@@ -340,6 +340,7 @@
         "voiceRequestSent": "Το αίτημα για δικαίωμα λόγου στάλθηκε",
         "voiceRequests": "Αιτήματα για δικαίωμα λόγου",
         "grantVoice": "Παραχώρηση φωνής",
+        "voiceApprovalUnanswered": "Η αίθουσα δεν έδωσε δικαίωμα λόγου. Το άτομο ίσως έφυγε από την αίθουσα ή έχει ήδη δικαίωμα λόγου.",
         "revokeVoice": "Ανάκληση φωνής",
         "grantModerator": "Παραχώρηση συντονιστή",
         "revokeModerator": "Ανάκληση συντονιστή",
@@ -391,6 +392,9 @@
         "whisperingTo": "Ψιθυρίζετε ιδιωτικά στον {{nick}}",
         "whisperThread": "Ιδιωτικά με {{nick}}",
         "whisperCounterpartGone": "{{nick}} δεν είναι πλέον στο δωμάτιο, δεν μπορείτε να απαντήσετε",
+        "whisperAttachmentTitle": "Αποστολή ιδιωτικού συνημμένου;",
+        "whisperAttachmentWarning": "Το ιδιωτικό μήνυμα είναι προσωρινό, αλλά τα αρχεία παραμένουν στον διακομιστή μεταφόρτωσης σύμφωνα με την πολιτική διατήρησής του. Οι παραλήπτες μπορούν να κατεβάσουν και να κρατήσουν αντίγραφα.",
+        "whisperAttachmentRetention": "Διατήρηση στον διακομιστή μεταφόρτωσης: {{duration}}. Οι παραλήπτες μπορούν να κατεβάσουν και να κρατήσουν αντίγραφα.",
         "whisperPlaceholder": "Ψιθύρισε στον {{nick}}...",
         "ignoreUser": "Αγνόηση σε αυτό το δωμάτιο",
         "stopIgnoring": "Διακοπή αγνόησης",
@@ -458,6 +462,7 @@
         "nickEdgeWhitespace": "Το όνομα έχει επιπλέον κενά στα άκρα",
         "nickHiddenChars": "Το όνομα περιέχει κρυφούς χαρακτήρες",
         "mentionSuggestions": "Προτάσεις αναφορών",
+        "mentionsCount": "Αναφορές: {{count}}",
         "unreadMessages": "{{displayCount}} μη αναγνωσμένο μήνυμα",
         "unreadMessages_other": "{{displayCount}} μη αναγνωσμένα μηνύματα"
     },
@@ -492,6 +497,7 @@
         "replyQuoteHiddenEncrypted": "Το απόσπασμα αποκρύφθηκε: το αρχικό ήταν κρυπτογραφημένο",
         "forwardMessage": "Προώθηση μηνύματος (σύντομα διαθέσιμο)",
         "moreReactions": "Περισσότερες αντιδράσεις",
+        "reactions": "Αντιδράσεις",
         "reactionOthers": "{{count}} ακόμη",
         "moreOptions": "Περισσότερες επιλογές",
         "reactWith": "Αντίδραση με {{emoji}}",
@@ -533,6 +539,7 @@
         "copyLinkChoose": "Ποιον σύνδεσμο να αντιγραφεί;",
         "openInBrowser": "Άνοιγμα στο πρόγραμμα περιήγησης",
         "saveImage": "Αποθήκευση εικόνας",
+        "mediaUnavailableOrUnsupported": "Αυτό το αρχείο δεν μπορεί να αναπαραχθεί εδώ: μπορεί να μην είναι διαθέσιμο ή να έχει μη υποστηριζόμενη μορφή",
         "videoFormatUnsupported": "Αυτή η μορφή βίντεο δεν μπορεί να αναπαραχθεί εδώ",
         "videoUnavailable": "Το βίντεο δεν είναι πλέον διαθέσιμο",
         "audioFormatUnsupported": "Αυτή η μορφή ήχου δεν μπορεί να αναπαραχθεί εδώ",
@@ -647,6 +654,17 @@
         "yesterday": "Χθες"
     },
     "settings": {
+    "nativeNotificationTone": "Ήχος ειδοποιήσεων",
+    "nativeNotificationToneDescription": "Επιλέξτε τον ήχο για ειδοποιήσεις στο παρασκήνιο. Το Αθόρυβο διατηρεί τους ήχους στην εφαρμογή.",
+    "nativeSoundDescription": "Αναπαραγωγή ήχων στην εφαρμογή και για ειδοποιήσεις στο παρασκήνιο.",
+    "notificationTone_default": "Προεπιλογή συστήματος",
+    "notificationTone_bell": "Καμπανάκι",
+    "notificationTone_chime": "Μελωδία",
+    "notificationTone_pulse": "Παλμός",
+    "notificationTone_silent": "Αθόρυβο",
+    "oxNotificationPreview": "Προεπισκοπήσεις OpenPGP στις ειδοποιήσεις",
+    "oxNotificationPreviewDescription": "Επιτρέψτε στην επέκταση ειδοποιήσεων να ανακτά και να αποκρυπτογραφεί μηνύματα αυτού του λογαριασμού. Οι προεπισκοπήσεις ακολουθούν τις ρυθμίσεις iOS και μπορεί να εμφανίζονται στην οθόνη κλειδώματος αν επιλεγεί Πάντα.",
+    "oxNotificationPreviewFailed": "Δεν ήταν δυνατή η ενεργοποίηση προεπισκοπήσεων. Ελέγξτε ότι το OpenPGP και η αποθηκευμένη σύνδεση είναι διαθέσιμα.",
         "title": "Ρυθμίσεις",
         "categories": {
             "profile": "Προφίλ",
@@ -726,6 +744,7 @@
         "accentThemeDefault": "Προεπιλογή θέματος",
         "fontSize": "Μέγεθος γραμματοσειράς",
         "fontSizeDescription": "Ρυθμίστε το μέγεθος κειμένου στην εφαρμογή",
+        "fontSizeSystemDescription": "Σε σχέση με το μέγεθος κειμένου που ορίστηκε στις Ρυθμίσεις του iOS",
         "decreaseFontSize": "Μείωση μεγέθους γραμματοσειράς",
         "increaseFontSize": "Αύξηση μεγέθους γραμματοσειράς",
         "sound": "Αναπαραγωγή ήχων ειδοποίησης",
@@ -1519,5 +1538,12 @@
             "archiveUnsupported": "Ο διακομιστής δεν υποστηρίζει αναζήτηση στο αρχείο. Δοκιμάστε να αναζητήσετε μέσα σε μια συνομιλία.",
             "serverFailed": "Η αναζήτηση στον διακομιστή απέτυχε"
         }
+    },
+    "notificationPreview": {
+        "activity": "Νέα δραστηριότητα",
+        "reaction": "{{nickname}} αντέδρασε: {{text}}",
+        "edit": "{{nickname}} (επεξεργασία): {{text}}",
+        "retraction": "{{nickname}} διέγραψε ένα μήνυμα",
+        "messages": "{{nickname}}: {{count}} νέα μηνύματα"
     }
 }

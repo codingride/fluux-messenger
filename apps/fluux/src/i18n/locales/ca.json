@@ -341,6 +341,7 @@
         "voiceRequestSent": "Sol·licitud de veu enviada",
         "voiceRequests": "Sol·licituds de veu",
         "grantVoice": "Concedeix veu",
+        "voiceApprovalUnanswered": "La sala no ha concedit la veu. Potser la persona ha sortit de la sala o ja té veu.",
         "revokeVoice": "Revoca veu",
         "grantModerator": "Concedeix moderador",
         "revokeModerator": "Revoca moderador",
@@ -392,6 +393,9 @@
         "whisperingTo": "Xiuxiuejant en privat a {{nick}}",
         "whisperThread": "Privat amb {{nick}}",
         "whisperCounterpartGone": "{{nick}} ja no és a la sala, no pots respondre",
+        "whisperAttachmentTitle": "Voleu enviar un fitxer privat?",
+        "whisperAttachmentWarning": "El missatge privat és efímer, però els fitxers romanen al servidor de pujada segons la seva política de conservació. Els destinataris poden descarregar i guardar còpies.",
+        "whisperAttachmentRetention": "Conservació al servidor de pujada: {{duration}}. Els destinataris poden descarregar i guardar còpies.",
         "whisperPlaceholder": "Xiuxiueja a {{nick}}...",
         "ignoreUser": "Ignorar en aquesta sala",
         "stopIgnoring": "Deixar d'ignorar",
@@ -459,6 +463,7 @@
         "nickEdgeWhitespace": "El nom té espais addicionals als extrems",
         "nickHiddenChars": "El nom conté caràcters ocults",
         "mentionSuggestions": "Suggeriments de mencions",
+        "mentionsCount": "Mencions: {{count}}",
         "unreadMessages": "{{displayCount}} missatge sense llegir",
         "unreadMessages_many": "{{displayCount}} de missatges sense llegir",
         "unreadMessages_other": "{{displayCount}} missatges sense llegir"
@@ -494,6 +499,7 @@
         "replyQuoteHiddenEncrypted": "Cita amagada: l'original estava xifrat",
         "forwardMessage": "Reenvia el missatge (properament)",
         "moreReactions": "Més reaccions",
+        "reactions": "Reaccions",
         "reactionOthers": "{{count}} altres",
         "moreOptions": "Més opcions",
         "reactWith": "Reacciona amb {{emoji}}",
@@ -536,6 +542,7 @@
         "copyLinkChoose": "Quin enllaç voleu copiar?",
         "openInBrowser": "Obrir al navegador",
         "saveImage": "Desar la imatge",
+        "mediaUnavailableOrUnsupported": "Aquest fitxer no es pot reproduir aquí: pot ser que no estigui disponible o que tingui un format no compatible",
         "videoFormatUnsupported": "Aquest format de vídeo no es pot reproduir aquí",
         "videoUnavailable": "El vídeo ja no està disponible",
         "audioFormatUnsupported": "Aquest format d'àudio no es pot reproduir aquí",
@@ -650,6 +657,17 @@
         "yesterday": "Ahir"
     },
     "settings": {
+    "nativeNotificationTone": "So de notificació",
+    "nativeNotificationToneDescription": "Tria el so de les notificacions en segon pla. Silenci manté els sons de l’aplicació.",
+    "nativeSoundDescription": "Reproduir sons a l’aplicació i a les notificacions en segon pla.",
+    "notificationTone_default": "Predeterminat del sistema",
+    "notificationTone_bell": "Campana",
+    "notificationTone_chime": "Carilló",
+    "notificationTone_pulse": "Pols",
+    "notificationTone_silent": "Silenci",
+    "oxNotificationPreview": "Previsualitzacions OpenPGP a les notificacions",
+    "oxNotificationPreviewDescription": "Permet que l’extensió de notificacions obtingui i desxifri els missatges d’aquest compte. Les previsualitzacions segueixen els ajustos d’iOS i poden aparèixer a la pantalla bloquejada si se selecciona Sempre.",
+    "oxNotificationPreviewFailed": "No s’han pogut activar les previsualitzacions. Comprova que OpenPGP i la connexió desada estiguin disponibles.",
         "title": "Configuració",
         "categories": {
             "profile": "Perfil",
@@ -729,6 +747,7 @@
         "accentThemeDefault": "Per defecte del tema",
         "fontSize": "Mida de la lletra",
         "fontSizeDescription": "Ajusta la mida del text a l'aplicació",
+        "fontSizeSystemDescription": "Relativa a la mida del text definida a la configuració d’iOS",
         "decreaseFontSize": "Redueix la mida de la lletra",
         "increaseFontSize": "Augmenta la mida de la lletra",
         "sound": "Reprodueix els sons de notificació",
@@ -1522,5 +1541,12 @@
             "archiveUnsupported": "El servidor no admet la cerca a l'arxiu. Proveu de cercar dins d'una conversa.",
             "serverFailed": "La cerca al servidor ha fallat"
         }
+    },
+    "notificationPreview": {
+        "activity": "Activitat nova",
+        "reaction": "{{nickname}} ha reaccionat: {{text}}",
+        "edit": "{{nickname}} (editat): {{text}}",
+        "retraction": "{{nickname}} ha suprimit un missatge",
+        "messages": "{{nickname}}: {{count}} missatges nous"
     }
 }

@@ -283,6 +283,7 @@ export type {
   ConnectionMethod,
   ConnectOptions,
   DiscoveryFailure,
+  ClientState,
 
   // Base message type (shared between chat and room messages)
   BaseMessage,
@@ -333,6 +334,7 @@ export type {
 
   // Push through an app server (XEP-0357)
   PushDeviceRegistrationRequest,
+  PushDeviceUnregistrationRequest,
   PushAppServerRegistration,
   PushStatus,
 
@@ -387,6 +389,7 @@ export type {
   HistoryQueryOptions,
   HistoryResult,
   HistoryQueryState,
+  GapInterval,
   HistorySearchOptions,
   RoomHistorySearchOptions,
   HistoryPagingSearchOptions,
@@ -529,6 +532,8 @@ export { getPresenceRank, getBestPresenceShow, getPresenceFromShow } from './uti
 // callbacks speak, so a reused MUC nick cannot make them ambiguous.
 export {
   CHAT_SCOPE,
+  tierKey,
+  resolveMessageReference,
   archiveReference,
   archiveIdentityConflict,
   canonicalReference,
@@ -730,3 +735,6 @@ export { checkForMention, findMentionRanges, findIrcPrefixRange } from './core/m
 export { setMeasurementEnabled } from './utils/measure'
 
 export { isSpamModerated } from './utils/moderation'
+
+export { subscribeLocalReads } from './stores/localReadEvents'
+export type { LocalReadEvent } from './stores/localReadEvents'

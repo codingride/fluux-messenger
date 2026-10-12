@@ -8,14 +8,15 @@
  *
  * Benefits:
  * - Clean SDK/React-SDK separation
- * - Bot usage without React (skip bindings, handle events directly)
- * - No render loops (events are decoupled from React lifecycle)
+ * - Bot usage without React
  * - Testable in isolation
  *
  * @packageDocumentation
  * @module Bindings
  */
 
+import { getAvatarStateOwner, occupantAvatarKey, withAvatarIdentity } from '../utils/avatarState'
+import type { RoomOccupant } from '../core/types'
 import type { SDKEventSource } from '../core/types/eventSource'
 // Import concrete store modules rather than the '../stores' barrel: the barrel
 // sits in an import cycle with core/, so re-exporting through it makes Rollup
@@ -23,7 +24,7 @@ import type { SDKEventSource } from '../core/types/eventSource'
 import type { connectionStore } from '../stores/connectionStore'
 import type { chatStore } from '../stores/chatStore'
 import type { rosterStore } from '../stores/rosterStore'
-import type { roomStore } from '../stores/roomStore'
+import { registerRoomOccupantFlusher, type roomStore } from '../stores/roomStore'
 import type { eventsStore } from '../stores/eventsStore'
 import type { adminStore } from '../stores/adminStore'
 import type { blockingStore } from '../stores/blockingStore'
@@ -35,8 +36,11 @@ import {
   ignoreStore as ignoreStoreInstance,
 } from '../stores/ignoreStore'
 import { findLastNonIgnoredMessage } from '../stores/shared/lastMessageUtils'
+import { recordMessageIngress } from '../stores/shared/messageIngress'
 import { isMarkerDebugEnabled, markerDebugLog } from '../utils/markerDebug'
 import { getBareJid, getLocalPart } from '../core/jid'
+
+const OCCUPANT_FLUSH_DELAY_MS = 16
 
 /**
  * Store references for binding SDK events.
@@ -62,12 +66,24 @@ export type UnsubscribeBindings = () => void
 /**
  * Create store bindings that wire SDK events to Zustand stores.
  *
- * Call this once when initializing the XMPP client (e.g., in XMPPProvider).
- * Returns an unsubscribe function to clean up all event subscriptions.
+ * XMPPClient installs these bindings for both React and non-React consumers.
+ *
+ * After a room is joined, non-self occupant upserts are queued for a 16 ms
+ * timer and applied in wire order through one store update per room. Initial
+ * join and self presence remain synchronous at this binding boundary. Room
+ * lifecycle transitions and operations requiring current occupant identity
+ * (including protocol actions, message previews, and ignore recalculation)
+ * flush the relevant room before proceeding. Asynchronous avatar completion
+ * waits for the pending batch; unrelated events do not flush it.
+ *
+ * The returned function removes subscriptions and flushes accepted upserts.
+ * Its `flushOccupants(roomJid?)` method commits one room or all rooms immediately.
+ * Its `waitForOccupants(roomJid)` method waits for that room's currently queued
+ * batch without forcing a flush.
  *
  * @param client - The SDK event source to bind to
  * @param getStores - Function that returns current store state (called lazily)
- * @returns Unsubscribe function to remove all bindings
+ * @returns Cleanup function with occupant flush and wait methods
  *
  * @example
  * ```typescript
@@ -81,9 +97,41 @@ export type UnsubscribeBindings = () => void
  */
 export function createStoreBindings(
   client: SDKEventSource,
-  getStores: () => StoreRefs
-): UnsubscribeBindings {
+  getStores: () => StoreRefs,
+): UnsubscribeBindings & {
+  flushOccupants: (roomJid?: string) => void
+  waitForOccupants: (roomJid: string) => Promise<void>
+} {
+  const avatarState = getAvatarStateOwner(client)
   const unsubscribers: Array<() => void> = []
+
+  // Keep every upsert in wire order: intermediate identity/avatar transitions
+  // populate caches even when a later presence replaces the same nick.
+  const pendingOccupants = new Map<string, {
+    occupants: RoomOccupant[]
+    committed: Promise<void>
+    resolve: () => void
+  }>()
+  let occupantFlushTimer: ReturnType<typeof setTimeout> | null = null
+  const flushOccupants = (roomJid?: string) => {
+    const batches = roomJid === undefined
+      ? [...pendingOccupants]
+      : pendingOccupants.has(roomJid) ? [[roomJid, pendingOccupants.get(roomJid)!] as const] : []
+    for (const [jid] of batches) pendingOccupants.delete(jid)
+    if (pendingOccupants.size === 0 && occupantFlushTimer !== null) {
+      clearTimeout(occupantFlushTimer)
+      occupantFlushTimer = null
+    }
+    for (const [jid, batch] of batches) {
+      getStores().room.batchAddOccupants(jid, batch.occupants)
+      batch.resolve()
+    }
+  }
+  const waitForOccupants = (roomJid: string) =>
+    pendingOccupants.get(roomJid)?.committed ?? Promise.resolve()
+  let unregisterOccupantFlusher: (() => void) | undefined
+  unsubscribers.push(() => flushOccupants())
+  unsubscribers.push(() => unregisterOccupantFlusher?.())
 
   // Helper to subscribe and track for cleanup
   const on = <K extends Parameters<typeof client.subscribe>[0]>(
@@ -101,6 +149,7 @@ export function createStoreBindings(
   // Lifecycle status/error/JID are owned by the connection machine. Discovery
   // diagnostics arrive separately in the SDK event and belong to this binding.
   on('connection:status', ({ status, discoveryFailure }) => {
+    if (status !== 'online') flushOccupants()
     getStores().connection.setDiscoveryFailure(status === 'error' ? discoveryFailure ?? null : null)
   })
 
@@ -179,6 +228,7 @@ export function createStoreBindings(
 
   on('chat:message', ({ message, isLiveArrival }) => {
     const stores = getStores()
+    recordMessageIngress('chat', message.conversationId)
     stores.chat.addMessage(message, { isLiveArrival })
   })
 
@@ -292,9 +342,9 @@ export function createStoreBindings(
     stores.chat.setMAMError(conversationId, error, requestId)
   })
 
-  on('chat:history-messages', ({ conversationId, messages, page, complete, direction, isFetchLatest, preserveGapMarker, initialBefore, fetchLatestTopId, sawCoverageTop, walkCarriedModifications, initialAfter, walkOldestId }) => {
+  on('chat:history-messages', ({ conversationId, messages, page, complete, direction, isFetchLatest, preserveGapMarker, initialBefore, fetchLatestTopId, sawCoverageTop, walkCarriedModifications, initialAfter, walkOldestId, walkOriginTs, healGapsOnly }) => {
     const stores = getStores()
-    stores.chat.mergeMAMMessages(conversationId, messages, page, complete, direction, { isFetchLatest, preserveGapMarker, extras: { initialBefore, fetchLatestTopId, sawCoverageTop, walkCarriedModifications, initialAfter, walkOldestId } })
+    stores.chat.mergeMAMMessages(conversationId, messages, page, complete, direction, { isFetchLatest, preserveGapMarker, extras: { initialBefore, fetchLatestTopId, sawCoverageTop, walkCarriedModifications, initialAfter, walkOldestId, walkOriginTs, healGapsOnly } })
   })
 
   // A purged id-exact anchor (item-not-found degrade): strip the matching
@@ -317,23 +367,27 @@ export function createStoreBindings(
   // ============================================================================
 
   on('room:added', ({ room }) => {
+    flushOccupants(room.jid)
     const stores = getStores()
     stores.room.addRoom(room)
   })
 
   on('room:updated', ({ roomJid, updates }) => {
+    flushOccupants(roomJid)
     const stores = getStores()
     stores.room.updateRoom(roomJid, updates)
     if (updates.joined === false) stores.events.clearRoomVoiceRequests(roomJid)
   })
 
   on('room:removed', ({ roomJid }) => {
+    flushOccupants(roomJid)
     const stores = getStores()
     stores.room.removeRoom(roomJid)
     stores.events.clearRoomVoiceRequests(roomJid)
   })
 
   on('room:joined', ({ roomJid, joined }) => {
+    flushOccupants(roomJid)
     const stores = getStores()
     stores.room.setRoomJoined(roomJid, joined)
     if (!joined) stores.events.clearRoomVoiceRequests(roomJid)
@@ -341,16 +395,34 @@ export function createStoreBindings(
 
   on('room:occupant-joined', ({ roomJid, occupant }) => {
     const stores = getStores()
-    stores.room.addOccupant(roomJid, occupant)
+    const room = stores.room.getRoom(roomJid)
+    if (room?.joined && occupant.nick !== room.nickname) {
+      unregisterOccupantFlusher ??= registerRoomOccupantFlusher(stores.room.getRoom, flushOccupants)
+      let batch = pendingOccupants.get(roomJid)
+      if (!batch) {
+        let resolve!: () => void
+        const committed = new Promise<void>(done => { resolve = done })
+        batch = { occupants: [], committed, resolve }
+        pendingOccupants.set(roomJid, batch)
+      }
+      batch.occupants.push(occupant)
+      if (occupantFlushTimer === null) occupantFlushTimer = setTimeout(() => flushOccupants(), OCCUPANT_FLUSH_DELAY_MS)
+    } else {
+      // Initial join and self presence retain their synchronous store contract.
+      flushOccupants(roomJid)
+      stores.room.addOccupant(roomJid, occupant)
+    }
     if (occupant.role !== 'visitor') stores.events.removeVoiceRequestsForOccupant(roomJid, occupant.nick)
   })
 
   on('room:occupants-batch', ({ roomJid, occupants }) => {
+    flushOccupants(roomJid)
     const stores = getStores()
     stores.room.batchAddOccupants(roomJid, occupants)
   })
 
   on('room:occupant-left', ({ roomJid, nick }) => {
+    flushOccupants(roomJid)
     const stores = getStores()
     stores.room.removeOccupant(roomJid, nick)
     stores.events.removeVoiceRequestsForOccupant(roomJid, nick)
@@ -366,6 +438,7 @@ export function createStoreBindings(
     occupantId?: string
     avatar: string | null
     avatarHash: string | null
+    current?: () => boolean
   }>>()
   let avatarFlushTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -373,7 +446,10 @@ export function createStoreBindings(
     avatarFlushTimer = null
     const stores = getStores()
     for (const [roomJid, byIdentity] of pendingOccupantAvatars) {
-      stores.room.updateOccupantAvatars(roomJid, [...byIdentity.values()])
+      flushOccupants(roomJid)
+      const avatars = [...byIdentity.values()].filter(avatar => !avatar.current || avatar.current())
+        .map(({ current: _current, ...avatar }) => avatar)
+      if (avatars.length > 0) stores.room.updateOccupantAvatars(roomJid, avatars)
     }
     pendingOccupantAvatars.clear()
   }
@@ -388,12 +464,24 @@ export function createStoreBindings(
     // identities deliberately have no nick, while live updates carry both.
     const identityKey = occupantId ? `id:${occupantId}` : `nick:${nick ?? ''}`
     const previous = byIdentity.get(identityKey)
+    const occupant = nick ? getStores().room.getRoom(roomJid)?.occupants.get(nick) : undefined
+    const snapshot = avatarState?.snapshot([
+      occupantAvatarKey(roomJid, nick ?? '', occupant?.jid, occupantId),
+      occupantAvatarKey(roomJid, nick ?? '', undefined, occupantId),
+      `${roomJid}/${nick ?? ''}`,
+    ])
+    let version = snapshot?.(occupantAvatarKey(roomJid, nick ?? '', occupant?.jid, occupantId), avatarHash ?? undefined)
+    if (version && snapshot) {
+      version = withAvatarIdentity(version, snapshot(occupantAvatarKey(roomJid, nick ?? '', undefined, occupantId), avatarHash ?? undefined))
+      if (nick) version = withAvatarIdentity(version, snapshot(`${roomJid}/${nick}`, avatarHash ?? undefined))
+    }
     byIdentity.set(identityKey, {
       ...previous,
       ...(nick !== undefined && { nick }),
       ...(occupantId !== undefined && { occupantId }),
       avatar,
       avatarHash,
+      ...(version && { current: version.current }),
     })
     if (avatarFlushTimer === null) {
       avatarFlushTimer = setTimeout(flushOccupantAvatars, AVATAR_FLUSH_DELAY_MS)
@@ -409,6 +497,7 @@ export function createStoreBindings(
   })
 
   on('room:self-occupant', ({ roomJid, occupant }) => {
+    flushOccupants(roomJid)
     const stores = getStores()
     const previousRole = stores.room.getRoom(roomJid)?.selfOccupant?.role
     stores.room.setSelfOccupant(roomJid, occupant)
@@ -416,6 +505,7 @@ export function createStoreBindings(
   })
 
   on('room:message', ({ roomJid, message, isLiveArrival, incrementUnread, incrementMentions }) => {
+    flushOccupants(roomJid)
     const stores = getStores()
     const ignoredUsers = stores.ignore.getIgnoredForRoom(roomJid)
     const nickToJidCache = stores.room.getRoom(roomJid)?.nickToJidCache
@@ -424,6 +514,7 @@ export function createStoreBindings(
       isMessageFromIgnoredUser(ignoredUsers, message, nickToJidCache) ||
       isReplyToIgnoredUser(ignoredUsers, message.replyTo, nickToJidCache)
     stores.room.addMessage(roomJid, message, {
+      onAccepted: () => recordMessageIngress('room', roomJid),
       isLiveArrival,
       incrementUnread: incrementUnread && !doNotNotify,
       incrementMentions: incrementMentions && !doNotNotify,
@@ -431,6 +522,7 @@ export function createStoreBindings(
   })
 
   on('room:whisper', ({ roomJid, message, incrementUnread, incrementMentions }) => {
+    flushOccupants(roomJid)
     const stores = getStores()
     const ignoredUsers = stores.ignore.getIgnoredForRoom(roomJid)
     const nickToJidCache = stores.room.getRoom(roomJid)?.nickToJidCache
@@ -440,6 +532,7 @@ export function createStoreBindings(
       isReplyToIgnoredUser(ignoredUsers, message.replyTo, nickToJidCache)
     // Whispers are locally durable: addMessage persists + indexes them like any message.
     stores.room.addMessage(roomJid, message, {
+      onAccepted: () => recordMessageIngress('room', roomJid),
       isLiveArrival: true,
       incrementUnread: !!incrementUnread && !doNotNotify,
       incrementMentions: !!incrementMentions && !doNotNotify,
@@ -494,9 +587,10 @@ export function createStoreBindings(
     stores.room.setRoomMAMError(roomJid, error, requestId)
   })
 
-  on('room:history-messages', ({ roomJid, messages, page, complete, direction, preserveGapMarker, isFetchLatest, initialBefore, fetchLatestTopId, sawCoverageTop, walkCarriedModifications, initialAfter, walkOldestId }) => {
+  on('room:history-messages', ({ roomJid, messages, page, complete, direction, preserveGapMarker, isFetchLatest, initialBefore, fetchLatestTopId, sawCoverageTop, walkCarriedModifications, initialAfter, walkOldestId, walkOriginTs, healGapsOnly }) => {
+    flushOccupants(roomJid)
     const stores = getStores()
-    stores.room.mergeRoomMAMMessages(roomJid, messages, page, complete, direction, { isFetchLatest, preserveGapMarker, extras: { initialBefore, fetchLatestTopId, sawCoverageTop, walkCarriedModifications, initialAfter, walkOldestId } })
+    stores.room.mergeRoomMAMMessages(roomJid, messages, page, complete, direction, { isFetchLatest, preserveGapMarker, extras: { initialBefore, fetchLatestTopId, sawCoverageTop, walkCarriedModifications, initialAfter, walkOldestId, walkOriginTs, healGapsOnly } })
   })
 
   // Room twin of chat:mam-anchor-purged (see above).
@@ -512,6 +606,7 @@ export function createStoreBindings(
   })
 
   on('room:members', ({ roomJid, members }) => {
+    flushOccupants(roomJid)
     const stores = getStores()
     stores.room.mergeRoomMembers(roomJid, members, (jid) => {
       return stores.roster.getContact(jid)?.avatar ?? null
@@ -731,13 +826,16 @@ export function createStoreBindings(
       const prevList = prev[roomJid]
       const currList = curr[roomJid]
       if (prevList === currList) continue
+      flushOccupants(roomJid)
 
       // Recalculate lastMessage from in-memory messages
       const room = stores.room.getRoom(roomJid)
       const roomMessages = stores.room.messages.get(roomJid) ?? []
-      if (room && roomMessages.length > 0) {
+      if (room) {
         const newLast = findLastNonIgnoredMessage(roomMessages, roomJid, room.nickToJidCache)
-        if (newLast) {
+        if (room.lastMessage && isMessageFromIgnoredUser(currList ?? [], room.lastMessage, room.nickToJidCache)) {
+          stores.room.updateRoom(roomJid, { lastMessage: newLast })
+        } else if (newLast) {
           stores.room.updateLastMessagePreview(roomJid, newLast)
         }
       }
@@ -746,10 +844,10 @@ export function createStoreBindings(
   unsubscribers.push(unsubIgnore)
 
   // Return cleanup function
-  return () => {
+  return Object.assign(() => {
     for (const unsub of unsubscribers) {
       unsub()
     }
     unsubscribers.length = 0
-  }
+  }, { flushOccupants, waitForOccupants })
 }

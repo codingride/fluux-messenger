@@ -66,6 +66,7 @@ export const createMockRoom = (jid: string, overrides: Partial<Room> = {}): Room
  * part of vitest's public export surface (TS2742).
  */
 export interface MockXmppClient {
+  saslFactory: { create: Mock }
   on: Mock<(event: string, handler: Function) => undefined>
   removeListener: Mock<(event: string, handler: Function) => undefined>
   off: Mock<(event: string, handler: Function) => undefined>
@@ -118,6 +119,7 @@ export const createMockXmppClient = (): MockXmppClient => {
   const pendingSmEvents: Record<string, unknown[][]> = {}
   const queueableLifecycleEvents = new Set(['online', 'resumed', 'disconnect', 'error', 'nonza'])
   return {
+    saslFactory: { create: vi.fn() },
     on: vi.fn((event: string, handler: Function) => {
       if (!handlers[event]) handlers[event] = []
       handlers[event].push(handler)
@@ -722,9 +724,7 @@ export const createMockStores = (): MockStoreBindings => ({
     getConversationLastTimestamp: vi.fn().mockReturnValue(undefined),
     // Composite getters
     getAllConversations: vi.fn().mockReturnValue([]),
-    getConversationGapStart: vi.fn().mockReturnValue(undefined),
-    getConversationGapStartId: vi.fn().mockReturnValue(undefined),
-    getConversationGapEndId: vi.fn().mockReturnValue(undefined),
+    getConversationGaps: vi.fn().mockReturnValue([]),
     getConversationCoverageUnproven: vi.fn().mockReturnValue(undefined),
     getConversationPendingStanzaId: vi.fn().mockReturnValue(undefined),
     discardPurgedRemoteDisplayed: vi.fn(),
@@ -757,9 +757,7 @@ export const createMockStores = (): MockStoreBindings => ({
     loadPreviewFromCache: vi.fn().mockResolvedValue(null),
     hydratePreviewsFromCache: vi.fn().mockResolvedValue(undefined),
     // Composite getter
-    getRoomGapStart: vi.fn().mockReturnValue(undefined),
-    getRoomGapStartId: vi.fn().mockReturnValue(undefined),
-    getRoomGapEndId: vi.fn().mockReturnValue(undefined),
+    getRoomGaps: vi.fn().mockReturnValue([]),
     getRoomCoverageUnproven: vi.fn().mockReturnValue(undefined),
     getRoomPendingStanzaId: vi.fn().mockReturnValue(undefined),
     discardPurgedRemoteDisplayed: vi.fn(),

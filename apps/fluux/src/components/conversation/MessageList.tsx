@@ -14,7 +14,7 @@
 import { findMessageRowIndex, type MessageRowRef } from '@fluux/sdk'
 import { useMemo, useRef, useEffect, useLayoutEffect, useCallback, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { BaseMessage } from '@fluux/sdk'
+import type { BaseMessage, GapInterval } from '@fluux/sdk'
 import { useMessageCopyFormatter, useMessageRangeSelection } from '@/hooks'
 import { useViewportObserver } from '@/hooks/useViewportObserver'
 import { useRenderCostProbe } from '@/hooks/useRenderCostProbe'
@@ -25,6 +25,7 @@ import { NewMessageMarker } from './NewMessageMarker'
 import { HistoryUnavailableMarker } from './HistoryUnavailableMarker'
 import { HistoryStartMarker } from './HistoryStartMarker'
 import { HistoryGapMarker } from './HistoryGapMarker'
+import { gapMarkerPositions } from './gapMarkerPositions'
 import { TypingIndicator } from './TypingIndicator'
 import { groupMessagesByDate, shouldShowAvatar } from './messageGrouping'
 import { useMessageListScroll } from './useMessageListScroll'
@@ -40,6 +41,7 @@ import { FloatingDateHeader } from './FloatingDateHeader'
 import { JumpToLastReadPill } from './JumpToLastReadPill'
 import { getTopVisibleDate } from './getTopVisibleDate'
 import { useTanstackMessageVirtualizer } from './tanstackMessageVirtualizer'
+import { VirtualizerSpacer } from './VirtualizerSpacer'
 import {
   setActiveMessageListController,
   getActiveMessageListController,
@@ -77,6 +79,8 @@ export interface MessageListProps<T extends BaseMessage> {
   messages: T[]
   /** Unique identifier for this conversation/room */
   conversationId: string
+  /** SDK message-event progress; remains unchanged during local read/scroll work. */
+  messageIngressVersion?: number
   interiorPlacementVersion?: number
   /** Row reference of the first unread message (for the new-message marker). */
   firstNewMessageRow?: MessageRowRef
@@ -176,10 +180,11 @@ export interface MessageListProps<T extends BaseMessage> {
   getStaticMessageId?: (message: T) => string
   /** ID of the last message sent by the user (for send animation) */
   lastSentMessageId?: string | null
-  /** Epoch ms of the newest message before a history gap (incomplete forward catch-up) */
-  forwardGapTimestamp?: number
-  /** Callback to continue loading missing messages from the gap */
-  onCatchUpHistory?: () => void
+  /** Recorded history gaps, oldest first. One marker is shown per gap whose
+   *  upper edge this window holds. */
+  gaps?: readonly GapInterval[]
+  /** Load the missing messages of the gap starting at `gapStart` */
+  onCatchUpHistory?: (gapStart: number) => void
   /** If true, show loading indicator on the gap marker */
   isCatchingUp?: boolean
   /**
@@ -200,6 +205,7 @@ export function MessageList<T extends BaseMessage>({
   messages,
   getStaticMessageId,
   conversationId,
+  messageIngressVersion,
   interiorPlacementVersion = 0,
   firstNewMessageRow,
   firstNewMessageIsProvisional = false,
@@ -231,13 +237,13 @@ export function MessageList<T extends BaseMessage>({
   onMessageSeen,
   staticMode,
   lastSentMessageId,
-  forwardGapTimestamp,
+  gaps,
   onCatchUpHistory,
   isCatchingUp,
   formatMessageForCopy,
 }: MessageListProps<T>) {
   // Detect render loops before they freeze the UI
-  detectRenderLoop('MessageList')
+  detectRenderLoop('MessageList', messageIngressVersion)
 
   // The numerator of the render rates, counted in the render body rather than an
   // effect. An effect with no dependency array would survive dead-code elimination
@@ -587,21 +593,16 @@ export function MessageList<T extends BaseMessage>({
     }
   }, [activeVirtualizer])
 
-  // Gap marker position: the first chronological message past the forward-catch-up
-  // boundary (the per-group computation in the legacy render reduces to this).
-  const gapMarkerMessageId = useMemo(() => {
-    if (!forwardGapTimestamp || !onCatchUpHistory) return undefined
-    for (const g of groupedMessages) {
-      for (const m of g.messages) {
-        if (m.timestamp.getTime() > forwardGapTimestamp) return messageRowId(m)
-      }
-    }
-    return undefined
-  }, [groupedMessages, forwardGapTimestamp, onCatchUpHistory])
+  // Each gap marker sits on the first message past that gap's start.
+  const gapMarkers = useMemo(
+    () => gapMarkerPositions(groupedMessages, onCatchUpHistory ? gaps : undefined),
+    [groupedMessages, gaps, onCatchUpHistory],
+  )
 
   const {
     setScrollContainerRef: setScrollContainerRefFromHook,
     contentWrapperRef,
+    commitVirtualizerLayout,
     handleScroll,
     handleWheel,
     handleLoadEarlier,
@@ -807,8 +808,8 @@ export function MessageList<T extends BaseMessage>({
             data-msg-selected={copySelectedIds.has(rowId) ? '' : undefined}
             style={msg.id === lastSentMessageId ? { animation: 'message-send var(--fluux-duration-slow) var(--fluux-ease-standard)' } : undefined}
           >
-            {rowId === gapMarkerMessageId && onCatchUpHistory && (
-              <HistoryGapMarker onLoadMore={onCatchUpHistory} isLoading={isCatchingUp ?? false} />
+            {gapMarkers.has(msg) && onCatchUpHistory && (
+              <HistoryGapMarker onLoadMore={() => onCatchUpHistory(gapMarkers.get(msg)!)} isLoading={isCatchingUp ?? false} />
             )}
             {item.isFirstNew && (
               <NewMessageMarker count={dividerCount} provisional={firstNewMessageIsProvisional} />
@@ -897,10 +898,10 @@ export function MessageList<T extends BaseMessage>({
         {/* Content wrapper for resize observation - only render when we have messages */}
         {hasContent && (virtualized ? (
         /* Virtualized: the wrapper is the spacer; only the visible window mounts. */
-        <div
-          ref={contentWrapperRef}
-          data-virtualizer-spacer
-          style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}
+        <VirtualizerSpacer
+          contentRef={contentWrapperRef}
+          height={virtualizer.getTotalSize()}
+          commitLayout={commitVirtualizerLayout}
         >
           {virtualizer.getVirtualItems().map((v) => (
             <div
@@ -914,7 +915,7 @@ export function MessageList<T extends BaseMessage>({
               {renderItem(virtualItems[v.index])}
             </div>
           ))}
-        </div>
+        </VirtualizerSpacer>
         ) : (
         <div ref={contentWrapperRef}>
           {/* History start marker - shown when all server history has been loaded */}
@@ -953,17 +954,7 @@ export function MessageList<T extends BaseMessage>({
                 const rowId = staticMode && getStaticMessageId ? getStaticMessageId(msg) : messageRowId(msg) ?? msg.id
                 const showNewMarker = firstNewRowId === rowId
 
-                // Show gap marker at the boundary where the forward catch-up stopped.
-                // The marker appears before the first message whose timestamp exceeds
-                // the gap boundary, signaling that messages between the two may be missing.
-                const showGapMarker = !!(
-                  forwardGapTimestamp &&
-                  onCatchUpHistory &&
-                  msg.timestamp.getTime() > forwardGapTimestamp &&
-                  (idx === 0
-                    ? (groupIndex === 0 || (groupedMessages[groupIndex - 1]?.messages.at(-1)?.timestamp.getTime() ?? 0) <= forwardGapTimestamp)
-                    : group.messages[idx - 1].timestamp.getTime() <= forwardGapTimestamp)
-                )
+                const gapStart = gapMarkers.get(msg)
 
                 // `key={undefined}` counts as a MISSING key for React (it warns
                 // and falls back to positional reconciliation), so an id-less
@@ -982,7 +973,9 @@ export function MessageList<T extends BaseMessage>({
                     data-msg-selected={copySelectedIds.has(rowId) ? '' : undefined}
                     style={msg.id === lastSentMessageId ? { animation: 'message-send var(--fluux-duration-slow) var(--fluux-ease-standard)' } : undefined}
                   >
-                    {showGapMarker && <HistoryGapMarker onLoadMore={onCatchUpHistory} isLoading={isCatchingUp ?? false} />}
+                    {gapStart !== undefined && onCatchUpHistory && (
+                      <HistoryGapMarker onLoadMore={() => onCatchUpHistory(gapStart)} isLoading={isCatchingUp ?? false} />
+                    )}
                     {showNewMarker && (
                       <NewMessageMarker count={dividerCount} provisional={firstNewMessageIsProvisional} />
                     )}

@@ -1,3 +1,4 @@
+import { attachmentElements } from './attachmentElements'
 import { parseModerationSignal } from '../moderation'
 import { xml } from '@xmpp/client'
 import type { Element } from '@xmpp/client'
@@ -928,50 +929,8 @@ export class Chat extends BaseModule {
     }
 
     if (attachment) {
-      const oobUrl = this.attachmentWireUrl(attachment.url, attachment.encryption)
-      const oobChildren = [xml('url', {}, oobUrl)]
-      if (attachment.thumbnail) {
-        const thumbUri = this.attachmentWireUrl(
-          attachment.thumbnail.uri,
-          attachment.thumbnail.encryption,
-        )
-        oobChildren.push(xml('thumbnail', {
-          xmlns: NS_THUMBS,
-          uri: thumbUri,
-          'media-type': attachment.thumbnail.mediaType,
-          width: String(attachment.thumbnail.width),
-          height: String(attachment.thumbnail.height),
-        }))
-      }
-      children.push(xml('x', { xmlns: NS_OOB }, ...oobChildren))
-      // Mark only the URL portion as fallback (preserves user text)
-      children.push(xml('fallback', { xmlns: NS_FALLBACK, for: NS_OOB },
-        xml('body', {
-          start: String(toCodePointOffset(fullBody, oobFallbackStart)),
-          end: String(toCodePointOffset(fullBody, oobFallbackEnd)),
-        })
-      ))
-
-      // XEP-0446: File Metadata Element (for original dimensions)
-      const fileChildren: Element[] = []
-      if (attachment.mediaType) {
-        fileChildren.push(xml('media-type', {}, attachment.mediaType))
-      }
-      if (attachment.name) {
-        fileChildren.push(xml('name', {}, attachment.name))
-      }
-      if (attachment.size !== undefined) {
-        fileChildren.push(xml('size', {}, String(attachment.size)))
-      }
-      if (attachment.width !== undefined) {
-        fileChildren.push(xml('width', {}, String(attachment.width)))
-      }
-      if (attachment.height !== undefined) {
-        fileChildren.push(xml('height', {}, String(attachment.height)))
-      }
-      if (fileChildren.length > 0) {
-        children.push(xml('file', { xmlns: NS_FILE_METADATA }, ...fileChildren))
-      }
+      children.push(...attachmentElements(attachment, fullBody, oobFallbackStart, oobFallbackEnd,
+        (url, encryption) => this.attachmentWireUrl(url, encryption)))
     }
 
     // XEP-0359: Include origin-id for echo deduplication
@@ -1906,7 +1865,7 @@ export class Chat extends BaseModule {
     const msg = this.deps.stores?.room.getMessage(roomJid, messageId)
     if (!msg?.isPrivate || !msg.whisperWith) return null
 
-    const occupants = this.deps.stores?.room.getRoom(roomJid)?.occupants
+    const occupants = this.getRoomWithOccupants(roomJid)?.occupants
     let nick: string | null = null
     if (msg.whisperWithOccupantId && occupants) {
       for (const [occNick, occ] of occupants) {
@@ -2222,6 +2181,8 @@ export class Chat extends BaseModule {
       type: 'chat',
       id: messageId,
       stanzaId: parsed.stanzaId || undefined,
+      ownArchiveId: parsed.ownArchiveId,
+      ownArchiveBy: parsed.ownArchiveBy,
       originId: parsed.originId || undefined,
       conversationId,
       from: bareFrom,
@@ -2406,7 +2367,7 @@ export class Chat extends BaseModule {
   ): RoomMessage | null {
     const roomJid = bareFrom
     const nick = getResource(from) || ''
-    const room = this.deps.stores?.room.getRoom(roomJid)
+    const room = this.getRoomWithOccupants(roomJid)
     if (!room) return null
 
     const isOutgoing = isSentCarbon || (room.nickname.toLowerCase() === nick.toLowerCase())

@@ -339,6 +339,7 @@
         "voiceRequestSent": "Demande de parole envoyée",
         "voiceRequests": "Demandes de parole",
         "grantVoice": "Accorder la parole",
+        "voiceApprovalUnanswered": "Le salon n'a pas accordé la parole. La personne a peut-être quitté le salon ou a déjà la parole.",
         "revokeVoice": "Retirer la parole",
         "grantModerator": "Accorder modérateur",
         "revokeModerator": "Retirer modérateur",
@@ -391,6 +392,9 @@
         "whisperingTo": "Vous chuchotez en privé à {{nick}}",
         "whisperThread": "Privé avec {{nick}}",
         "whisperCounterpartGone": "{{nick}} n'est plus dans le salon, vous ne pouvez pas répondre",
+        "whisperAttachmentTitle": "Envoyer une pièce jointe privée ?",
+        "whisperAttachmentWarning": "Le message privé est éphémère, mais les fichiers restent sur le serveur de dépôt selon sa politique de conservation. Les destinataires peuvent télécharger et garder des copies.",
+        "whisperAttachmentRetention": "Conservation sur le serveur de dépôt : {{duration}}. Les destinataires peuvent télécharger et garder des copies.",
         "whisperPlaceholder": "Chuchoter à {{nick}}...",
         "ignoreUser": "Ignorer dans ce salon",
         "stopIgnoring": "Ne plus ignorer",
@@ -458,6 +462,7 @@
         "nickEdgeWhitespace": "Le nom comporte des espaces au début ou à la fin",
         "nickHiddenChars": "Le nom contient des caractères invisibles",
         "mentionSuggestions": "Suggestions de mentions",
+        "mentionsCount": "Mentions: {{count}}",
         "unreadMessages": "{{displayCount}} message non lu",
         "unreadMessages_many": "{{displayCount}} de messages non lus",
         "unreadMessages_other": "{{displayCount}} messages non lus"
@@ -493,6 +498,7 @@
         "replyQuoteHiddenEncrypted": "Citation masquée: le message d'origine était chiffré",
         "forwardMessage": "Transférer le message (bientôt disponible)",
         "moreReactions": "Plus de réactions",
+        "reactions": "Réactions",
         "reactionOthers": "{{count}} autres",
         "moreOptions": "Plus d'options",
         "reactWith": "Réagir avec {{emoji}}",
@@ -535,6 +541,7 @@
         "copyLinkChoose": "Copier quel lien ?",
         "openInBrowser": "Ouvrir dans le navigateur",
         "saveImage": "Enregistrer l'image",
+        "mediaUnavailableOrUnsupported": "Ce fichier ne peut pas être lu ici : il est peut-être indisponible ou dans un format non pris en charge",
         "videoFormatUnsupported": "Ce format vidéo ne peut pas être lu ici",
         "videoUnavailable": "Vidéo non disponible",
         "audioFormatUnsupported": "Ce format audio ne peut pas être lu ici",
@@ -649,6 +656,17 @@
         "yesterday": "Hier"
     },
     "settings": {
+    "nativeNotificationTone": "Son des notifications",
+    "nativeNotificationToneDescription": "Choisissez le son des notifications en arrière-plan. Silencieux conserve les sons dans l’application.",
+    "nativeSoundDescription": "Jouer des sons dans l’application et pour les notifications en arrière-plan.",
+    "notificationTone_default": "Son du système",
+    "notificationTone_bell": "Cloche",
+    "notificationTone_chime": "Carillon",
+    "notificationTone_pulse": "Pulsation",
+    "notificationTone_silent": "Silencieux",
+    "oxNotificationPreview": "Aperçus OpenPGP dans les notifications",
+    "oxNotificationPreviewDescription": "Autoriser l’extension de notification à récupérer et déchiffrer les messages de ce compte. Les aperçus suivent les réglages iOS et peuvent apparaître sur l’écran verrouillé si « Toujours » est sélectionné.",
+    "oxNotificationPreviewFailed": "Impossible d’activer les aperçus. Vérifiez qu’OpenPGP et votre connexion enregistrée sont disponibles.",
         "title": "Paramètres",
         "categories": {
             "profile": "Profil",
@@ -757,6 +775,7 @@
         "accentThemeDefault": "Défaut du thème",
         "fontSize": "Taille de police",
         "fontSizeDescription": "Ajuster la taille du texte dans l'application",
+        "fontSizeSystemDescription": "Relative à la taille du texte définie dans les Réglages d’iOS",
         "decreaseFontSize": "Réduire la taille de la police",
         "increaseFontSize": "Augmenter la taille de la police",
         "sound": "Jouer les sons de notification",
@@ -1521,5 +1540,12 @@
             "archiveUnsupported": "Le serveur ne prend pas en charge la recherche dans l'archive. Essayez de rechercher dans une conversation.",
             "serverFailed": "Échec de la recherche sur le serveur"
         }
+    },
+    "notificationPreview": {
+        "activity": "Nouvelle activité",
+        "reaction": "{{nickname}} a réagi : {{text}}",
+        "edit": "{{nickname}} (edit) : {{text}}",
+        "retraction": "{{nickname}} a supprimé un message",
+        "messages": "{{nickname}} : {{count}} nouveaux messages"
     }
 }

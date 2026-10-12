@@ -29,6 +29,7 @@ class PushPlugin: Plugin {
     private let probe = ProcessInfo.processInfo.environment["FLUUX_PUSH_PROBE"] == "1"
 
     private var badge: BadgeState?
+    private let mirrorQueue = DispatchQueue(label: "fluux.notification-mirror")
 
     override func load(webview: WKWebView) {
         PushPlugin.shared = self
@@ -51,15 +52,101 @@ class PushPlugin: Plugin {
         }
     }
 
-    /// Shares contact and room names with the notification service extension,
-    /// which titles each push with its sender's name.
+    /// Updates the account-owned notification index shared with the extension.
     @objc public func setSenderNames(_ invoke: Invoke) {
         do {
-            try PushPlugin.writeShared(try invoke.parseArgs(SenderNames.self), to: "NotificationNames.json")
-            invoke.resolve()
-        } catch {
-            invoke.reject(error.localizedDescription)
-        }
+            let names = try invoke.parseArgs(SharedNames.self)
+            mirrorQueue.async {
+                do {
+                    guard let root = NotificationMirror.root else { throw PushError.sharedContainerUnavailable }
+                    ShareSuggestions.update(names, root: root) { error in
+                        if let error { invoke.reject(error.localizedDescription) } else { invoke.resolve() }
+                    }
+                } catch { invoke.reject(error.localizedDescription) }
+            }
+        } catch { invoke.reject(error.localizedDescription) }
+    }
+
+    @objc public func removeConversationDonations(_ invoke: Invoke) {
+        do {
+            let destination = try invoke.parseArgs(ConversationDestination.self)
+            guard destination.isValid else { invoke.reject("Invalid conversation"); return }
+            ShareSuggestions.remove(destination) { error in
+                if let error { invoke.reject(error.localizedDescription) } else { invoke.resolve() }
+            }
+        } catch { invoke.reject("Invalid conversation") }
+    }
+
+    @objc public func donateConversation(_ invoke: Invoke) {
+        do {
+            let destination = try invoke.parseArgs(ConversationDestination.self)
+            guard destination.isValid, let root = NotificationMirror.root else { invoke.reject("Invalid conversation"); return }
+            ShareSuggestions.donate(destination, root: root) { error in
+                if let error { invoke.reject(error.localizedDescription) } else { invoke.resolve() }
+            }
+        } catch { invoke.reject("Invalid conversation") }
+    }
+
+    @objc public func setNotificationSound(_ invoke: Invoke) {
+        do {
+            let settings = try invoke.parseArgs(NotificationSoundSettings.self)
+            mirrorQueue.async {
+                do {
+                    guard let root = NotificationMirror.root else { throw PushError.sharedContainerUnavailable }
+                    try settings.write(root: root)
+                    invoke.resolve()
+                } catch { invoke.reject("Notification sound preference unavailable") }
+            }
+        } catch { invoke.reject("Invalid notification sound preference") }
+    }
+
+    @objc public func setNotificationPreview(_ invoke: Invoke) {
+        do {
+            let args = try invoke.parseArgs(PreviewArguments.self)
+            mirrorQueue.async {
+                do {
+                    guard let root = NotificationMirror.root else { throw PushError.sharedContainerUnavailable }
+                    let ledger = try PreviewLedger(root: root)
+                    if args.operation == "claimApp" {
+                        guard let delta = args.deltas?.first, args.deltas?.count == 1, let request = args.requestId else { throw PreviewLedger.Failure.invalid }
+                        invoke.resolve(["allowed": try ledger.claimApp(delta, request: request)])
+                        return
+                    }
+                    if args.operation == "merge" {
+                        let removals = try ledger.merge(args.deltas ?? [])
+                        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: removals)
+                        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: removals)
+                        invoke.resolve(); return
+                    }
+                    // Revoke the capability before retiring history or publishing a new revision.
+                    try PreviewKeychain.write(nil)
+                    var snapshot = args.snapshot.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+                    let account = snapshot?["account"] as? String
+                    let session = try ledger.capability(account: account, purge: args.operation == "purge")
+                    UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ledger.retiredRequests)
+                    UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ledger.retiredRequests)
+                    if let session = session, snapshot != nil {
+                        snapshot?["ledger"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(session))
+                    }
+                    let data = try snapshot.map { try JSONSerialization.data(withJSONObject: $0) }
+                    try PreviewKeychain.write(data)
+                    invoke.resolve(session.map { ["account": $0.account, "epoch": $0.epoch] } ?? [:])
+                } catch { invoke.reject("Notification preview state unavailable") }
+            }
+        } catch { invoke.reject("Invalid notification preview snapshot") }
+    }
+
+    @objc public func setNotificationAvatar(_ invoke: Invoke) {
+        do {
+            let avatar = try invoke.parseArgs(NotificationAvatar.self)
+            mirrorQueue.async {
+                do {
+                    guard let root = NotificationMirror.root else { throw PushError.sharedContainerUnavailable }
+                    let written = try NotificationMirror.writeAvatar(avatar, root: root)
+                    invoke.resolve(["written": written])
+                } catch { invoke.reject(error.localizedDescription) }
+            }
+        } catch { invoke.reject(error.localizedDescription) }
     }
 
     /// Sets the app icon badge and shares what it counts with the notification
@@ -319,12 +406,6 @@ private class RemoteNotificationDelegate: NSObject, UNUserNotificationCenterDele
     }
 }
 
-/// Display names by bare JID, read by the notification service extension.
-private struct SenderNames: Codable {
-    let contacts: [String: String]
-    let rooms: [String: String]
-}
-
 private struct DismissTarget: Decodable {
     let target: String
 }
@@ -351,3 +432,43 @@ enum PushError: LocalizedError {
 
 @_cdecl("init_plugin_push")
 func initPlugin() -> Plugin { PushPlugin() }
+
+private struct PreviewArguments: Decodable {
+    let snapshot: Data?
+    let operation: String
+    let requestId: String?
+    let deltas: [PreviewLedger.Delta]?
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: Keys.self)
+        operation = try values.decodeIfPresent(String.self, forKey: .operation) ?? "revoke"
+        requestId = try values.decodeIfPresent(String.self, forKey: .requestId)
+        guard ["publish", "revoke", "purge", "merge", "claimApp"].contains(operation) else { throw PreviewLedger.Failure.invalid }
+        deltas = try values.decodeIfPresent([PreviewLedger.Delta].self, forKey: .deltas)
+        if try !values.contains(.snapshot) || values.decodeNil(forKey: .snapshot) { snapshot = nil }
+        else { snapshot = try JSONEncoder().encode(values.decode(JSONValue.self, forKey: .snapshot)) }
+    }
+    enum Keys: CodingKey { case snapshot, operation, deltas, requestId }
+}
+private enum JSONValue: Codable {
+    case object([String: JSONValue]), array([JSONValue]), string(String), number(Double), bool(Bool), null
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let v = try? c.decode(Bool.self) { self = .bool(v) }
+        else if let v = try? c.decode(String.self) { self = .string(v) }
+        else if let v = try? c.decode(Double.self) { self = .number(v) }
+        else if let v = try? c.decode([String: JSONValue].self) { self = .object(v) }
+        else { self = .array(try c.decode([JSONValue].self)) }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .object(let v): try c.encode(v)
+        case .array(let v): try c.encode(v)
+        case .string(let v): try c.encode(v)
+        case .number(let v): try c.encode(v)
+        case .bool(let v): try c.encode(v)
+        case .null: try c.encodeNil()
+        }
+    }
+}

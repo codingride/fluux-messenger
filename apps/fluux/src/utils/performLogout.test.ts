@@ -6,12 +6,14 @@ import { saveSession, getSession } from '@/hooks/useSessionPersistence'
 
 // Keep real reconnectIntent / clearAutoReconnectCredentials / clearSession (the
 // behaviours under test). Only stub the heavy/native edges.
+const previewCleanup = vi.hoisted(() => ({ purge: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('@/platform/ios/notificationPreviews', () => ({ purgeIOSNotificationPreviews: previewCleanup.purge }))
 const mockReset = vi.fn()
 vi.mock('@fluux/sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@fluux/sdk')>()
   return {
     ...actual,
-    connectionStore: { getState: () => ({ reset: mockReset }), subscribe: vi.fn(() => vi.fn()) },
+    connectionStore: { getState: () => ({ reset: mockReset, status: 'online', webPushEnabled: true }), subscribe: vi.fn(() => vi.fn()) },
   }
 })
 vi.mock('@/utils/keychain', () => ({
@@ -30,10 +32,42 @@ function seedFastToken(): void {
 }
 
 describe('performLogout', () => {
+  it.each([false, true])('disables push before disconnect (clear local data: %s)', async shouldCleanLocalData => {
+    const registration = { jid: 'push.example.test', node: 'fixture-node' }
+    localStorage.setItem('fluux-push-registration', JSON.stringify(registration))
+    const push = { registerDevice: vi.fn(), enable: vi.fn(), disable: vi.fn().mockResolvedValue(undefined), unregisterDevice: vi.fn() }
+    let nodeAtDisconnect: string | null | undefined
+    const disconnect = vi.fn(async () => { nodeAtDisconnect = localStorage.getItem('fluux-push-registration') })
+    await performLogout({ disconnect, push, jid: JID, shouldCleanLocalData })
+    expect(disconnect).toHaveBeenCalledOnce()
+    expect(push.disable).toHaveBeenCalledWith(registration, expect.any(Number))
+    expect(push.disable.mock.invocationCallOrder[0]).toBeLessThan(disconnect.mock.invocationCallOrder[0])
+    expect(nodeAtDisconnect).toBeNull()
+  })
+
+  it.each(['error', 'timeout'])('completes logout and clears push state on %s', async mode => {
+    vi.useFakeTimers()
+    try {
+      localStorage.setItem('fluux-push-registration', JSON.stringify({ jid: 'push.example.test', node: 'fixture-node' }))
+      localStorage.setItem('fluux-push-token', 'fixture-token')
+      const push = { registerDevice: vi.fn(), enable: vi.fn(), unregisterDevice: vi.fn(),
+        disable: vi.fn(() => mode === 'timeout' ? new Promise<void>(() => {}) : Promise.reject(new Error(mode))) }
+      const disconnect = vi.fn().mockResolvedValue(undefined)
+      const logout = performLogout({ disconnect, push, jid: JID, shouldCleanLocalData: false })
+      await vi.advanceTimersByTimeAsync(1500)
+      await logout
+      expect(disconnect).toHaveBeenCalledOnce()
+      expect(localStorage.getItem('fluux-push-registration')).toBeNull()
+      expect(localStorage.getItem('fluux-push-token')).toBeNull()
+      expect(getReconnectIntent()).toBe('logged-out')
+    } finally { vi.useRealTimers() }
+  })
+
   beforeEach(() => {
     localStorage.clear()
     sessionStorage.clear()
     mockReset.mockClear()
+    previewCleanup.purge.mockReset().mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -55,6 +89,22 @@ describe('performLogout', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('purges notification secrets before disconnect and bounds stalled native cleanup', async () => {
+    vi.useFakeTimers()
+    try {
+      previewCleanup.purge.mockImplementationOnce(() => new Promise<void>(() => {}))
+      const disconnect = vi.fn().mockResolvedValue(undefined)
+      const logout = performLogout({ disconnect, jid: JID, shouldCleanLocalData: false })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(previewCleanup.purge).toHaveBeenCalledOnce()
+      expect(disconnect).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(2500)
+      await logout
+      expect(disconnect).toHaveBeenCalledOnce()
+      expect(mockReset).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
   })
 
   it('requests FAST-token invalidation on disconnect', async () => {

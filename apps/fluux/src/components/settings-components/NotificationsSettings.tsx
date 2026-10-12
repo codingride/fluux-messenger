@@ -8,6 +8,8 @@ import {
   requestNotificationPermission,
 } from '@/hooks/useNotificationPermission'
 import { isWebPushSupported, requestWebPushRegistration } from '@/hooks/useWebPush'
+import { NotificationSoundSetting } from '@/platform/ios/NotificationSoundSetting'
+import { NotificationPreviewSetting } from '@/platform/ios/NotificationPreviewSetting'
 import { IosNotificationsCard } from './IosNotificationsCard'
 import { SettingsSection } from '@/components/ui/SettingsSection'
 import { Toggle } from '@/components/ui/Toggle'
@@ -195,21 +197,23 @@ export function NotificationsSettings() {
             isConnected={isConnected}
             server={jid ? getDomain(jid) : ''}
           />
+          <NotificationPreviewSetting />
         </SettingsSection>
 
         <SettingsSection title={t('settings.soundsSection')}>
+          <NotificationSoundSetting />
           <div className="flex items-center justify-between gap-4 p-4 rounded-lg border-2 border-fluux-border bg-fluux-bg">
             <div>
               <label htmlFor="notification-sound" className="text-sm font-medium text-fluux-text">
-                {t('settings.soundInApp')}
+                {t('settings.sound')}
               </label>
-              <p className="text-xs text-fluux-muted">{t('settings.soundInAppDescription')}</p>
+              <p className="text-xs text-fluux-muted">{t('settings.nativeSoundDescription')}</p>
             </div>
             <Toggle
               id="notification-sound"
               checked={soundEnabled}
               onChange={setSoundEnabled}
-              aria-label={t('settings.soundInApp')}
+              aria-label={t('settings.sound')}
             />
           </div>
         </SettingsSection>

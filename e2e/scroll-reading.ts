@@ -10,7 +10,6 @@ import {
   PREPEND_DRIFT_PX,
   LARGE_JUMP_PX,
   AT_BOTTOM_OK_PX,
-  FAB_THRESHOLD_PX,
   CLEAR_OF_BOTTOM_PX,
   SETTLE_MS,
   settle,
@@ -38,6 +37,197 @@ import {
 import { installViewportGeometryFixture } from './harness/viewportGeometryFixture'
 
 test.afterEach(assertScrollShadow)
+
+async function stopDemoTimeline(page: Page) {
+  // DemoTutorialProvider starts the scripted room replies, reactions and typing
+  // even with tutorial=false. The backlog fixture must own its message ingress.
+  await page.evaluate(() => {
+    const client = (window as unknown as { __demoClient: { stopAnimation(): void } }).__demoClient
+    client.stopAnimation()
+  })
+}
+
+async function expectBacklogRendersToSettle(page: Page, view: 'RoomView' | 'ChatView') {
+  const readTally = () => page.evaluate(() => {
+    const perf = (window as unknown as { __perf: { tally: () => Record<string, number> } }).__perf
+    return perf.tally()
+  })
+  const before = await readTally()
+  // Each window exceeds the detector's five-second sustained no-progress guard.
+  // Finite cache reconciliation may finish in the first window; work must not grow.
+  await page.waitForTimeout(6000)
+  const first = await readTally()
+  await page.waitForTimeout(6000)
+  const second = await readTally()
+  for (const component of ['MessageList', view]) {
+    const firstCount = (first[component] ?? 0) - (before[component] ?? 0)
+    const secondCount = (second[component] ?? 0) - (first[component] ?? 0)
+    expect(secondCount, `${component} renders in consecutive settling windows`)
+      .toBeLessThanOrEqual(firstCount)
+  }
+}
+
+async function waitForStressRoom(page: Page) {
+  await page.waitForFunction(jid => {
+    const store = (window as unknown as { __roomStore: typeof roomStore }).__roomStore
+    return location.hash === '#/rooms/' + encodeURIComponent(jid)
+      && store.getState().activeRoomJid === jid
+  }, STRESS_ROOM_JID, { timeout: 30_000 })
+  const scroller = page.locator('[data-message-list]').filter({
+    has: page.locator('[data-message-id^="stress-0-"]'),
+  })
+  await expect(scroller).toBeVisible({ timeout: 30_000 })
+  return scroller
+}
+
+for (const width of [500, 390]) {
+  test(`stress backlog survives PageUp then a ${width}px reload`, async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    page.on('console', message => {
+      if (message.type() === 'error') errors.push(message.text())
+    })
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await bootDemo(page, '/demo.html?tutorial=false&stress=rooms:1,messages:1000,occupants:200,activate:1,msgStep:0')
+    const scroller = await waitForStressRoom(page)
+    // WebKit needs an explicit tab index to focus a scroll container for native PageUp.
+    await scroller.evaluate(element => { element.tabIndex = -1 })
+    await scroller.focus()
+    await expect(scroller).toBeFocused()
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+    await settle(page)
+    const beforePageUp = await waitForTopVisibleSettled(page)
+    await page.keyboard.press('PageUp')
+    await settle(page)
+    const afterPageUp = await waitForTopVisibleSettled(page)
+    const [beforeIndex, afterIndex] = await getRoomMessageIndices(page, STRESS_ROOM_JID, [
+      beforePageUp?.id ?? null, afterPageUp?.id ?? null,
+    ])
+    // Row measurements can change content offsets during PageUp; assert the reader's movement.
+    if (afterIndex === beforeIndex) {
+      expect(afterPageUp!.offsetFromTop).toBeGreaterThan(beforePageUp!.offsetFromTop)
+    } else {
+      expect(afterIndex).toBeLessThan(beforeIndex)
+    }
+    await page.setViewportSize({ width, height: 844 })
+    await page.reload()
+    await page.waitForFunction(() => (window as Window & { __fluuxDemoReady?: boolean }).__fluuxDemoReady === true)
+    await waitForStressRoom(page)
+    await settle(page)
+    await expect(page.getByText('Something Went Wrong', { exact: true })).toHaveCount(0)
+    expect(errors.filter(error => /Maximum update depth|Render loop detected/i.test(error))).toEqual([])
+    await expect(scroller.locator('[data-message-id]').first()).toBeAttached()
+    expect(await page.evaluate(jid => {
+      const store = (window as unknown as { __roomStore: typeof roomStore }).__roomStore
+      return store.getState().messages.get(jid)?.length
+    }, STRESS_ROOM_JID)).toBe(1000)
+  })
+}
+
+test('a narrow active room accepts a backlog without the stress harness', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => {
+    if (message.type() === 'error') errors.push(message.text())
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await bootDemo(page, '/demo.html?tutorial=false&virt=1&perf=1')
+  await stopDemoTimeline(page)
+  const roomJid = 'team@conference.fluux.chat'
+  await page.evaluate(async jid => {
+    const store = (window as unknown as { __roomStore: typeof roomStore }).__roomStore
+    await store.getState().activateRoom(jid)
+    location.hash = '#/rooms/' + encodeURIComponent(jid)
+  }, roomJid)
+  const scroller = page.locator('[data-message-list]')
+  await expect(scroller).toBeVisible({ timeout: 30_000 })
+  await scroller.focus()
+  await page.keyboard.press('End')
+  await settle(page)
+  // Connection sync grace lasts 15 seconds; the backlog must exercise ordinary thresholds.
+  await page.waitForTimeout(20_000)
+  await page.evaluate(jid => new Promise<void>(resolve => {
+    const client = (window as unknown as {
+      __demoClient: { emitSDK: (event: string, payload: unknown) => void }
+    }).__demoClient
+    const start = Date.now()
+    for (let index = 0; index < 1000; index += 1) {
+      setTimeout(() => {
+        const nick = index % 2 ? 'Emma' : 'Olivia'
+        const message: RoomMessage = {
+          type: 'groupchat', roomJid: jid, id: `backlog-${index}`,
+          occupantId: undefined, stanzaId: undefined, originId: undefined,
+          from: `${jid}/${nick}`, nick, body: `Incoming message ${index}`,
+          timestamp: new Date(start + index), isOutgoing: false,
+        }
+        client.emitSDK('room:message', { roomJid: jid, message })
+      }, 0)
+    }
+    setTimeout(resolve, 0)
+  }), roomJid)
+  await settle(page)
+  expect(errors.filter(error => /Maximum update depth|Render loop detected/i.test(error))).toEqual([])
+  await expect(scroller).toBeVisible()
+  expect(await page.evaluate(jid => {
+    const store = (window as unknown as { __roomStore: typeof roomStore }).__roomStore
+    return store.getState().messages.get(jid)?.filter(message => message.id.startsWith('backlog-')).length
+  }, roomJid)).toBe(1000)
+  await expectBacklogRendersToSettle(page, 'RoomView')
+  expect(errors.filter(error => /Maximum update depth|Render loop detected/i.test(error))).toEqual([])
+  await expect(scroller).toBeVisible()
+})
+
+test('a narrow active chat accepts continuing ingress after sync grace', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => {
+    if (message.type() === 'error') errors.push(message.text())
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await bootDemo(page, '/demo.html?tutorial=false&virt=1&perf=1')
+  await stopDemoTimeline(page)
+  const conversationId = 'ava@fluux.chat'
+  await page.evaluate(async jid => {
+    const store = (window as unknown as { __chatStore: typeof chatStore }).__chatStore
+    await store.getState().activateConversation(jid)
+    location.hash = '#/messages/' + encodeURIComponent(jid)
+  }, conversationId)
+  const scroller = page.locator('[data-message-list]')
+  await expect(scroller).toBeVisible({ timeout: 30_000 })
+  await scroller.focus()
+  await page.keyboard.press('End')
+  await settle(page)
+  // Connection sync grace lasts 15 seconds; the backlog must exercise ordinary thresholds.
+  await page.waitForTimeout(20_000)
+  await page.evaluate(jid => new Promise<void>(resolve => {
+    const client = (window as unknown as {
+      __demoClient: { emitSDK: (event: string, payload: unknown) => void }
+    }).__demoClient
+    const start = Date.now()
+    for (let index = 0; index < 1000; index += 1) {
+      setTimeout(() => {
+        const message: Message = {
+          type: 'chat', conversationId: jid, id: `backlog-${index}`,
+          stanzaId: undefined, originId: undefined,
+          from: jid, body: `Incoming message ${index}`,
+          timestamp: new Date(start + index), isOutgoing: false,
+        }
+        client.emitSDK('chat:message', { message, isLiveArrival: true })
+      }, index * 10)
+    }
+    setTimeout(resolve, 10_000)
+  }), conversationId)
+  await settle(page)
+  expect(errors.filter(error => /Maximum update depth|Render loop detected/i.test(error))).toEqual([])
+  await expect(scroller).toBeVisible()
+  expect(await page.evaluate(jid => {
+    const store = (window as unknown as { __chatStore: typeof chatStore }).__chatStore
+    return store.getState().messages.get(jid)?.filter(message => message.id.startsWith('backlog-')).length
+  }, conversationId)).toBe(1000)
+  await expectBacklogRendersToSettle(page, 'ChatView')
+  expect(errors.filter(error => /Maximum update depth|Render loop detected/i.test(error))).toEqual([])
+  await expect(scroller).toBeVisible()
+})
 
 // ── Invariant tests ───────────────────────────────────────────────────────────
 
@@ -2644,18 +2834,19 @@ test.describe('Insertion drift while scrolled up', () => {
   })
 
   test('invariant-14h: insertion preservation starts at the semantic live-edge threshold', async ({ page }) => {
-    await openScrolledUp(page, INSERTION_URL, 225)
+    await openScrolledUp(page, INSERTION_URL, AT_BOTTOM_OK_PX + 30)
+    await expect(page.locator('[data-fab="scroll-to-bottom"]')).toHaveAttribute('tabindex', '0')
     const r = await insertAboveViewport(
       page,
-      ['delayed arrival inside the FAB threshold gap\n'.repeat(18)],
+      ['delayed arrival just outside live-edge following\n'.repeat(18)],
       {
-        minDistanceFromBottom: AT_BOTTOM_OK_PX,
-        maxDistanceFromBottom: FAB_THRESHOLD_PX,
+        minDistanceFromBottom: AT_BOTTOM_OK_PX + 1,
+        maxDistanceFromBottom: AT_BOTTOM_OK_PX + 50,
       },
     )
     expect(
       r.drift,
-      `reading position drifted ${r.drift}px inside the live-edge/FAB threshold gap`,
+      `reading position drifted ${r.drift}px just outside live-edge following`,
     ).toBeLessThan(INSERTION_DRIFT_PX)
   })
 
@@ -3319,18 +3510,24 @@ for (const virtualized of [false, true]) {
       const state = (window as unknown as FinalBoundaryWindow).__roomStore.getState()
       state.setTargetMessageId(state.messages.get(jid)!.at(-1)!.id)
     }, STRESS_ROOM_JID)
-    await page.waitForTimeout(SETTLE_MS)
+    await settle(page)
     const list = page.locator('[data-message-list]').first()
-    await list.hover()
-    await page.mouse.wheel(0, -1000)
-    await page.waitForTimeout(SETTLE_MS)
+    // A wheel delta can land in smaller WebKit increments. Leave the live-edge follow zone
+    // with enough room for the later downward gesture before testing reading preservation.
+    await wheelAwayFromBottom(page, CLEAR_OF_BOTTOM_PX, -1000)
+    await settle(page)
     const positions = []
     try {
       for (const movement of [0, 250, -300]) {
         if (movement) {
           await page.mouse.wheel(0, movement)
-          await page.waitForTimeout(SETTLE_MS)
+          await settle(page)
         }
+        const readingAnchor = await findBottomVisibleMessage(page)
+        expect(readingAnchor, 'must capture a visible reading anchor').not.toBeNull()
+        expect(await list.evaluate(scroller =>
+          scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight,
+        ), 'growth must start outside the live-edge follow zone').toBeGreaterThan(AT_BOTTOM_OK_PX)
         const before = await list.evaluate(scroller => {
           const boundary = scroller.getBoundingClientRect().bottom
           const row = [...scroller.querySelectorAll<HTMLElement>('.message-row')].find(row => row.getBoundingClientRect().top > boundary)
@@ -3353,15 +3550,18 @@ for (const virtualized of [false, true]) {
           row.appendChild(growth)
           return state
         })
-        await page.waitForTimeout(SETTLE_MS)
+        await settle(page)
         const after = await list.evaluate(scroller => ({
           scrollTop: scroller.scrollTop,
           scrollHeight: scroller.scrollHeight,
         }))
+        const anchorOffsetAfter = await getMessageOffsetFromTop(page, readingAnchor!.id)
         // Recorded BEFORE the assertion. An attachment written after the loop never runs on the
         // iteration that throws, which is the only one anybody needs it for.
-        positions.push({ movement, before, after, moved: after.scrollTop - before.scrollTop })
+        positions.push({ movement, before, after, readingAnchor, anchorOffsetAfter, moved: after.scrollTop - before.scrollTop })
         expect(Math.abs(after.scrollTop - before.scrollTop)).toBeLessThanOrEqual(1)
+        expect(anchorOffsetAfter, 'reading anchor must remain mounted').not.toBeNull()
+        expect(Math.abs(anchorOffsetAfter! - readingAnchor!.topInView)).toBeLessThanOrEqual(1)
       }
       await page.screenshot({ path: testInfo.outputPath('reading-anchor.png') })
     } finally {

@@ -54,7 +54,7 @@
 ## Features
 
 ### Messaging
-- **Reactions, Replies & Styling** - Emoji reactions with quick toolbar, threaded replies, and rich text formatting (bold, italic, code blocks with syntax highlighting)
+- **Reactions, Replies & Styling** - Emoji reactions with quick toolbar, threaded replies, and rich text formatting (bold, italic, code blocks with syntax highlighting). On touch screens, long-press a reaction chip to see names and avatars in a bottom sheet, starting on that emoji, with a tab for each emoji. You can also choose **Reactions** from the message's long-press menu. A short tap still toggles your own reaction; desktop hover tooltips remain available. Room reactors are shown by occupant nickname.
 - **Emoji Autocomplete** - Type `:` and a keyword to complete emojis inline, with arrow-key navigation and Enter or Tab to insert
 - **Direct-chat History** - Messages remain separate when a sender reuses a message ID and the archive distinguishes them. See [message identity and targeting limits](docs/MESSAGE_IDENTIFIERS.md#4-a-row-is-not-a-message) for remaining edge cases.
 - **Message Retraction & Moderation** - Delete your own messages or remove room messages for all participants. Connected moderators can open **Bulk moderation** from the room management menu, filter by sender or message text, select messages, then **Review selection** before removal. The single-message removal dialog also offers **Review messages from…** when a stable author identity is available; a reused nickname does not identify the same author.
@@ -65,17 +65,23 @@
 
   Both removal dialogs offer a translated **Spam** preset that sends the reason `Spam`. Fluux hides the entire row and its previews when trusted room moderation carries that reason, ignoring case and surrounding whitespace; other removals retain a deletion notice. Known Spam quotations also disappear from replies and search context. A staged reply loses the hidden quotation while preserving your draft text and attachment, including during upload. Local cache checks for these previews do not fetch server history. **Load earlier messages** and keyboard history navigation remain available when every loaded row is hidden.
 
-- **Link Previews** - Automatic Open Graph previews for shared URLs
+- **Link Previews** - Automatic Open Graph previews for shared URLs, including previews received while a chat or room is inactive or opening
 - **File Sharing** - HTTP uploads with drag-and-drop, thumbnails, progress indicators, image lightbox, and text file preview
 - **Polls** - Create polls in rooms with emoji voting, deadlines, single or multi-vote modes, and live result tallies
 
 ### Group Chat & Collaboration
 - **Multi-user Chat** - Complete MUC support with roles, affiliations, custom hats (role badges), @mentions, and bookmarks
+- **Room Unread Badges** - Joined rooms show their total unread count over the avatar, like direct chats. The badge is grey for ordinary unread activity and uses the attention colour for mentions or notify-all rooms; muted rooms keep a grey unread badge. The separate `@N` marker shows mentions. Room tooltips show room status, or occupants and your nickname, without repeating unread counts.
 - **Nickname Mentions** - Room mentions such as `@James` and `james:` match the person's name color even when typed in another letter case; mentions of you use your own-name color. Matching uses identities learned from occupants and loaded messages while viewing that room, remembered for the current app session after people leave or you switch rooms. An author not yet seen in that view may use a JID or nickname color until their messages load. If someone else takes a nickname, mentions follow its current holder.
 - **Permission to Speak** - In moderated rooms, visitors choose **Request voice** in place of the public message composer. Room moderators review **Voice requests** and choose **Grant voice** or **Dismiss**. Visitors can request voice again after an unanswered request or an error; the button is disabled while offline or sending. Public messaging becomes available only when the server grants permission. Dismissing a request only removes it locally; whisper permissions remain governed by the room's existing private-message policy.
-- **Private Messages in Rooms** - Mediated private messages (whispers, XEP-0045 §7.5) to a single occupant, shown as a distinct private thread you can reply to privately
+- **Private Messages in Rooms** - Mediated private messages (whispers, XEP-0045 §7.5) to a single occupant, shown as a distinct private thread you can reply to privately. Choose **Whisper** from a member's right-click or long-press menu. On mobile, this closes the member list and focuses the whisper composer. Long-pressing member, contact, conversation, and room rows opens their menus without selecting the row text. Whispers support attachments, with confirmation before upload about server retention and recipient copies. Fluux shows the server's applied retention when available, or a warning when it is unknown. See the [upload retention specification](docs/XEP_HTTP_UPLOAD_RETENTION.md) for policy and compatibility details.
 - **Quick Chat** - Instantly create ad-hoc group conversations and invite contacts by name
 - **Per-User Ignore** - Mute specific users per room, synced across devices
+
+  Messages from ignored users, and replies hidden by the same ignore filter, do not add unread or mention/alert counts when they arrive. Changing the ignore list requests a filtered recount in rooms with server archive support (MAM), once history and local cache writes are ready. A recount that finds no visible unread messages clears both badges; if visible unread messages remain, it preserves the existing mention/alert count.
+
+  In rooms without MAM and in Quick Chats, ignoring someone leaves existing counts until the room is read. Ignore/unignore cycles do not reconstruct past mention/alert counts, and messages excluded on arrival are not guaranteed to reappear in unread counts without an archive recount.
+
 - **Activity Log** - Persistent feed of events: invitations, subscription requests, reactions, poll votes, joins and leaves
 
 ### Search
@@ -91,6 +97,10 @@
 - **Internationalization** - 34 languages including complete EU coverage
 
 ### Privacy & Security
+
+Read the [privacy policy](docs/PRIVACY.md) ([français](docs/PRIVACY.fr.md)) for data
+handling, optional push notifications and third-party services.
+
 - **Self-hostable** - Connect to any XMPP server, no vendor lock-in, no third-party dependency
 - **End-to-End Encryption** - OpenPGP (OX-IM, XEP-0373/0374) for 1:1 chats; messages are encrypted and signed; automatic key discovery, peer verification with cross-device sync, secret key backup, and encrypted MAM history decryption
 - **FAST Authentication** - Modern SASL2 with token-based reconnection for instant, password-less session resumption
@@ -100,7 +110,7 @@
 ### Desktop & Cross-Platform
 - **Cross-platform** - Available on the web, macOS (Intel & Apple Silicon), Windows, and Linux (deb, rpm, flatpak, AUR)
 - **Auto Updates** - Built-in update checker with release notes and one-click install (desktop)
-- **Native Notifications** - Desktop notifications with click-to-focus; web push notifications even when the tab is closed. Contact requests, room invitations, and voice requests raise actionable alerts that respect Do Not Disturb and open the relevant request or room.
+- **Native Notifications** - Desktop notifications with click-to-focus; web push notifications even when the tab is closed. On iOS, remote message notifications can show cached contact and room avatars; [OpenPGP notification previews](docs/IOS_DEVELOPMENT.md#openpgp-notification-previews) are available as a per-account opt-in. Contact requests, room invitations, and voice requests raise actionable alerts that respect Do Not Disturb and open the relevant request or room.
 - **Auto-Away** - Automatically sets your status to away on system idle and restores it on activity
 - **Offline Support** - IndexedDB storage with automatic sync and stream management session resumption on reconnect
 
@@ -110,6 +120,7 @@
 - **Built-in XMPP Console** - Live stanza inspector with exportable connection-health diagnostics for scheduler suspension, sleep, reconnection, and deferred unread-badge updates
 - **Server Administration** - Manage users, rooms, and server commands right from the client (for admins)
 - **User Profiles** - User info popovers with vCard details, connected devices, timezone, and last seen status
+- **Avatar Loading** - Each avatar query stops waiting after 10 seconds; a fallback query may follow. Repeated timeouts are remembered across sessions on this device, with progressively longer pauses before retrying, up to 24 hours. A new announced avatar hash allows a fresh lookup.
 
 ### Developer-Friendly
 - **Headless SDK** - Reusable `@fluux/sdk` package for building custom XMPP clients or bots
@@ -272,7 +283,7 @@ There's no formal roadmap document, but we track upcoming work through GitHub [M
 
 #### How do I turn off notification sounds?
 
-Open **Settings → Notifications** and turn off **Play notification sounds**. The setting is saved on this device and controls both Fluux's own sounds and the sound requested with system notifications; banners can still appear when notification permission is granted. See the [Android notification limitations](docs/ANDROID_DEVELOPMENT.md#proxy-generated-configuration-and-limitations) for older Android versions.
+Open **Settings → Notifications** and turn off **Play notification sounds**. The setting is saved on this device and controls both Fluux's own sounds and the sound requested with system notifications; banners can still appear when notification permission is granted. For iOS background alert tones and silence, see [native alert tones](docs/IOS_DEVELOPMENT.md#native-alert-tones-and-snapshot-privacy). See the [Android notification limitations](docs/ANDROID_DEVELOPMENT.md#proxy-generated-configuration-and-limitations) for older Android versions.
 
 Background Web Push uses a saved copy of this preference after the tab closes. Updating that copy is best-effort: simultaneous writes from multiple tabs or storage failures can leave it out of date. If the saved copy is missing or cannot be read, background notifications request silence. The browser and operating system ultimately control notification delivery and sound.
 

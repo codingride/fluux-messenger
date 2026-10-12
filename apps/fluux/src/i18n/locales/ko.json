@@ -339,6 +339,7 @@
         "voiceRequestSent": "발언권 요청 전송됨",
         "voiceRequests": "발언권 요청 목록",
         "grantVoice": "발언권 부여",
+        "voiceApprovalUnanswered": "방에서 발언권을 부여하지 않았습니다. 상대가 방을 나갔거나 이미 발언권이 있을 수 있습니다.",
         "revokeVoice": "발언권 박탈",
         "grantModerator": "중재자 권한 부여",
         "revokeModerator": "중재자 권한 박탈",
@@ -390,6 +391,9 @@
         "whisperingTo": "{{nick}}에게 비공개로 귓속말",
         "whisperThread": "{{nick}}와의 비공개 대화",
         "whisperCounterpartGone": "{{nick}}이(가) 더 이상 대화방에 없어 답장할 수 없습니다",
+        "whisperAttachmentTitle": "비공개 첨부파일을 보내시겠습니까?",
+        "whisperAttachmentWarning": "비공개 메시지는 일시적이지만 파일은 업로드 서버의 보관 정책에 따라 서버에 남습니다. 수신자는 사본을 다운로드하여 보관할 수 있습니다.",
+        "whisperAttachmentRetention": "업로드 서버 보관 기간: {{duration}}. 수신자는 사본을 다운로드하여 보관할 수 있습니다.",
         "whisperPlaceholder": "{{nick}}에게 귓속말...",
         "ignoreUser": "이 대화방에서 무시",
         "stopIgnoring": "무시 중지",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "이름의 가장자리에 여분의 공백이 있습니다",
         "nickHiddenChars": "이름에 숨겨진 문자가 포함되어 있습니다",
         "mentionSuggestions": "멘션 제안",
+        "mentionsCount": "멘션: {{count}}",
         "unreadMessages": "읽지 않은 메시지 {{displayCount}}개",
         "unreadMessages_other": "읽지 않은 메시지 {{displayCount}}개"
     },
@@ -491,6 +496,7 @@
         "replyQuoteHiddenEncrypted": "인용 숨김: 원본이 암호화됨",
         "forwardMessage": "메시지 전달 (곧 출시)",
         "moreReactions": "더 많은 반응",
+        "reactions": "반응",
         "reactionOthers": "외 {{count}}명",
         "moreOptions": "옵션 더 보기",
         "reactWith": "{{emoji}}로 반응",
@@ -532,6 +538,7 @@
         "copyLinkChoose": "어떤 링크를 복사하시겠습니까?",
         "openInBrowser": "브라우저에서 열기",
         "saveImage": "이미지 저장",
+        "mediaUnavailableOrUnsupported": "이 파일을 여기서 재생할 수 없습니다. 파일을 사용할 수 없거나 지원되지 않는 형식일 수 있습니다",
         "videoFormatUnsupported": "이 동영상 형식은 여기에서 재생할 수 없습니다",
         "videoUnavailable": "비디오를 더 이상 사용할 수 없습니다",
         "audioFormatUnsupported": "이 오디오 형식은 여기에서 재생할 수 없습니다",
@@ -646,6 +653,17 @@
         "yesterday": "어제"
     },
     "settings": {
+    "nativeNotificationTone": "알림 소리",
+    "nativeNotificationToneDescription": "백그라운드 알림 소리를 선택하세요. 무음은 앱 내 소리를 유지합니다.",
+    "nativeSoundDescription": "앱 내 및 백그라운드 알림에서 소리를 재생합니다.",
+    "notificationTone_default": "시스템 기본값",
+    "notificationTone_bell": "종",
+    "notificationTone_chime": "차임",
+    "notificationTone_pulse": "펄스",
+    "notificationTone_silent": "무음",
+    "oxNotificationPreview": "알림의 OpenPGP 미리보기",
+    "oxNotificationPreviewDescription": "알림 확장 프로그램이 이 계정의 메시지를 가져와 복호화하도록 허용합니다. 미리보기는 iOS 설정을 따르며 항상 표시를 선택하면 잠금 화면에 나타날 수 있습니다.",
+    "oxNotificationPreviewFailed": "미리보기를 활성화할 수 없습니다. OpenPGP와 저장된 연결을 사용할 수 있는지 확인하세요.",
         "title": "설정",
         "categories": {
             "profile": "프로필",
@@ -915,6 +933,7 @@
         "accentThemeDefault": "테마 기본값",
         "fontSize": "글꼴 크기",
         "fontSizeDescription": "앱 전체의 텍스트 크기 조정",
+        "fontSizeSystemDescription": "iOS 설정에서 지정한 텍스트 크기 기준",
         "decreaseFontSize": "글꼴 크기 감소",
         "increaseFontSize": "글꼴 크기 증가",
         "sound": "알림 소리 재생",
@@ -1518,5 +1537,12 @@
             "archiveUnsupported": "서버가 보관함 검색을 지원하지 않습니다. 대화 안에서 검색해 보세요.",
             "serverFailed": "서버 검색에 실패했습니다"
         }
+    },
+    "notificationPreview": {
+        "activity": "새 활동",
+        "reaction": "{{nickname}}님의 반응: {{text}}",
+        "edit": "{{nickname}} (수정): {{text}}",
+        "retraction": "{{nickname}}님이 메시지를 삭제했습니다",
+        "messages": "{{nickname}}: 새 메시지 {{count}}개"
     }
 }

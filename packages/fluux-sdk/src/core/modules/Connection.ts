@@ -4,8 +4,9 @@ import { client, Client, Element, xml } from '@xmpp/client'
 import { getMechanism } from '@xmpp/client/lib/createOnAuthenticate.js'
 import { createActor } from 'xstate'
 import { BaseModule, type ModuleDependencies } from './BaseModule'
-import type { ConnectOptions, ConnectionMethod, SystemState } from '../types'
+import type { ClientState, ConnectOptions, ConnectionMethod, SystemState } from '../types'
 import { getBareJid, getDomain, getLocalPart, getResource } from '../jid'
+import { installUtf8SaslPlain } from '../saslPlainUtf8'
 import { getClientIdentity, getClientFeatures } from '../caps'
 import { NS_DISCO_INFO, NS_PING, NS_TIME } from '../namespaces'
 import { logDebug, logInfo, logWarn, logError as logErr } from '../logger'
@@ -56,6 +57,7 @@ import {
   fallbackWebSocketUrlFor,
 } from './serverResolution'
 import { SmPersistence } from './smPersistence'
+import { ClientStateIndication } from './clientStateIndication'
 import { fetchFastToken, saveFastToken, deleteFastToken } from '../fastTokenStorage'
 import { invalidateFastTokenOnServer } from '../fastTokenInvalidation'
 import { buildUserAgentElement } from '../userAgent'
@@ -247,6 +249,8 @@ export class Connection extends BaseModule {
   private lastSmAckTimestamp = 0
   private lastIncomingTimestamp = 0
   private lastOutgoingTimestamp = 0
+
+  private readonly csi = new ClientStateIndication((element) => this.xmpp?.send(element))
 
   // Timestamp of last wake-from-sleep event. Used by attemptReconnect to add a
   // short settle delay — navigator.onLine goes true before the network path is
@@ -1088,6 +1092,35 @@ export class Connection extends BaseModule {
   }
 
   /**
+   * Resolves once the server has acknowledged every stanza sent so far (XEP-0198), or at once
+   * when nothing is waiting: no session, no stream management, or no unacknowledged stanza.
+   * Also resolves when the session ends, since a resumed or new session takes over from there.
+   */
+  whenSentAcknowledged(): Promise<void> {
+    const xmpp = this.xmpp
+    const sm = xmpp?.streamManagement
+    if (!xmpp || !sm?.on) return Promise.resolve()
+    const waiting = () =>
+      this.xmpp === xmpp && this.isInConnectedState() && !!sm.enabled &&
+      Array.isArray(sm.outbound_q) && sm.outbound_q.length > 0
+    if (!waiting()) return Promise.resolve()
+    return new Promise(resolve => {
+      const stop = () => {
+        sm.off?.('ack', check)
+        sm.off?.('fail', check)
+        xmpp.off?.('disconnect', stop)
+        resolve()
+      }
+      const check = () => {
+        if (!waiting()) stop()
+      }
+      sm.on('ack', check)
+      sm.on('fail', check)
+      xmpp.on('disconnect', stop)
+    })
+  }
+
+  /**
    * Verify the connection is alive by sending a ping and waiting for response.
    * Call this after wake from sleep or long inactivity to check connection health.
    * Returns true if connection is healthy, false if dead/reconnecting.
@@ -1563,6 +1596,16 @@ export class Connection extends BaseModule {
     }
   }
 
+  /**
+   * Tell the server whether the user is looking at the client (XEP-0352).
+   *
+   * The state is kept across reconnects and sent once the server advertises
+   * support, so it can be set at any time.
+   */
+  setClientState(state: ClientState): void {
+    this.csi.set(state, this.isInConnectedState())
+  }
+
   // ==================== Private Methods ====================
 
   /**
@@ -1844,6 +1887,8 @@ export class Connection extends BaseModule {
       },
     })
 
+    installUtf8SaslPlain(xmppClient.saslFactory)
+
     // Wire FAST token persistence to the platform adapter (XEP-0484).
     // Browsers default to localStorage; headless runtimes default to memory.
     // Token saving is gated on rememberSession — users must opt in via "Remember Me".
@@ -1927,6 +1972,7 @@ export class Connection extends BaseModule {
           return
         }
         if (!element.is('features', NS_JABBER_STREAM)) return
+        if (xmppClient === this.xmpp) this.csi.observeFeatures(element)
         const sm = xmppClient.streamManagement
         const smNegotiated = inlineSmNegotiated || !!sm?.enabled
         inlineSmNegotiated = false // one-shot: consumed by the first features element
@@ -1945,6 +1991,7 @@ export class Connection extends BaseModule {
     const nextClient = this.createXmppClient(options)
     this.xmpp = nextClient
     this.connectionGeneration += 1
+    this.csi.resetStream()
     this.lastSmAckTimestamp = 0
     this.lastIncomingTimestamp = 0
     this.lastOutgoingTimestamp = 0
@@ -2608,6 +2655,8 @@ export class Connection extends BaseModule {
       this.stores.console.addEvent('Connection success aborted - client was cleaned up', 'connection')
       return
     }
+
+    this.csi.sessionStarted(isResumption)
 
     // Machine state is already updated: CONNECTION_SUCCESS was sent before this call.
     // The subscription will sync status='online' and reset reconnect state.

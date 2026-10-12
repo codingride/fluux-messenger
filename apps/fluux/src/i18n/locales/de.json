@@ -340,6 +340,7 @@
         "voiceRequestSent": "Anfrage nach Rederecht gesendet",
         "voiceRequests": "Anfragen nach Rederecht",
         "grantVoice": "Stimme gewähren",
+        "voiceApprovalUnanswered": "Der Raum hat kein Rederecht erteilt. Die Person hat den Raum vielleicht verlassen oder hat bereits Rederecht.",
         "revokeVoice": "Stimme entziehen",
         "grantModerator": "Moderator gewähren",
         "revokeModerator": "Moderator entziehen",
@@ -392,6 +393,9 @@
         "whisperingTo": "Flüstert privat an {{nick}}",
         "whisperThread": "Privat mit {{nick}}",
         "whisperCounterpartGone": "{{nick}} ist nicht mehr im Raum, du kannst nicht antworten",
+        "whisperAttachmentTitle": "Eine Datei privat senden?",
+        "whisperAttachmentWarning": "Die private Nachricht ist flüchtig, aber Dateien bleiben gemäß der Aufbewahrungsrichtlinie auf dem Upload-Server. Empfänger können Kopien herunterladen und behalten.",
+        "whisperAttachmentRetention": "Aufbewahrung auf dem Upload-Server: {{duration}}. Empfänger können Kopien herunterladen und behalten.",
         "whisperPlaceholder": "Flüstern an {{nick}}...",
         "ignoreUser": "In diesem Raum ignorieren",
         "stopIgnoring": "Nicht mehr ignorieren",
@@ -459,6 +463,7 @@
         "nickEdgeWhitespace": "Der Name hat zusätzliche Leerzeichen am Rand",
         "nickHiddenChars": "Der Name enthält versteckte Zeichen",
         "mentionSuggestions": "Erwähnungsvorschläge",
+        "mentionsCount": "Erwähnungen: {{count}}",
         "unreadMessages": "{{displayCount}} ungelesene Nachricht",
         "unreadMessages_other": "{{displayCount}} ungelesene Nachrichten"
     },
@@ -493,6 +498,7 @@
         "replyQuoteHiddenEncrypted": "Zitat ausgeblendet: Original war verschlüsselt",
         "forwardMessage": "Nachricht weiterleiten (bald verfügbar)",
         "moreReactions": "Mehr Reaktionen",
+        "reactions": "Reaktionen",
         "reactionOthers": "{{count}} andere",
         "moreOptions": "Mehr Optionen",
         "reactWith": "Mit {{emoji}} reagieren",
@@ -534,6 +540,7 @@
         "copyLinkChoose": "Welchen Link kopieren?",
         "openInBrowser": "Im Browser öffnen",
         "saveImage": "Bild speichern",
+        "mediaUnavailableOrUnsupported": "Diese Datei kann hier nicht abgespielt werden: Sie ist möglicherweise nicht verfügbar oder hat ein nicht unterstütztes Format",
         "videoFormatUnsupported": "Dieses Videoformat kann hier nicht abgespielt werden",
         "videoUnavailable": "Video nicht mehr verfügbar",
         "audioFormatUnsupported": "Dieses Audioformat kann hier nicht abgespielt werden",
@@ -648,6 +655,17 @@
         "yesterday": "Gestern"
     },
     "settings": {
+    "nativeNotificationTone": "Benachrichtigungston",
+    "nativeNotificationToneDescription": "Wähle den Ton für Hintergrundbenachrichtigungen. Lautlos behält die Töne in der App bei.",
+    "nativeSoundDescription": "Töne in der App und bei Hintergrundbenachrichtigungen abspielen.",
+    "notificationTone_default": "Systemstandard",
+    "notificationTone_bell": "Glocke",
+    "notificationTone_chime": "Glockenspiel",
+    "notificationTone_pulse": "Impuls",
+    "notificationTone_silent": "Lautlos",
+    "oxNotificationPreview": "OpenPGP-Vorschauen in Mitteilungen",
+    "oxNotificationPreviewDescription": "Die Mitteilungserweiterung darf Nachrichten für dieses Konto abrufen und entschlüsseln. Vorschauen folgen den iOS-Einstellungen und können bei „Immer“ auf dem Sperrbildschirm erscheinen.",
+    "oxNotificationPreviewFailed": "Vorschauen konnten nicht aktiviert werden. Prüfe, ob OpenPGP und deine gespeicherte Verbindung verfügbar sind.",
         "title": "Einstellungen",
         "categories": {
             "profile": "Profil",
@@ -727,6 +745,7 @@
         "accentThemeDefault": "Theme-Standard",
         "fontSize": "Schriftgröße",
         "fontSizeDescription": "Textgröße in der App anpassen",
+        "fontSizeSystemDescription": "Relativ zur in den iOS-Einstellungen festgelegten Textgröße",
         "decreaseFontSize": "Schriftgröße verkleinern",
         "increaseFontSize": "Schriftgröße vergrößern",
         "sound": "Benachrichtigungstöne abspielen",
@@ -1520,5 +1539,12 @@
             "archiveUnsupported": "Der Server unterstützt keine Archivsuche. Versuchen Sie, innerhalb einer Unterhaltung zu suchen.",
             "serverFailed": "Serversuche fehlgeschlagen"
         }
+    },
+    "notificationPreview": {
+        "activity": "Neue Aktivität",
+        "reaction": "{{nickname}} hat reagiert: {{text}}",
+        "edit": "{{nickname}} (bearbeitet): {{text}}",
+        "retraction": "{{nickname}} hat eine Nachricht gelöscht",
+        "messages": "{{nickname}}: {{count}} neue Nachrichten"
     }
 }

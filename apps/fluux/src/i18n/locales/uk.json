@@ -339,6 +339,7 @@
         "voiceRequestSent": "Запит на голос надіслано",
         "voiceRequests": "Запити на голос",
         "grantVoice": "Надати голос",
+        "voiceApprovalUnanswered": "Кімната не надала право голосу. Можливо, людина покинула кімнату або вже має право голосу.",
         "revokeVoice": "Забрати голос",
         "grantModerator": "Зробити модератором",
         "revokeModerator": "Зняти модератора",
@@ -390,6 +391,9 @@
         "whisperingTo": "Шепочете приватно до {{nick}}",
         "whisperThread": "Приватно з {{nick}}",
         "whisperCounterpartGone": "{{nick}} більше не в кімнаті, ви не можете відповісти",
+        "whisperAttachmentTitle": "Надіслати приватне вкладення?",
+        "whisperAttachmentWarning": "Приватне повідомлення тимчасове, але файли залишаються на сервері завантаження згідно з його правилами зберігання. Одержувачі можуть завантажити й зберегти копії.",
+        "whisperAttachmentRetention": "Зберігання на сервері завантаження: {{duration}}. Одержувачі можуть завантажити й зберегти копії.",
         "whisperPlaceholder": "Шепнути до {{nick}}...",
         "ignoreUser": "Ігнорувати в цій кімнаті",
         "stopIgnoring": "Припинити ігнорування",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "Ім'я містить зайві пробіли по краях",
         "nickHiddenChars": "Ім'я містить приховані символи",
         "mentionSuggestions": "Пропозиції згадувань",
+        "mentionsCount": "Згадки: {{count}}",
         "unreadMessages": "{{displayCount}} непрочитане повідомлення",
         "unreadMessages_few": "{{displayCount}} непрочитаних повідомлення",
         "unreadMessages_many": "{{displayCount}} непрочитаних повідомлень",
@@ -493,6 +498,7 @@
         "replyQuoteHiddenEncrypted": "Цитату приховано: оригінал був зашифрований",
         "forwardMessage": "Переслати повідомлення (незабаром)",
         "moreReactions": "Більше реакцій",
+        "reactions": "Реакції",
         "reactionOthers": "{{count}} інших",
         "moreOptions": "Більше опцій",
         "reactWith": "Реагувати {{emoji}}",
@@ -536,6 +542,7 @@
         "copyLinkChoose": "Яке посилання скопіювати?",
         "openInBrowser": "Відкрити у браузері",
         "saveImage": "Зберегти зображення",
+        "mediaUnavailableOrUnsupported": "Цей файл неможливо відтворити тут: можливо, він недоступний або має непідтримуваний формат",
         "videoFormatUnsupported": "Цей формат відео не можна відтворити тут",
         "videoUnavailable": "Відео більше недоступне",
         "audioFormatUnsupported": "Цей формат аудіо не можна відтворити тут",
@@ -650,6 +657,17 @@
         "yesterday": "Вчора"
     },
     "settings": {
+    "nativeNotificationTone": "Звук сповіщень",
+    "nativeNotificationToneDescription": "Виберіть звук фонових сповіщень. Без звуку зберігає звуки в застосунку.",
+    "nativeSoundDescription": "Відтворювати звуки в застосунку та для фонових сповіщень.",
+    "notificationTone_default": "Системний звук",
+    "notificationTone_bell": "Дзвіночок",
+    "notificationTone_chime": "Передзвін",
+    "notificationTone_pulse": "Пульс",
+    "notificationTone_silent": "Без звуку",
+    "oxNotificationPreview": "Перегляд OpenPGP у сповіщеннях",
+    "oxNotificationPreviewDescription": "Дозволити розширенню сповіщень отримувати та розшифровувати повідомлення цього облікового запису. Перегляд відповідає налаштуванням iOS і може з’являтися на екрані блокування, якщо вибрано «Завжди».",
+    "oxNotificationPreviewFailed": "Не вдалося ввімкнути перегляд. Перевірте доступність OpenPGP і збереженого з’єднання.",
         "title": "Налаштування",
         "categories": {
             "profile": "Профіль",
@@ -729,6 +747,7 @@
         "accentThemeDefault": "За замовчуванням теми",
         "fontSize": "Розмір шрифту",
         "fontSizeDescription": "Налаштувати розмір тексту в додатку",
+        "fontSizeSystemDescription": "Відносно розміру тексту, заданого в налаштуваннях iOS",
         "decreaseFontSize": "Зменшити шрифт",
         "increaseFontSize": "Збільшити шрифт",
         "sound": "Відтворювати звуки сповіщень",
@@ -1522,5 +1541,12 @@
             "archiveUnsupported": "Сервер не підтримує пошук в архіві. Спробуйте шукати всередині розмови.",
             "serverFailed": "Не вдалося виконати пошук на сервері"
         }
+    },
+    "notificationPreview": {
+        "activity": "Нова активність",
+        "reaction": "{{nickname}} відреагував(-ла): {{text}}",
+        "edit": "{{nickname}} (змінено): {{text}}",
+        "retraction": "{{nickname}} видалив(-ла) повідомлення",
+        "messages": "{{nickname}}: нових повідомлень — {{count}}"
     }
 }

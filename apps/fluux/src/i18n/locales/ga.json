@@ -339,6 +339,7 @@
         "voiceRequestSent": "Iarratas ar chead cainte seolta",
         "voiceRequests": "Iarratais ar chead cainte",
         "grantVoice": "Tabhair guth",
+        "voiceApprovalUnanswered": "Níor thug an seomra cead cainte. B'fhéidir gur fhág an duine an seomra nó go bhfuil cead cainte aige cheana.",
         "revokeVoice": "Bain guth",
         "grantModerator": "Tabhair modhnóir",
         "revokeModerator": "Bain modhnóir",
@@ -390,6 +391,9 @@
         "whisperingTo": "Ag cogarnach go príobháideach chuig {{nick}}",
         "whisperThread": "Príobháideach le {{nick}}",
         "whisperCounterpartGone": "Níl {{nick}} sa seomra a thuilleadh, ní féidir leat freagra a thabhairt",
+        "whisperAttachmentTitle": "Ceangaltán príobháideach a sheoladh?",
+        "whisperAttachmentWarning": "Tá an teachtaireacht phríobháideach sealadach, ach fanann comhaid ar an bhfreastalaí uaslódála de réir a bheartais coinneála. Is féidir le faighteoirí cóipeanna a íoslódáil agus a choinneáil.",
+        "whisperAttachmentRetention": "Coinneáil ar an bhfreastalaí uaslódála: {{duration}}. Is féidir le faighteoirí cóipeanna a íoslódáil agus a choinneáil.",
         "whisperPlaceholder": "Cogar chuig {{nick}}...",
         "ignoreUser": "Déan neamhaird sa seomra seo",
         "stopIgnoring": "Stop ag déanamh neamhaird",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "Tá spásanna breise ag imill an ainm",
         "nickHiddenChars": "Tá carachtair fholaithe san ainm",
         "mentionSuggestions": "Moltaí tagartha",
+        "mentionsCount": "Luaiteanna: {{count}}",
         "unreadMessages": "{{displayCount}} teachtaireacht gan léamh",
         "unreadMessages_two": "{{displayCount}} theachtaireacht gan léamh",
         "unreadMessages_few": "{{displayCount}} theachtaireacht gan léamh",
@@ -494,6 +499,7 @@
         "replyQuoteHiddenEncrypted": "Athfhriotal i bhfolach: bhí an bunteachtaireacht criptithe",
         "forwardMessage": "Seol ar aghaidh (ag teacht go luath)",
         "moreReactions": "Níos mó frithghníomhartha",
+        "reactions": "Frithghníomhartha",
         "reactionOthers": "{{count}} eile",
         "moreOptions": "Níos mó roghanna",
         "reactWith": "Freagair le {{emoji}}",
@@ -538,6 +544,7 @@
         "copyLinkChoose": "Cén nasc a chóipeáil?",
         "openInBrowser": "Oscail sa bhrabhsálaí",
         "saveImage": "Sábháil íomhá",
+        "mediaUnavailableOrUnsupported": "Ní féidir an comhad seo a sheinm anseo: b'fhéidir nach bhfuil sé ar fáil nó go bhfuil sé i bhformáid nach dtacaítear léi",
         "videoFormatUnsupported": "Ní féidir an fhormáid físe seo a sheinm anseo",
         "videoUnavailable": "Níl an físeán ar fáil a thuilleadh",
         "audioFormatUnsupported": "Ní féidir an fhormáid fuaime seo a sheinm anseo",
@@ -652,6 +659,17 @@
         "yesterday": "Inné"
     },
     "settings": {
+    "nativeNotificationTone": "Fuaim fógra",
+    "nativeNotificationToneDescription": "Roghnaigh fuaim d’fhógraí sa chúlra. Ní athraíonn Ciúin fuaimeanna san aip.",
+    "nativeSoundDescription": "Seinn fuaimeanna san aip agus d’fhógraí sa chúlra.",
+    "notificationTone_default": "Réamhshocrú an chórais",
+    "notificationTone_bell": "Clog",
+    "notificationTone_chime": "Cling",
+    "notificationTone_pulse": "Buille",
+    "notificationTone_silent": "Ciúin",
+    "oxNotificationPreview": "Réamhamhairc OpenPGP i bhfógraí",
+    "oxNotificationPreviewDescription": "Ceadaigh don síneadh fógraí teachtaireachtaí don chuntas seo a fháil agus a dhíchriptiú. Leanann réamhamhairc socruithe iOS agus féadfaidh siad a bheith ar an scáileán glasála má roghnaítear I gcónaí.",
+    "oxNotificationPreviewFailed": "Níorbh fhéidir réamhamhairc a chumasú. Seiceáil go bhfuil OpenPGP agus do nasc sábháilte ar fáil.",
         "title": "Socruithe",
         "categories": {
             "profile": "Próifíl",
@@ -731,6 +749,7 @@
         "accentThemeDefault": "Réamhshocrú an téama",
         "fontSize": "Méid cló",
         "fontSizeDescription": "Athraigh méid an téacs san aip",
+        "fontSizeSystemDescription": "I gcomparáid le méid an téacs atá socraithe i Socruithe iOS",
         "decreaseFontSize": "Laghdaigh méid an chló",
         "increaseFontSize": "Méadaigh méid an chló",
         "sound": "Seinn fuaimeanna fógra",
@@ -1524,5 +1543,12 @@
             "archiveUnsupported": "Ní thacaíonn an freastalaí le cuardach cartlainne. Bain triail as cuardach laistigh de chomhrá.",
             "serverFailed": "Theip ar chuardach an fhreastalaí"
         }
+    },
+    "notificationPreview": {
+        "activity": "Gníomhaíocht nua",
+        "reaction": "D’fhreagair {{nickname}}: {{text}}",
+        "edit": "{{nickname}} (curtha in eagar): {{text}}",
+        "retraction": "Scrios {{nickname}} teachtaireacht",
+        "messages": "{{nickname}}: {{count}} teachtaireacht nua"
     }
 }

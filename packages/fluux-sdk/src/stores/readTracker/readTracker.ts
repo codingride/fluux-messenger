@@ -1,3 +1,4 @@
+import { emitLocalRead, hasLocalReadListeners } from '../localReadEvents'
 import { getStorageScopeJid } from '../../utils/storageScope'
 import { findMessageRowIndex } from '../../utils/messageIdentity'
 import type { MessageRowRef } from '../../core/types/messageRow'
@@ -137,6 +138,7 @@ export interface PublishPosition {
  */
 export interface ArrivalNote {
   readonly entityId: string
+  readonly pointerBefore?: ReadPointer
   /** How much the transient overlay grew: this arrival's contribution to the count. */
   readonly unreadDelta: number
   /** The overlay change only an archive-derived recount can fold back into the stored count. */
@@ -148,6 +150,8 @@ export interface ArrivalNote {
 }
 
 export interface ReadTrackerPorts {
+  /** Client-side filtering affects counts without changing protocol read positions. */
+  shouldCountMessage?: (entityId: string, message: NotificationMessage) => boolean
   storage: ReadTrackerStorage
   /**
    * Starts the archive-backed unread recount. The resident slice may be one
@@ -348,6 +352,32 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
     unreadInputVersions.set(entityId, (unreadInputVersions.get(entityId) ?? 0) + 1)
   }
 
+  // One cache lookup in flight per (entity, stash): every session seed, activation fold and catch-up
+  // re-delivers the same marker, and each would otherwise read the cache again.
+  const stashLookups = new Map<string, Promise<boolean>>()
+
+  /**
+   * Order the stashed `stanzaId` against the message cache. The marker can be cached while no
+   * resident slice holds it, so this runs every time the stash is delivered, not only when it is
+   * first recorded. Resolves to whether the cache holds the marker.
+   */
+  const lookUpStashInCache = (entityId: string, stanzaId: string): Promise<boolean> => {
+    const key = JSON.stringify([entityId, stanzaId])
+    const inFlight = stashLookups.get(key)
+    if (inFlight) return inFlight
+    const lookup = resolveStashedRemoteDisplayed(
+      stanzaId,
+      ports.captureCacheRead(entityId),
+      () => ports.storage.read(entityId)?.pendingRemoteMarker,
+      () => ports.loadStashedMarkerRows(entityId, stanzaId),
+      (rows) => applyRemoteDisplayed(entityId, stanzaId, rows, true),
+    ).finally(() => {
+      if (stashLookups.get(key) === lookup) stashLookups.delete(key)
+    })
+    stashLookups.set(key, lookup)
+    return lookup
+  }
+
   /**
    * XEP-0490: another device (or this one, echoed back) published how far the
    * account has read. Advances the pointer forward-only when the marker can be
@@ -357,8 +387,15 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
    *
    * `messagesOverride` is the slice to order against when the entity keeps no
    * resident messages (a background entity whose archive page just merged).
+   * `cacheAnswer` marks it as the cache's own answer for the marker and the
+   * read pointer (see `resolveRemoteDisplayed`).
    */
-  const applyRemoteDisplayed = (entityId: string, stanzaId: string, messagesOverride?: NotificationMessage[]): void => {
+  const applyRemoteDisplayed = (
+    entityId: string,
+    stanzaId: string,
+    messagesOverride?: NotificationMessage[],
+    cacheAnswer = false,
+  ): void => {
     // A marker already proven absent from the archive can never be ordered;
     // stashing it again would re-arm the lock its discard released. The node
     // keeps serving it until this client's own position replaces it.
@@ -367,6 +404,7 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
     let advancedActive = false
     let releasedStash = false
     let stashed = false
+    let redelivered = false
     let supersededStash: string | undefined
     ports.storage.update(entityId, (view) => {
       const messages = messagesOverride ?? view.messages
@@ -381,10 +419,13 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
         view.divider,
         stanzaId,
         kind,
-        kind === 'room' ? { isActive: view.isActive, roomJid: entityId } : { isActive: view.isActive },
+        kind === 'room' ? { isActive: view.isActive, roomJid: entityId, cacheAnswer } : { isActive: view.isActive, cacheAnswer },
       )
       supersededStash = supersededPendingMarker(view.pendingRemoteMarker, stanzaId, resolution)
-      if (resolution.kind === 'unchanged') return undefined
+      if (resolution.kind === 'unchanged') {
+        redelivered = view.pendingRemoteMarker === stanzaId
+        return undefined
+      }
 
       const clearsPending = view.pendingRemoteMarker === stanzaId
       releasedStash = clearsPending
@@ -438,15 +479,8 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
       // superseded stash re-derives the count that deferred on it.
       ports.recount(entityId, { allowActive: true })
     }
-    if (stashed) {
-      void resolveStashedRemoteDisplayed(
-        stanzaId,
-        ports.captureCacheRead(entityId),
-        () => ports.storage.read(entityId)?.pendingRemoteMarker,
-        () => ports.loadStashedMarkerRows(entityId, stanzaId),
-        (rows) => applyRemoteDisplayed(entityId, stanzaId, rows),
-      )
-    }
+    // A slice override is itself the result of a lookup; looking again from it would loop.
+    if (stashed || (redelivered && !messagesOverride)) void lookUpStashInCache(entityId, stanzaId)
   }
 
   const clearSessionRegistries = (): void => {
@@ -456,12 +490,23 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
     recountsInFlight.clear()
     recountRetry.clear()
     remoteDividerAdvances.reset()
+    stashLookups.clear()
   }
 
   const clearAccountRegistries = (accountScope: string): void => {
     clearTransientScope(accountScope)
     clearViewportEvidence(accountScope)
     clearPurgedMarkers(accountScope)
+  }
+
+  const readPointerForLocalReport = (entityId: string): ReadPointer | undefined =>
+    hasLocalReadListeners(kind) ? ports.storage.read(entityId)?.readPointer : undefined
+
+  const reportLocalRead = (entityId: string, before: ReadPointer | undefined): void => {
+    if (!hasLocalReadListeners(kind)) return
+    const pointer = ports.storage.read(entityId)?.readPointer
+    const account = getBareJid(connectionStore.getState().jid ?? '')
+    if (account && pointer && pointer !== before) emitLocalRead({ account, kind, conversationId: entityId, pointer })
   }
 
   return {
@@ -488,6 +533,7 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
     advance(entityId: string, row: MessageRowRef): void {
       if (!connectionStore.getState().windowVisible) return
 
+      const before = readPointerForLocalReport(entityId)
       let pointerAdvanced = false
       let readThrough = false
       ports.storage.update(entityId, (view) => {
@@ -516,6 +562,15 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
         return { ...(seen.readPointer && { readPointer: seen.readPointer }), unreadCount, mentionsCount }
       })
 
+      if (pointerAdvanced) reportLocalRead(entityId, before)
+      else if (hasLocalReadListeners(kind)) {
+        const view = ports.storage.read(entityId)
+        const index = view ? findMessageRowIndex(view.messages, row) : -1
+        const account = getBareJid(connectionStore.getState().jid ?? '')
+        if (account && view?.isActive && index >= 0) {
+          emitLocalRead({ account, kind, conversationId: entityId, pointer: makeReadPointer(view.messages[index], kind), messageOnly: true })
+        }
+      }
       // A witnessed live tail already committed its zero and needs no archive round trip.
       if (pointerAdvanced && !readThrough) ports.recount(entityId, { allowActive: true })
     },
@@ -527,6 +582,7 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
      * live edge. The divider stays: it marks where this visit's unread began.
      */
     markAsRead(entityId: string): void {
+      const before = readPointerForLocalReport(entityId)
       // Published after the update, never from inside the store transaction.
       let clearedFrom: number | undefined
       ports.storage.update(entityId, (view) => {
@@ -557,6 +613,7 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
           mentionsCount: updated.mentionsCount,
         }
       })
+      reportLocalRead(entityId, before)
       if (clearedFrom !== undefined) reportUnreadCleared(kind, entityId, clearedFrom)
     },
 
@@ -567,6 +624,7 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
      * order resolved; otherwise it advances, never back.
      */
     markReadToNewest(entityId: string): void {
+      const before = readPointerForLocalReport(entityId)
       remoteDividerAdvances.clear(entityId)
       ports.storage.update(entityId, (view) => {
         const lastIndex = view.messages.length - 1
@@ -590,9 +648,20 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
         pruneTransient(scopeKey(entityId), readPointer.order)
         return { readPointer, unreadCount: 0, mentionsCount: 0, divider: null }
       })
+      reportLocalRead(entityId, before)
     },
 
     applyRemoteDisplayed,
+
+    /**
+     * Order the entity's stashed XEP-0490 marker against the message cache, if one is stashed.
+     * Resolves once the lookup has been applied, to whether the cache holds the marker, so a
+     * caller deciding whether to search the archive can read the stash afterwards.
+     */
+    async resolvePendingFromCache(entityId: string): Promise<boolean> {
+      const stanzaId = ports.storage.read(entityId)?.pendingRemoteMarker
+      return stanzaId !== undefined && await lookUpStashInCache(entityId, stanzaId)
+    },
 
     /**
      * The reader opened this entity. Places the new-message divider at the first message the
@@ -791,7 +860,8 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
           if (countDeferral) return defer(countDeferral)
           if (counts === null) return defer('cache-unavailable')
 
-          const transient = transientCounts(scopeKey(entityId), floorPos)
+          const transient = transientCounts(scopeKey(entityId), floorPos,
+            ports.shouldCountMessage && (message => ports.shouldCountMessage?.(entityId, message) !== false))
           const unreadCount = Math.min(999, counts.unread + transient.unread)
 
           ports.storage.update(entityId, (committed) => {
@@ -851,7 +921,8 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
         { treatDelayedAsNew: kind === 'chat' },
       )
       const noted = (options.increment ?? true) && unseen && isRenderableStoredMessage(message)
-      if (!noted || !view) return { entityId, unreadDelta: 0, requiresRecount: false, noted: false }
+        && (!ports.shouldCountMessage || ports.shouldCountMessage(entityId, message))
+      if (!noted || !view) return { entityId, pointerBefore: view?.readPointer, unreadDelta: 0, requiresRecount: false, noted: false }
 
       const key = scopeKey(entityId)
       // No boundary: the arrival is already established as unread, so only the delta matters.
@@ -862,7 +933,7 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
       const unreadDelta = result.added
         ? Math.max(0, transientCounts(key, undefined).unread - before)
         : 0
-      return { entityId, unreadDelta, requiresRecount: result.requiresRecount, noted: true, settlementKey: result.settlementKey }
+      return { entityId, pointerBefore: view.readPointer, unreadDelta, requiresRecount: result.requiresRecount, noted: true, settlementKey: result.settlementKey }
     },
 
     /**
@@ -878,6 +949,7 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
     ): { unreadCount: number; mentionsCount: number; readPointer: ReadPointer | undefined; divider: MessageRowRef | null } | undefined {
       const view = ports.storage.read(note.entityId)
       if (!view) return undefined
+      const countable = !ports.shouldCountMessage || ports.shouldCountMessage(note.entityId, message)
       const updated = onMessageReceived(
         notificationInput(view),
         message,
@@ -891,8 +963,8 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
         kind,
         {
           treatDelayedAsNew: kind === 'chat',
-          incrementUnread: (options?.increment ?? true) && !note.noted,
-          incrementMentions: options?.incrementMentions,
+          incrementUnread: countable && (options?.increment ?? true) && !note.noted,
+          incrementMentions: countable && options?.incrementMentions,
         },
       )
       return {
@@ -924,6 +996,7 @@ export function createReadTracker(kind: ReadTrackerKind, ports: ReadTrackerPorts
           recountRetry.resume(note.entityId)
         })
       }
+      if (outcome.accepted) reportLocalRead(note.entityId, note.pointerBefore)
       // Only the archive-derived recount can fold an overlay change back into the stored count.
       if (note.requiresRecount) ports.recount(note.entityId)
     },

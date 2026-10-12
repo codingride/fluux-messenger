@@ -4,8 +4,9 @@
 
 Run commands from the repository root unless stated otherwise.
 
-iOS is an opt-in development target and is not part of the release workflow.
-Its identity is `net.processone.fluux` (Fluux Messenger iOS Dev), the same as a
+iOS is an opt-in target, distributed through TestFlight (see
+[Upload to TestFlight](#upload-to-testflight)) and not part of the desktop
+release workflow. Its identity is `net.processone.fluux` (Fluux), the same as a
 release build: the signing, not the identifier, separates development from
 production. The desktop executable keeps its own entry point and plugins; the mobile library
 loads the OS, opener, notification, push and share-inbox plugins, the shared XMPP
@@ -186,11 +187,80 @@ it using the physical device identifier and the actual `.app` path:
 xcrun devicectl device install app --device "DEVICE_ID" "PATH_TO_SIGNED_APP"
 ```
 
-Launch **Fluux Messenger iOS Dev** on the device. The embedded frontend does not
+Launch **Fluux** on the device. The embedded frontend does not
 need the development server. An unsigned simulator archive cannot be installed
 on an iPhone, even on an Apple silicon Mac. Device and simulator archives share
 an output location: rebuild for the intended target before selecting the `.app`.
 These commands do not upload to App Store Connect or TestFlight.
+
+## Upload to TestFlight
+
+`npm run tauri:ios:testflight` builds a release IPA for App Store Connect,
+checks it, and uploads it:
+
+```bash
+APPLE_DEVELOPMENT_TEAM=TEAM_ID \
+APPLE_API_KEY=KEY_ID APPLE_API_ISSUER=ISSUER_ID \
+APPLE_API_KEY_PATH=/path/to/AuthKey_KEY_ID.p8 \
+npm run tauri:ios:testflight
+```
+
+- The API key is an App Store Connect team key with the Admin role: an App
+  Manager key cannot use cloud-managed distribution certificates. Keep
+  the `.p8` file in the team vault and point `APPLE_API_KEY_PATH` at a local
+  copy; never commit it or send it by email or chat.
+- Signing is automatic: Xcode uses the key to create the distribution
+  certificate and the App Store profiles of the app and its two extensions.
+- The build number (`CFBundleVersion`) is the UTC time to the minute
+  (`YYYYMMDDHHmm`), so each upload is newer than the previous one, from any
+  branch. The marketing version is the app version from `tauri.conf.json`.
+- The script refuses uncommitted changes, and checks the bundle ID, the build
+  number, the export compliance key, the team's Apple Distribution signature
+  and the production `aps-environment` before uploading. Pass `-- --no-upload` to stop after the checks.
+- Run `npm run tauri:ios:init` first after changing `project.yml` or the iOS
+  config, as for any other build.
+
+The build appears in TestFlight once App Store Connect has processed it.
+
+Before the first upload, in the Apple Developer account and App Store Connect:
+
+- Register the App IDs `net.processone.fluux`, `net.processone.fluux.share`
+  and `net.processone.fluux.notification`, with the App Group
+  `group.net.processone.fluux.share` on all three, and Push Notifications on
+  the app. Automatic signing creates missing ones, but check them once.
+- Create the app record (name **Fluux Messenger**, bundle ID
+  `net.processone.fluux`, SKU of your choice).
+- Fill the App Privacy section to match the privacy manifest (see
+  [Privacy manifests](#privacy-manifests)).
+- `ITSAppUsesNonExemptEncryption` is `false`: the app uses only standard
+  algorithms (TLS, OpenPGP, OMEMO), so no documentation is attached to each
+  build. This may still call for an annual self-classification report to the
+  US BIS and a declaration to ANSSI for distribution from France.
+
+## Privacy manifests
+
+App Store Connect rejects a build whose bundles call a
+[required reason API](https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api)
+without declaring it. The app and the share extension each carry a
+`PrivacyInfo.xcprivacy` from `src-tauri/mobile/ios/privacy/`, which the
+`project.yml` template copies into their bundles. The notification extension
+calls none of these APIs and has no manifest.
+
+The app declares file timestamps (`C617.1`), system boot time (`35F9.1`) and
+user defaults (`CA92.1`); the share extension, file timestamps (`C617.1`), to
+clear stale imports from the App Group. Neither declares tracking.
+
+The app declares two collected data types, both linked to the user and used
+for app functionality: the APNs device token (device ID) and the account's bare
+JID (user ID). ProcessOne's push server stores them together when the app
+registers for notifications, and derives the push node from them. The XMPP server is chosen by the
+user and not operated by the developer, so the account and messages it holds
+are not declared. When a dependency or native code starts using another API from Apple's
+list, add its category, then check the built bundle:
+
+```bash
+nm -u "PATH_TO_APP/Fluux" | grep -E '_(f?stat(at)?|lstat|statv?fs|getattrlist|mach_absolute_time)$'
+```
 
 ## Mobile capabilities and limitations
 
@@ -204,32 +274,73 @@ What runs natively:
   OpenPGP key are kept in the iOS keychain under the service
   `net.processone.fluux`, accessible after first unlock and never synced to
   other devices. A FAST token found in browser storage is moved to the keychain.
+- **Local settings and state.** WKWebView may evict the app's web storage, so
+  localStorage keys are kept in `local-storage.json` in the app data
+  directory: login, device identity, encryption trust, settings and drafts
+  survive. Keys that describe the IndexedDB cache stay in the webview, so they
+  disappear with the cache and the app resynchronizes from the server (see
+  [Native localStorage](#native-localstorage)).
 - **OpenPGP.** The same Sequoia engine as the desktop. The key is unlocked from
   the keychain at login, so no passphrase is asked per session, and key
   rotation is available.
 - **Notifications.** Local notifications go through the OS. Remote push uses
   APNs and XEP-0357 (see [Remote push notifications](#remote-push-notifications)).
+  Tapping a notification attributed to the signed-in account opens its conversation. The app icon badge counts
+  unread conversations, and a conversation's notifications are removed once
+  it is read.
+- **Files and media.** Uploads, downloads and the media cache run in Rust, as
+  on the desktop. Received files are saved or shared through the system share
+  sheet, which offers Photos and Files.
+- **Link and text previews.** Open Graph metadata and text file previews are
+  fetched natively, so they are not subject to CORS.
 - **Sharing.** Links, images and documents shared from other apps (see
   [Receive a shared link, document, or image](#receive-a-shared-link-document-or-image)).
+- **`xmpp:` links.** The app registers the `xmpp` URL scheme. A link opens the
+  conversation, or prefills the login screen when no account is connected.
 
 Not available yet:
 
-- **Background connection.** iOS suspends the app in the background and the
-  connection drops. A push only shows a notification; messages are fetched
-  when the app returns to the foreground. Do not treat the app as an
-  always-connected client.
-- **App icon badge.** The unread count is not shown on the icon.
-- **Notification actions.** There is no reply or mark-as-read from a
-  notification.
-- **Files and media.** Attachments are downloaded, uploaded and cached through
-  the web paths (`fetch`, download links, CacheStorage). There is no native
-  save to Photos or Files and no native HTTP fetch, so link previews and remote
-  media are subject to CORS.
-- **Shell integration.** `xmpp:` links do not open Fluux, and presence does not
-  switch to away when the app goes to the background.
-- **Distribution.** There is no TestFlight or App Store build.
+- **Background connection.** The app declares no background mode: iOS
+  suspends it in the background and the connection drops. Before that, the
+  app asks iOS for time, up to 25 seconds, to finish sending messages and
+  files and to receive the server's acknowledgement (XEP-0198). Pushes show
+  notifications; the app fetches conversation history when it
+  returns to the foreground. The separate extension can fetch an
+  [opted-in OpenPGP preview](#openpgp-notification-previews). Do not treat the app
+  as an always-connected client.
+- **Notification actions.** Tapping is the only action: there is no reply or
+  mark-as-read from a notification.
+- **Away on background.** Presence does not switch to away when the app goes
+  to the background. The app only reports itself inactive to the server
+  (XEP-0352 client state indication).
+- **Distribution.** TestFlight only; there is no App Store release yet.
 
 Validate on a device before trusting a build with existing accounts or keys.
+
+## Native localStorage
+
+`src/boot.ts` loads native storage before importing the app, because stores
+read localStorage when their modules are imported.
+`src/utils/nativeLocalStorage.ts` then routes `localStorage` through it:
+
+- Reads come from a copy in memory. Each write updates the copy and reaches
+  the native side at the end of the task, in one batch.
+- `isWebviewOnlyKey` lists the keys that stay in the webview: the chat store
+  blob, room gaps and coverage, cache markers, sync timestamps and message
+  heights.
+- A native key found in the webview at launch (first launch, or a launch where
+  native storage failed) wins over the native copy and is moved, then removed
+  from the webview once stored.
+
+The file is a stable contract, whatever the app uses to reach it:
+
+```json
+{ "version": 1, "entries": { "xmpp-last-jid": "alice@example.com" } }
+```
+
+Keys and values are the strings the app stores in localStorage, including
+account-scoped keys (`base:<bareJid>`). A file that cannot be read is renamed
+`local-storage.json.unreadable` rather than overwritten.
 
 ## Troubleshooting and validation
 
@@ -267,19 +378,34 @@ upgrading the CLI. It embeds `FluuxShare` and gives both targets the App Group
 therefore have separate inboxes. Enable this App Group for both identifiers
 and regenerate both provisioning profiles when signing for a physical device.
 
-From Safari, Photos, or Files, choose **Share → Fluux**. Wait for the saved
-confirmation, then open Fluux and sign in if necessary. Choose a contact or a
-joined room, review the content, optionally edit its text, then press Send.
-Nothing is uploaded by the extension. Closing the picker keeps the original
-import on disk; Delete abandons it. Existing conversation drafts are untouched.
-The imported original survives app restarts, while unsent edits in the picker
-are session-local. An upload or send failure keeps the original available.
+From Safari, Photos, or Files, choose **Share → Fluux**. The extension saves
+the import and opens Fluux, which shows the picker at once (after sign-in if
+necessary). A suggested contact or room is preselected only for its original
+account and after checking the current roster or joined rooms. A suggestion
+waits for its destination to become available; choosing a recipient manually or
+using Back dismisses it for that import. Choose a contact or a joined room,
+review the content, optionally
+edit its text, then press Send: Fluux opens the conversation. Cancel, or closing
+the picker, discards the import. Nothing is uploaded by the extension, and
+existing conversation drafts are untouched. An import not yet sent or cancelled
+survives app restarts and opens again with Fluux, while unsent edits in the
+picker are session-local. An upload or send failure keeps the import available.
+
+The extension opens Fluux through the app's own URL scheme, its identifier
+(`net.processone.fluux`, or `net.processone.fluux.demo` for the demo), declared
+as a deep-link scheme in the Tauri config. iOS offers share extensions no API to
+open their app, so the extension calls `openURL:options:completionHandler:` on
+the `UIApplication` in its responder chain. If that fails, it keeps the saved
+confirmation and the import waits until Fluux is opened.
 
 This first version accepts one link or one file per share, up to 20 MiB per file
 and 20 pending imports. Multi-file selections are not advertised. The normal
 server upload limit still applies. Imports belong to this installed app, not
 to a particular XMPP account: the user chooses the recipient after signing in.
-The extension cannot launch the containing app or send messages itself.
+The extension cannot send messages itself. Successful sends donate account-bound
+conversation metadata to iOS for share-sheet suggestions. Logout, account changes,
+and removed contacts, rooms or local conversations remove their donations.
+Suggestions never authorize a send without recipient confirmation.
 
 Native strings are generated from the app's locale JSON by
 `mobile-share-resources.mjs`, run before initialization and with icon preparation.
@@ -327,12 +453,185 @@ After login, the app registers its APNs token with the push app server through t
 `production`. It then enables push on the user's server (XEP-0357) on every fresh session. The user's server must
 advertise `urn:xmpp:push:0`.
 
-The app server sends notifications with `mutable-content`. The `FluuxNotification` service extension then replaces the
-title with the sender's name, read from `NotificationNames.json` in the App Group container, which the app keeps up to
+For push opt-out and session cleanup, see the
+[gateway unregistration contract](PUSH_GATEWAY_UNREGISTER.md).
+
+### Notification recipient ownership
+
+The notification extension shows a neutral localized alert when the App Group
+mirror has no signed-in account, or when an optional APNs custom `to` field does
+not identify that account. The optional field accepts a bare/full JID and lets
+the extension suppress mismatched pushes; it is not required for rich presentation.
+Signed-in delivery without `to` retains sender, body, grouping, sound and routing.
+Neutral alerts omit sender, message body, attachments, routing data, sound and badge.
+Logout revokes mirror ownership before any system suggestion-deletion callbacks,
+and the extension rechecks ownership at handoff.
+
+The app server sends notifications with `mutable-content`. For notifications belonging to the signed-in account,
+the `FluuxNotification` service extension replaces the title with the sender's name, read from `NotificationNames.json` in the App Group container, which the app keeps up to
 date with the roster and the joined rooms. A contact shows its name. A room shows the room name as title and the
 nick as subtitle, provided the app server keeps the occupant's resource in `from`. An unknown sender shows the local
 part of its JID. Enable the App Group `group.net.processone.fluux.share` for the App ID
 `net.processone.fluux.notification` as well, and regenerate its provisioning profile.
 
-Tapping a notification opens its conversation. Once the app has reconnected and fetched the pushed message, the view
+Remote pushes use iOS Communication Notifications. The main app declares
+`INSendMessageIntent` in `NSUserActivityTypes` and the
+`com.apple.developer.usernotifications.communication` entitlement. Enable
+**Communication Notifications** on the main App ID in Apple Developer, then
+refresh its provisioning profiles (automatic signing refreshes them at the next
+device build). The notification extension constructs and donates an incoming
+message intent and applies it to the notification. A direct message uses the
+contact's image; a group message uses the room name and room image, with the
+occupant's nick as the sender. Missing or invalid images fall back to ordinary
+notification presentation.
+
+The dedicated iOS module lives under
+`plugins/push/ios/Sources/NotificationAvatars`; the push plugin compiles it through
+its Swift package, and `project.yml` compiles the same sources into the extension.
+The extension entry point delegates to it. The shared React hook calls the guarded
+`platform/ios/notificationMirror.ts` entry point, which does nothing off native iOS.
+It reads cached roster and room avatars, including fetched room images and
+room-editor images, and sends one image at a time through the push plugin. No
+avatar URL travels in the push payload, and the extension never downloads an image.
+
+IndexedDB remains authoritative. `NotificationNames.json` includes the active
+account and an `avatars` map from bare JID to a SHA-1 hash. The mirror uses a
+valid announced hash for cached blob images and hashes image bytes for other
+sources. `Avatars/<hash>.jpg` contains a native ImageIO thumbnail, at most 160
+pixels on its longest side. The mirror includes roster contacts and rooms;
+each output is limited to 64 KiB and source images above 2 MiB are skipped.
+The extension reads only the image needed for the incoming notification.
+Contacts and rooms share files
+when their hashes match; occupant avatars are not mirrored. Both the index and
+images are written atomically with protection allowing reads after first unlock,
+including while locked. Avatar changes and removals prune unreferenced images;
+logout and account changes wipe the mirror. An uninitialized roster preserves
+an existing mirror only when it belongs to the same account; a restored or
+fetched empty roster prunes removed contacts.
+
+`npm run test:ios-notifications` uses synthetic native fixtures for lookup,
+resizing, pruning, account isolation, missing images and intent construction.
+The macOS harness cannot exercise iOS-only group-image assignment or system
+content updates; simulator compilation covers those APIs. Real-device acceptance
+requires remote pushes with fixture identities: direct and room avatars,
+missing-avatar fallback, avatar replacement/removal, logout, and delivery while
+locked after first unlock. Simulator builds and fixtures do not prove APNs
+extension execution or the rendered Notification Center appearance. Local
+notifications posted while the app runs are a separate follow-up.
+
+For grouping in Notification Center, the extension preserves an existing APNs `thread-id`
+(`UNNotificationContent.threadIdentifier`). When it is empty, the extension uses the bare JID from `from`:
+the contact's JID for a direct chat or the room's JID for a group chat, excluding the device resource or occupant's
+nick. If `from` is absent or is not a string, or its bare JID contains whitespace or lacks exactly one `@`
+separating nonempty local and domain parts, the extension delivers the notification without adding a thread identifier.
+
+Tapping a notification attributed to the signed-in account opens its conversation. Once the app has reconnected and fetched the pushed message, the view
 jumps to the first new message, unless the reader has scrolled in the meantime.
+
+### Native alert tones and snapshot privacy
+
+On native iOS, **Settings → Notifications** offers the system sound, Bell,
+Chime, Pulse, or Silent for background notifications. The tone belongs to the
+signed-in account. The existing sound toggle disables both foreground and
+background sounds; Silent disables only the background alert. The notification
+extension reads an account-owned App Group mirror. It preserves pushes that
+already have no sound and leaves notification-preview preferences unchanged.
+The bundled tones are short linear PCM WAV files copied to the app and extension.
+
+A native opaque cover hides chat contents in app-switcher snapshots. Scene
+deactivation covers only that scene’s windows, leaving other active scenes
+visible; application deactivation covers all visible app windows. Activation
+removes covers only from active windows. The cover does not require or provide
+an app lock and does not protect screenshots, screen recordings, or notification
+previews. Accepted long presses and successful reaction
+sends trigger native haptic feedback; dragging or cancelled holds do not.
+
+`npm run test:ios-notifications` covers suggestion identities, pruning, tone
+selection and WAV encoding using synthetic fixtures. For the native privacy
+lifecycle fixture, pass an isolated booted simulator UUID and optionally its
+custom device-set path to `FLUUX_IOS_TEST_DEVICE` and
+`FLUUX_IOS_TEST_DEVICE_SET`, then run `npm run test:ios-privacy`. It installs and
+removes only a separate synthetic fixture application. Share-sheet ranking,
+actual alert playback, app-switcher captures and haptic feel require device QA.
+
+### OpenPGP notification previews
+
+The per-account **OpenPGP notification previews** switch in **Settings → Notifications**
+is off by default. Enabling it
+copies only unlocked decryption subkeys, the current public-key/trust snapshot and the
+fetch credential into a dedicated keychain group shared by the app and notification
+extension. Items use `AfterFirstUnlockThisDeviceOnly`. Disabling it, logging out or
+changing accounts removes the shared snapshot. Identity or trust changes revoke it
+before rebuilding it from the current state. Existing app secrets keep their private
+default access group; FluuxShare has no access to the preview group. Regenerate the
+app and notification extension provisioning profiles after adding the shared group.
+
+The extension builds the separate `nse-openpgp` Rust crate through `project.yml` for
+both device and simulator. It opens a short TLS/SASL session without presence or read
+markers and pages the sender's personal archive within a fixed recent window. Each incoming
+OX event must have a valid signature from a known current key, the account recipient binding
+and the expected payload namespaces. Missing settings, keys or credentials keep the original
+fallback; opted-in unknown, duplicate-only, saturated or incomplete results show localized
+activity text. The fetch-and-decrypt budget is seven
+seconds and the delivery fallback deadline is eight seconds. Previews follow iOS
+**Show Previews**: **Never** skips decryption, **When Unlocked** leaves visibility to
+iOS, and **Always** can show decrypted text on the lock screen after the first unlock.
+
+The whole batch is reduced before handing back one original notification. Edits update
+eligible candidates, retractions tombstone their targets and cancel known pending/delivered
+requests, and reactions have their own wording. Outer corrections are metadata even though
+their target is outside the OX signature; mutations are scoped to the authenticated sender's
+conversation and a client target ID carried by the verified original stanza.
+A local read of a message that never gains an own-archive ID is not recorded in the
+notification ledger. Such a message can later produce one notification even though it
+was already read. Client IDs do not substitute for personal-archive identities.
+
+App read and notification facts use only the trusted personal-archive stanza ID;
+messages without that ID are not recorded or claimed. Client IDs never identify
+ledger facts or transfer state between archive IDs. A single eligible message shows its preview;
+several show their count. Metadata-only results show reaction/edit/deletion wording without
+replaying a retracted body. No extra local notifications or filtering entitlement are used.
+An unknown event withholds all candidate text because it may contain a mutation of an
+earlier message; verified retractions still cancel their recorded targets.
+
+The App Group SQLite ledger contains account/activation/revision identity, read/notified IDs,
+metadata/tombstones and notification request IDs, never bodies or secrets. Archive IDs belong
+only to the queried personal account archive; foreign `stanza-id` authorities are excluded.
+Local app read events and app notification claims merge IDs through the native plugin. MDS
+reads from other devices are excluded. During opted-in cold-start provisioning, local reads
+are buffered in memory for the current account (at most 64 events and 4,096 resident message
+identities), then merged into its bound epoch. Account switch, logout or opt-out drops the
+buffer; changing an already-bound epoch also clears pending evidence. Cached trusted archive
+identity takes precedence over an older captured resident copy.
+Routine capability revocation retains the epoch and
+history; opt-out, logout and account switch purge them and cancel recorded requests. First
+activation/re-enable sets a fresh eligibility baseline instead of replaying old unread history.
+Existing installations with no ledger establish that baseline when provisioning next succeeds.
+
+The window covers the most recent 72 hours, starting no earlier than activation. Bounds are
+five pages of 20 archive entries, 20 incoming decryption/classification attempts, 1 MiB total
+received XML bytes across endpoints (excluding TLS framing/handshake overhead), 64 KiB per ciphertext and decrypted envelope, and a 64 KiB
+structured FFI result. Ledger-known read/notified message IDs skip decryption; metadata is
+decrypted again to reduce unresolved candidates. The unordered known-ID input is bounded
+to 4,096 IDs / 256 KiB within a 1 MiB FFI request. Up to 100 identity/event records return;
+an output exceeding the FFI buffer remains generic. Page IDs are invocation-local
+opaque tokens; server-returned order sequences events. No notification consumption cursor or
+sender-clock/lexical-UID advancement rule exists. For ledger retention, see the
+[privacy policy](PRIVACY.md#openpgp-notification-previews-on-ios). The ledger is limited to
+4,096 records per contact, 16,384 per account and an 8 MiB SQLite page cap. Capacity
+exhaustion disables preview replay for seven days instead of recycling in-window IDs. Clock
+rollback is conservative. A selected original or app notification is reserved before OS
+handoff: a crash or submission failure may miss a preview, and that claim is never retried.
+Read/revocation checks narrow the final handoff race; OS presentation is not transactional.
+
+Pushes carry no exact event ID. Catch-up can select a later eligible message, and a completed
+archive query cannot identify a transient event or an event not yet visible in MAM. Such empty
+results remain generic. Exact targeting needs the independent push-server change.
+
+`npm run test:ios-notifications` covers synthetic Swift delivery/ledger paths and locale
+generation; run `cargo test --locked --manifest-path apps/fluux/src-tauri/nse-openpgp/Cargo.toml`
+for the synthetic v4 crypto, namespace, archive-envelope and loopback pagination checks.
+These bounds are qualification limits, not measured guarantees of device memory or delivery.
+Signed physical-device behavior, preview settings, resource pressure and real APNs delivery
+need separate qualification. The `synthetic-lab` feature
+accepts a throwaway CA only for loopback endpoints and is absent from extension builds.

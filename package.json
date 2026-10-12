@@ -32,6 +32,11 @@
     "test:tauri-features": "node apps/fluux/src-tauri/check-tauri-features.mjs",
     "test:ios-icons": "node --test scripts/ios-icons.test.mjs",
     "test:ios-install": "node --test scripts/ios-install.test.mjs",
+    "test:ios-testflight": "node --test scripts/ios-testflight.test.mjs",
+    "test:ios-privacy": "node --test scripts/ios-privacy-cover.test.mjs",
+    "test:ios-notifications": "node --test scripts/ios-notifications.test.mjs scripts/ios-notification-previews.test.mjs scripts/ios-quick-wins.test.mjs",
+    "test:ios-extensions": "node --test scripts/ios-extension-identifiers.test.mjs",
+    "test:ios-generated-files": "node --test scripts/ios-generated-files.test.mjs",
     "test:parallel": "node scripts/test-parallel.mjs",
     "test:coverage": "npm run test:coverage --workspaces --if-present",
     "test:e2e": "npx playwright test --config e2e/playwright.e2e.config.ts",
@@ -56,6 +61,7 @@
     "tauri:ios:demo:dev": "npm run build:sdk && npm run tauri:ios:demo:dev -w @xmpp/fluux --",
     "tauri:ios:build": "npm run build:sdk && npm run tauri:ios:build -w @xmpp/fluux --",
     "tauri:ios:install": "npm run tauri:ios:install -w @xmpp/fluux --",
+    "tauri:ios:testflight": "npm run tauri:ios:testflight -w @xmpp/fluux --",
     "release:prepare": "node scripts/prepare-release.js",
     "docs": "npm run ts-docs -w @fluux/sdk",
     "docs:watch": "npm run docs:watch -w @fluux/sdk",
@@ -76,11 +82,13 @@
   "devDependencies": {
     "@iarna/toml": "^2.2.5",
     "@playwright/test": "^1.58.2",
+    "@types/ws": "^8.18.2",
     "buffer": "^6.0.3",
     "esbuild": "^0.28.2",
     "patch-package": "8.0.1",
     "stream-browserify": "^3.0.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "ws": "^8.22.0"
   },
   "engines": {
     "node": ">=22.22.0"
@@ -96,5 +104,9 @@
     "eslint-plugin-react": {
       "eslint": "^10.0.0"
     }
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true
   }
 }

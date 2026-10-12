@@ -7,6 +7,11 @@ Register this device for remote push notifications, receive its token updates an
 - `allow-register`
 - `allow-take-pending-tap`
 - `allow-set-sender-names`
+- `allow-donate-conversation`
+- `allow-remove-conversation-donations`
+- `allow-set-notification-sound`
+- `allow-set-notification-avatar`
+- `allow-set-notification-preview`
 - `allow-set-badge`
 - `allow-dismiss-notifications`
 - `allow-register-listener`
@@ -43,6 +48,32 @@ Enables the dismiss_notifications command without any pre-configured scope.
 <td>
 
 Denies the dismiss_notifications command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:allow-donate-conversation`
+
+</td>
+<td>
+
+Enables the donate_conversation command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:deny-donate-conversation`
+
+</td>
+<td>
+
+Denies the donate_conversation command without any pre-configured scope.
 
 </td>
 </tr>
@@ -102,6 +133,32 @@ Denies the register_listener command without any pre-configured scope.
 <tr>
 <td>
 
+`push:allow-remove-conversation-donations`
+
+</td>
+<td>
+
+Enables the remove_conversation_donations command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:deny-remove-conversation-donations`
+
+</td>
+<td>
+
+Denies the remove_conversation_donations command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `push:allow-remove-listener`
 
 </td>
@@ -147,6 +204,84 @@ Enables the set_badge command without any pre-configured scope.
 <td>
 
 Denies the set_badge command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:allow-set-notification-avatar`
+
+</td>
+<td>
+
+Enables the set_notification_avatar command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:deny-set-notification-avatar`
+
+</td>
+<td>
+
+Denies the set_notification_avatar command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:allow-set-notification-preview`
+
+</td>
+<td>
+
+Enables the set_notification_preview command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:deny-set-notification-preview`
+
+</td>
+<td>
+
+Denies the set_notification_preview command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:allow-set-notification-sound`
+
+</td>
+<td>
+
+Enables the set_notification_sound command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:deny-set-notification-sound`
+
+</td>
+<td>
+
+Denies the set_notification_sound command without any pre-configured scope.
 
 </td>
 </tr>

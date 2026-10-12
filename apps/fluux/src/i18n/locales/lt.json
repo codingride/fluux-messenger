@@ -339,6 +339,7 @@
         "voiceRequestSent": "Prašymas suteikti teisę kalbėti išsiųstas",
         "voiceRequests": "Prašymai suteikti teisę kalbėti",
         "grantVoice": "Suteikti balsą",
+        "voiceApprovalUnanswered": "Kambarys nesuteikė balso teisės. Galbūt asmuo išėjo iš kambario arba jau turi balso teisę.",
         "revokeVoice": "Atimti balsą",
         "grantModerator": "Suteikti moderatorių",
         "revokeModerator": "Atimti moderatorių",
@@ -390,6 +391,9 @@
         "whisperingTo": "Šnabždate privačiai {{nick}}",
         "whisperThread": "Privačiai su {{nick}}",
         "whisperCounterpartGone": "{{nick}} nebėra kambaryje, negalite atsakyti",
+        "whisperAttachmentTitle": "Siųsti privatų priedą?",
+        "whisperAttachmentWarning": "Privati žinutė yra laikina, tačiau failai lieka įkėlimo serveryje pagal jo saugojimo politiką. Gavėjai gali atsisiųsti ir pasilikti kopijas.",
+        "whisperAttachmentRetention": "Saugojimas įkėlimo serveryje: {{duration}}. Gavėjai gali atsisiųsti ir pasilikti kopijas.",
         "whisperPlaceholder": "Šnabždėti {{nick}}...",
         "ignoreUser": "Ignoruoti šiame kambaryje",
         "stopIgnoring": "Nustoti ignoruoti",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "Varde yra papildomų tarpų kraštuose",
         "nickHiddenChars": "Varde yra paslėptų simbolių",
         "mentionSuggestions": "Paminėjimų pasiūlymai",
+        "mentionsCount": "Paminėjimai: {{count}}",
         "unreadMessages": "{{displayCount}} neperskaitytas pranešimas",
         "unreadMessages_few": "{{displayCount}} neperskaityti pranešimai",
         "unreadMessages_many": "{{displayCount}} neperskaityto pranešimo",
@@ -493,6 +498,7 @@
         "replyQuoteHiddenEncrypted": "Citata paslėpta: originalas buvo užšifruotas",
         "forwardMessage": "Persiųsti žinutę (greitai)",
         "moreReactions": "Daugiau reakcijų",
+        "reactions": "Reakcijos",
         "reactionOthers": "{{count}} kitų",
         "moreOptions": "Daugiau parinkčių",
         "reactWith": "Reaguoti su {{emoji}}",
@@ -536,6 +542,7 @@
         "copyLinkChoose": "Kurią nuorodą kopijuoti?",
         "openInBrowser": "Atidaryti naršyklėje",
         "saveImage": "Išsaugoti vaizdą",
+        "mediaUnavailableOrUnsupported": "Šio failo čia negalima paleisti: jis gali būti nepasiekiamas arba nepalaikomo formato",
         "videoFormatUnsupported": "Šio vaizdo įrašo formato čia paleisti negalima",
         "videoUnavailable": "Vaizdo įrašas nebepasiekiamas",
         "audioFormatUnsupported": "Šio garso įrašo formato čia paleisti negalima",
@@ -650,6 +657,17 @@
         "yesterday": "Vakar"
     },
     "settings": {
+    "nativeNotificationTone": "Pranešimų garsas",
+    "nativeNotificationToneDescription": "Pasirinkite foninių pranešimų garsą. Tylu išsaugo programėlės garsus.",
+    "nativeSoundDescription": "Leisti garsus programėlėje ir foniniams pranešimams.",
+    "notificationTone_default": "Sistemos numatytasis",
+    "notificationTone_bell": "Varpelis",
+    "notificationTone_chime": "Varpelių melodija",
+    "notificationTone_pulse": "Pulsas",
+    "notificationTone_silent": "Tylu",
+    "oxNotificationPreview": "OpenPGP peržiūros pranešimuose",
+    "oxNotificationPreviewDescription": "Leisti pranešimų plėtiniui gauti ir iššifruoti šios paskyros žinutes. Peržiūros atitinka iOS nustatymus ir gali būti rodomos užrakintame ekrane, jei pasirinkta Visada.",
+    "oxNotificationPreviewFailed": "Nepavyko įjungti peržiūrų. Patikrinkite, ar pasiekiami OpenPGP ir išsaugotas ryšys.",
         "title": "Nustatymai",
         "categories": {
             "profile": "Profilis",
@@ -729,6 +747,7 @@
         "accentThemeDefault": "Temos numatytoji",
         "fontSize": "Šrifto dydis",
         "fontSizeDescription": "Koreguoti teksto dydį programėlėje",
+        "fontSizeSystemDescription": "Palyginti su teksto dydžiu, nustatytu iOS nustatymuose",
         "decreaseFontSize": "Sumažinti šrifto dydį",
         "increaseFontSize": "Padidinti šrifto dydį",
         "sound": "Groti pranešimų garsus",
@@ -1522,5 +1541,12 @@
             "archiveUnsupported": "Serveris nepalaiko archyvo paieškos. Pabandykite ieškoti pokalbio viduje.",
             "serverFailed": "Paieška serveryje nepavyko"
         }
+    },
+    "notificationPreview": {
+        "activity": "Nauja veikla",
+        "reaction": "{{nickname}} sureagavo: {{text}}",
+        "edit": "{{nickname}} (redaguota): {{text}}",
+        "retraction": "{{nickname}} ištrynė žinutę",
+        "messages": "{{nickname}}: {{count}} naujų žinučių"
     }
 }

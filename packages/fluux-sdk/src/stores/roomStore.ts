@@ -1,7 +1,10 @@
+import { handoffMessageUpdate, messageUpdateFields, withMessageCacheOperation } from './shared/messageUpdateHandoff'
+import { clearMessageIngressVersions } from './shared/messageIngress'
 import { isSpamModerated, moderationMetadata, roomRetractionAuthorized, type ModerationMetadata } from '../utils/moderation'
 import { backfillRoomStanzaId, roomStanzaIdsMergeable } from '../utils/roomStanzaId'
 import { createStore } from 'zustand/vanilla'
 import { subscribeWithSelector } from 'zustand/middleware'
+import { containSubscriberErrors } from './shared/containSubscriberErrors'
 import type {
   Room,
   RoomEntity,
@@ -35,14 +38,14 @@ import {
   type MessageRowRef,
   type MessageActor,
 } from '../utils/messageIdentity'
-import { getBareJid } from '../core/jid'
+import { getBareJid, getResource } from '../core/jid'
 import { logInfo, logWarn } from '../core/logger'
 import * as messageCache from '../utils/messageCache'
 import * as searchIndex from '../utils/searchIndex'
 import type { GetMessagesOptions } from '../utils/messageCache'
 import * as mamState from './shared/mamState'
 import type { HistoryQueryDirection } from './shared/mamState'
-import { serializeGaps, deserializeGaps, type GapInterval } from './shared/mamGap'
+import { serializeGaps, deserializeGaps, type GapMap } from './shared/mamGap'
 import {
   isCaughtUpForCounting,
   serializeCoverage,
@@ -68,7 +71,7 @@ import {
 } from './shared/readMarkerSync'
 import { advance, pointerRowRef } from './shared/readPointer'
 import { loadRoomReadState, saveRoomReadState, clearRoomReadState, _clearAllRoomReadStateForTesting, type RoomReadState } from './shared/readStateStorage'
-import { ignoreStore, isMessageFromIgnoredUser } from './ignoreStore'
+import { ignoreStore, isMessageFromIgnoredUser, isReplyToIgnoredUser, type IgnoredUser } from './ignoreStore'
 import { roomActivityTone } from './roomSelectors'
 import * as notifState from './shared/notificationState'
 import { markerDebugLog } from '../utils/markerDebug'
@@ -202,7 +205,7 @@ function saveDismissedPollsToStorage(dismissedPolls: Map<string, Set<string>>, j
 }
 
 /**
- * localStorage persistence for room history gaps (`GapInterval` per room).
+ * localStorage persistence for room history gaps (a `GapList` per room).
  * Persisted separately (like drafts) so the "Load missing messages" marker
  * survives a reload — the next session's catch-up cursor sits above the gap and
  * would not re-detect it.
@@ -213,7 +216,7 @@ function getRoomGapsStorageKey(jid?: string | null): string {
   return buildScopedStorageKey(ROOM_GAPS_STORAGE_KEY_BASE, jid)
 }
 
-function loadGapsFromStorage(jid?: string | null): Map<string, GapInterval> {
+function loadGapsFromStorage(jid?: string | null): GapMap {
   try {
     const stored = localStorage.getItem(getRoomGapsStorageKey(jid))
     if (stored) return deserializeGaps(stored)
@@ -223,7 +226,7 @@ function loadGapsFromStorage(jid?: string | null): Map<string, GapInterval> {
   return new Map()
 }
 
-function saveGapsToStorage(gaps: Map<string, GapInterval>, jid?: string | null): void {
+function saveGapsToStorage(gaps: GapMap, jid?: string | null): void {
   // A gap FORMATION must not sit in the throttle window — nothing re-detects
   // it next session. Shrink/close/removal stays throttled. See durableMapPersist.
   const key = getRoomGapsStorageKey(jid)
@@ -418,7 +421,32 @@ function roomReadView(state: RoomState, roomJid: string): ReadStateView | undefi
   }
 }
 
+/**
+ * The rows that order a marker against the read pointer. An exact pointer orders by position and
+ * needs only the marker; a floor needs its own named row too, read from the cache when it holds it.
+ */
+async function withFloorPointerRow(roomJid: string, marker: RoomMessage): Promise<RoomMessage[]> {
+  const pointer = roomStore.getState().roomMeta.get(roomJid)?.readPointer
+  if (pointer?.order.role !== 'floor') return [marker]
+  const pointerRow = await messageCache.getRoomMessageByRowRef(roomJid, pointerRowRef(pointer))
+  return sortMessagesByTimestamp(pointerRow && pointerRow.id !== marker.id ? [marker, pointerRow] : [marker], 'room')
+}
+
+function matchesRoomVisibility(
+  message: Pick<notifState.NotificationMessage, 'from' | 'nick' | 'occupantId' | 'replyTo'>,
+  users: IgnoredUser[], cache?: Map<string, string>,
+): boolean {
+  return !isMessageFromIgnoredUser(users, { ...message, nick: message.nick ?? getResource(message.from ?? '') ?? '' }, cache)
+    && !isReplyToIgnoredUser(users, message.replyTo, cache)
+}
+
+function roomMessageVisible(roomJid: string, message: Parameters<typeof matchesRoomVisibility>[0]): boolean {
+  return matchesRoomVisibility(message, ignoreStore.getState().getIgnoredForRoom(roomJid),
+    roomStore.getState().roomRuntime.get(roomJid)?.nickToJidCache)
+}
+
 export const roomReadTracker = createReadTracker('room', {
+  shouldCountMessage: roomMessageVisible,
   storage: {
     read: (roomJid) => roomReadView(roomStore.getState(), roomJid),
     update: (roomJid, change) => roomStore.setState((state) => {
@@ -468,11 +496,7 @@ export const roomReadTracker = createReadTracker('room', {
   },
   loadStashedMarkerRows: async (roomJid, stanzaId) => {
     const marker = await messageCache.getRoomMessageByStanzaId(roomJid, stanzaId)
-    if (!marker) return null
-    const pointer = roomStore.getState().roomMeta.get(roomJid)?.readPointer
-    if (pointer?.order.role !== 'floor') return [marker]
-    const pointerRow = await messageCache.getRoomMessageByRowRef(roomJid, pointerRowRef(pointer))
-    return sortMessagesByTimestamp(pointerRow && pointerRow.id !== marker.id ? [marker, pointerRow] : [marker], 'room')
+    return marker ? withFloorPointerRow(roomJid, marker) : null
   },
   captureCacheRead: captureRoomCacheRead,
   loadPublishCandidates: (roomJid, pointer) =>
@@ -485,7 +509,12 @@ export const roomReadTracker = createReadTracker('room', {
     // Guarded on the same bottomId, so a record a concurrent merge already moved on is kept.
     roomStore.getState().clearRoomCoverage(roomJid, record.bottomId)
   },
-  countUnreadFromArchive: (roomJid, range) => messageCache.countRoomUnreadInArchive(roomJid, range),
+  countUnreadFromArchive: (roomJid, range) => {
+    const users = ignoreStore.getState().getIgnoredForRoom(roomJid)
+    const cache = roomStore.getState().roomRuntime.get(roomJid)?.nickToJidCache
+    return messageCache.countRoomUnreadInArchive(roomJid, range,
+      users.length ? (message => matchesRoomVisibility(message, users, cache)) : undefined)
+  },
   archiveReadyForCounting: (roomJid) => {
     const mam = mamState.getMAMQueryState(roomStore.getState().mamQueryStates, roomJid)
     return !roomArchiveSaves.has(roomJid) && isCaughtUpForCounting(mam)
@@ -1024,7 +1053,7 @@ export interface RoomState {
   // MAM query states per room (for rooms with MAM enabled)
   mamQueryStates: Map<string, HistoryQueryState>
   // Persisted history-gap intervals per room (survives reload; drives the gap marker)
-  roomGaps: Map<string, GapInterval>
+  roomGaps: GapMap
   // Persisted contiguous-with-live coverage per room (positive twin of roomGaps;
   // survives fresh sessions and gap closure). See shared/mamCoverage.ts.
   roomCoverage: Map<string, CoverageRecord>
@@ -1088,6 +1117,7 @@ export interface RoomState {
     isLiveArrival?: boolean
     incrementUnread?: boolean
     incrementMentions?: boolean
+    onAccepted?: () => void
   }) => void
   waitForMessageArrivals: (roomJid: string) => Promise<boolean> | undefined
   updateReactions: (roomJid: string, messageId: string, reactorNick: string, emojis: string[]) => void
@@ -1197,6 +1227,12 @@ export interface RoomState {
    * holds. Guarded on `stanzaId`; moves no read pointer. See the implementation.
    */
   discardPurgedRemoteDisplayed: (roomJid: string, stanzaId: string) => void
+  /** XEP-0490: order the stashed marker against the message cache. Resolves, once applied, to whether the cache holds it. */
+  resolvePendingRemoteDisplayedFromCache: (roomJid: string) => Promise<boolean>
+  /** XEP-0490: order the stashed marker against its archived row, fetched by id. Stores nothing. */
+  placeRemoteDisplayedRow: (roomJid: string, stanzaId: string, row: RoomMessage) => Promise<void>
+  /** Whether the coverage record's oldest message is still cached; drops a record whose bottom is gone. */
+  verifyRoomCoverageBottom: (roomJid: string) => Promise<boolean>
   setTyping: (roomJid: string, nick: string, isTyping: boolean) => void
 
   // Bookmark actions
@@ -1323,11 +1359,24 @@ export interface RoomState {
   roomTabIndicator: () => 'none' | 'neutral' | 'accent' // Rooms tab dot tone
 }
 
+const roomOccupantFlushers = new WeakMap<RoomState['getRoom'], (roomJid: string) => void>()
+
+export function registerRoomOccupantFlusher(getRoom: RoomState['getRoom'], flush: (roomJid: string) => void): () => void {
+  roomOccupantFlushers.set(getRoom, flush)
+  return () => {
+    if (roomOccupantFlushers.get(getRoom) === flush) roomOccupantFlushers.delete(getRoom)
+  }
+}
+
+function flushPendingRoomOccupants(roomJid: string): void {
+  roomOccupantFlushers.get(roomStore.getState().getRoom)?.(roomJid)
+}
+
 function createEmptyRoomState(
   drafts: Map<string, string> = new Map(),
   votedPollIds: Map<string, Set<string>> = new Map(),
   dismissedPollIds: Map<string, Set<string>> = new Map(),
-  roomGaps: Map<string, GapInterval> = new Map(),
+  roomGaps: GapMap = new Map(),
   acknowledgedNonAnonymousRooms: Set<string> = new Set(),
   roomCoverage: Map<string, CoverageRecord> = new Map(),
   pendingRetractions: Map<string, PendingRetraction[]> = new Map(),
@@ -1359,7 +1408,7 @@ function createEmptyRoomState(
 }
 
 export const roomStore = createStore<RoomState>()(
-  subscribeWithSelector((set, get) => ({
+  containSubscriberErrors(subscribeWithSelector((set, get) => ({
   ...createEmptyRoomState(loadDraftsFromStorage(), loadVotedPollsFromStorage(), loadDismissedPollsFromStorage(), loadGapsFromStorage(), loadNonAnonAckFromStorage(), loadCoverageFromStorage(), loadPendingRetractionsFromStorage()), // Restore drafts, poll state, history gaps, coverage, and non-anon acks from localStorage
 
   addRoom: (room, resident = []) => {
@@ -1469,6 +1518,7 @@ export const roomStore = createStore<RoomState>()(
   },
 
   removeRoom: (roomJid) => {
+    clearMessageIngressVersions('room', roomJid)
     // Delete messages from IndexedDB (non-blocking)
     void messageCache.deleteRoomMessages(roomJid)
     // The durable cursors describe messages that no longer exist: drop them
@@ -2019,6 +2069,7 @@ export const roomStore = createStore<RoomState>()(
   getRoom: (roomJid) => get().rooms.get(roomJid),
 
   switchAccount: (jid) => {
+    clearMessageIngressVersions('room')
     // Freshness on an immediate return: without this, a fast A -> B -> A runs
     // loadRoomReadState(A) against a blob predating A's last mutations, and
     // that stale load becomes the live state.
@@ -2041,6 +2092,7 @@ export const roomStore = createStore<RoomState>()(
   },
 
   reset: () => {
+    clearMessageIngressVersions('room')
     // In-flight archive-save gates from the old session must not commit
     // cursors into the fresh state.
     roomArchiveSaves.clear()
@@ -2111,6 +2163,8 @@ export const roomStore = createStore<RoomState>()(
         finish()
       }
     }
+    options.onAccepted?.()
+    flushPendingRoomOccupants(roomJid)
     // A copy attaches to at most one held row (docs/MESSAGE_IDENTIFIERS.md §3):
     // resolve it once, take that row's archive ids and delivery evidence, and only
     // then let the pending and ledger retraction checks below judge it as the
@@ -2326,6 +2380,30 @@ export const roomStore = createStore<RoomState>()(
       await pending
       if (!isCurrent()) return
     }
+    const isCurrent = captureRoomCacheRead(roomJid)
+    const residentTarget = get().getMessage(roomJid, messageId)
+    let residentUpdate: RoomMessage | undefined
+    const persistReactions = (persist: () => Promise<unknown>) => {
+      void handoffMessageUpdate('room', roomJid, isCurrent, {
+        persist,
+        fields: ['reactions'],
+        matchesTarget: message => !!residentTarget && matchesCorrectionTarget(message, residentTarget),
+        applyResident: async (_result, isLatest) => {
+          const target = get().getMessage(roomJid, messageId)
+          const before = target?.reactions
+          const cached = residentUpdate ?? await messageCache.getRoomMessageByReference(roomJid, messageId, target?.from)
+          if (!cached || !isCurrent() || !isLatest(cached, 'reactions')) return
+          set(state => {
+            const rows = state.messages.get(roomJid) ?? []
+            const index = rows.findIndex(row => matchesCorrectionTarget(row, cached))
+            if (index === -1 || rows[index].isRetracted || rows[index].reactions !== before) return state
+            const messages = [...rows]
+            messages[index] = { ...rows[index], reactions: cached.reactions }
+            return withRoomMessageWindow(state, roomJid, messages) ?? state
+          })
+        },
+      })
+    }
     set((state) => {
       const newRooms = new Map(state.rooms)
       const existing = newRooms.get(roomJid)
@@ -2366,21 +2444,24 @@ export const roomStore = createStore<RoomState>()(
         return updatedMessage
       })
 
+      residentUpdate = updatedMessage
+
       // Update IndexedDB (non-blocking) — use actual message id, not the lookup key
       if (updatedMessage) {
-        void messageCache.updateRoomMessage(
+        const message = updatedMessage
+        persistReactions(() => messageCache.updateRoomMessage(
           roomJid,
-          updatedMessage.id,
-          { reactions: updatedMessage.reactions },
-          updatedMessage.from,
+          message.id,
+          { reactions: message.reactions },
+          message.from,
           undefined,
-          updatedMessage,
-        )
+          message,
+        ))
       } else {
         // Message not in memory — update reactions directly in IndexedDB cache
         // so the correct state is restored when the message is loaded later
         logInfo(`Reaction for message ${messageId} not in memory — updating in cache`)
-        void messageCache.updateRoomMessageReactions(roomJid, messageId, reactorNick, emojis)
+        persistReactions(() => messageCache.updateRoomMessageReactions(roomJid, messageId, reactorNick, emojis))
       }
 
       const written = withRoomMessageWindow(state, roomJid, newMessages)
@@ -2423,6 +2504,35 @@ export const roomStore = createStore<RoomState>()(
   },
 
   updateMessage: async (roomJid, messageId, updates, retractionReference, resolvedRetractionTarget, correctionActor, onCorrectionMissing, onCorrectionResolved) => {
+    const applyResidentUpdate = (target: StoredRoomMessage, patch: Partial<StoredRoomMessage>, accountScope: string | null) => set(state => {
+      const rows = state.messages.get(roomJid) ?? []
+      const index = rows.findIndex(row => matchesCorrectionTarget(row, target))
+      if (index === -1 || rows[index].isRetracted) return state
+      const applicable = resolveCorrectionUpdates(rows[index], patch, accountScope)
+      if (!applicable) return state
+      const updated = { ...rows[index], ...applicable }
+      const messages = [...rows]
+      messages[index] = updated
+      const window = withRoomMessageWindow(state, roomJid, messages)
+      const preview = state.roomMeta.get(roomJid)?.lastMessage ?? state.rooms.get(roomJid)?.lastMessage
+      const previewPatch = preview && matchesCorrectionTarget(preview, updated)
+        ? commitRoomUpdate(state, roomJid, { lastMessage: { ...preview, ...applicable } })
+        : undefined
+      return { ...window, ...previewPatch }
+    })
+    if (!correctionActor && Object.keys(updates).length === 1 && 'linkPreview' in updates) {
+      const scope = captureStorageScope()
+      const isCurrent = captureRoomCacheRead(roomJid)
+      return handoffMessageUpdate('room', roomJid, isCurrent, async () => {
+        await roomMessageArrivals.get(roomJid)
+        if (!isCurrent()) return null
+        const rows = get().messages.get(roomJid) ?? []
+        const target = rows[findMessageIndexById(rows, messageId)] ??
+          await messageCache.getRoomMessage(roomJid, messageId) ?? await messageCache.getRoomMessageByReference(roomJid, messageId)
+        if (!target || !isCurrent()) return null
+        return target
+      }, target => messageCache.updateRoomMessage(roomJid, target.id, updates, target.from, scope.jid, target), target => applyResidentUpdate(target, updates, scope.jid))
+    }
     if (updates.isRetracted && updates.isModerated && !resolvedRetractionTarget) {
       get().recordPendingRetraction(roomJid, messageId, roomJid, undefined, moderationMetadata(updates))
       return
@@ -2542,16 +2652,30 @@ export const roomStore = createStore<RoomState>()(
           const scope = captureStorageScope()
           const reindex = updates.body !== undefined
           const message = updatedMessage
-          void messageCache.updateRoomMessage(
+          const persist = () => messageCache.updateRoomMessage(
             roomJid,
-            updatedMessage.id,
+            message.id,
             { ...updates, ...(contentRecovery && { contentRecovery }) },
-            updatedMessage.from,
+            message.from,
             scope.jid,
-            updatedMessage,
+            message,
           ).then(() => {
             if (reindex && scope.isCurrent()) return searchIndex.updateMessage({ ...message, ...(contentRecovery && { contentRecovery }) }, scope.jid)
           }).catch(error => logWarn(`Failed to index message update: ${String(error)}`))
+          if (contentRecovery || correctionPayload.body !== undefined || 'attachment' in correctionPayload || 'encryptedPayload' in correctionPayload || correctionPayload.isEdited || correctionPayload.correctionRevision || correctionPayload.correctionStanzaIds) {
+            void persist()
+          } else {
+            const isCurrent = captureRoomCacheRead(roomJid)
+            void handoffMessageUpdate('room', roomJid, isCurrent, {
+              persist,
+              fields: Object.keys(updates),
+              matchesTarget: candidate => matchesCorrectionTarget(candidate, message),
+              applyResident: (_result, isLatest) => {
+                const patch = messageUpdateFields(message, updates, field => isLatest(message, field))
+                if (Object.keys(patch).length) applyResidentUpdate(message, patch, scope.jid)
+              },
+            })
+          }
         }
 
         // A retraction may target a `noLocalStore` message noted in
@@ -2883,6 +3007,23 @@ export const roomStore = createStore<RoomState>()(
     roomReadTracker.applyRemoteDisplayed(roomJid, stanzaId, messagesOverride)
   },
 
+  resolvePendingRemoteDisplayedFromCache: (roomJid) => roomReadTracker.resolvePendingFromCache(roomJid),
+
+  placeRemoteDisplayedRow: async (roomJid, stanzaId, row) => {
+    const stillCurrent = captureRoomCacheRead(roomJid)
+    const rows = await withFloorPointerRow(roomJid, row)
+    if (stillCurrent()) roomReadTracker.applyRemoteDisplayed(roomJid, stanzaId, rows, true)
+  },
+
+  verifyRoomCoverageBottom: async (roomJid) => {
+    const record = get().roomCoverage.get(roomJid)
+    if (!record) return false
+    const stillCurrent = captureRoomCacheRead(roomJid)
+    if (await messageCache.resolveArchivePosition(roomJid, record.bottomId, true)) return true
+    if (stillCurrent()) get().clearRoomCoverage(roomJid, record.bottomId)
+    return false
+  },
+
   setTyping: (roomJid, nick, isTyping) => {
     if (isTyping) {
       // Set auto-clear timeout in case "paused" is missed
@@ -3188,195 +3329,211 @@ export const roomStore = createStore<RoomState>()(
   // For initial load (no 'before'), loads the LATEST 100 messages to show most recent first
   loadMessagesFromCache: async (roomJid, options = {}) => {
     const isCurrent = captureRoomCacheRead(roomJid)
-    if (!messageCache.isMessageCacheAvailable()) {
-      return []
-    }
-
-    try {
-      // Default to 100 messages and latest=true for initial load
-      const queryOptions = {
-        limit: options.limit ?? 100,
-        before: options.before,
-        after: options.after,
-        // When loading without 'before', get the latest messages (most recent).
-        // `oldest` opts out: ascending oldest-N (the true cache bottom).
-        latest: !options.before && !options.oldest,
-      }
-      const cachedMessages = await messageCache.getRoomMessages(roomJid, queryOptions).then(messages => refreshCachedCorrections(messages, isCurrent))
+    return withMessageCacheOperation('room', roomJid, async () => {
       if (!isCurrent()) return []
-      // `peek`: a pure read that returns the messages WITHOUT pulling them into the
-      // store. Used to compute a catch-up cursor for a non-active room without
-      // breaking the invariant that only the active room is resident in RAM.
-      // `oldest` is always a pure read too: the cache bottom must never become
-      // the resident window (that would tear the UI off the live edge).
-      if (!options.peek && !options.oldest && cachedMessages.length > 0) {
-        // A `before`-anchored load does not establish the live edge.
-        const recenter = queryOptions.latest
-        // Merge with existing messages in memory using the shared helper
-        set((state) => {
-          // A parked window keeps its place; the latest slice waits in the cache for
-          // jump-to-latest (see recenterToLatest).
-          if (recenter && timeline.isParkedOffLiveEdge(state.messages.get(roomJid) ?? [], state.windowAtLiveEdge.get(roomJid) !== false)) {
-            return state
-          }
-          const update = mergeCachedRoomMessages(state, roomJid, cachedMessages)
-          if (!recenter) return update ?? state
-          // Recenter: force the flag true (even when the merge was a no-op because the
-          // newest window was already resident).
-          const base = update?.windowAtLiveEdge ?? state.windowAtLiveEdge
-          if (base.get(roomJid) === true) return update ?? state
-          return { ...(update ?? {}), windowAtLiveEdge: new Map(base).set(roomJid, true) }
-        })
+      if (!messageCache.isMessageCacheAvailable()) {
+        return []
       }
-      return cachedMessages
-    } catch (error) {
-      console.error('Failed to load room messages from IndexedDB:', error)
-      return []
-    }
+
+      try {
+        // Default to 100 messages and latest=true for initial load
+        const queryOptions = {
+          limit: options.limit ?? 100,
+          before: options.before,
+          after: options.after,
+          // When loading without 'before', get the latest messages (most recent).
+          // `oldest` opts out: ascending oldest-N (the true cache bottom).
+          latest: !options.before && !options.oldest,
+        }
+        const cachedMessages = await messageCache.getRoomMessages(roomJid, queryOptions).then(messages => refreshCachedCorrections(messages, isCurrent))
+        if (!isCurrent()) return []
+        // `peek`: a pure read that returns the messages WITHOUT pulling them into the
+        // store. Used to compute a catch-up cursor for a non-active room without
+        // breaking the invariant that only the active room is resident in RAM.
+        // `oldest` is always a pure read too: the cache bottom must never become
+        // the resident window (that would tear the UI off the live edge).
+        if (!options.peek && !options.oldest && cachedMessages.length > 0) {
+          flushPendingRoomOccupants(roomJid)
+          // A `before`-anchored load does not establish the live edge.
+          const recenter = queryOptions.latest
+          // Merge with existing messages in memory using the shared helper
+          set((state) => {
+            // A parked window keeps its place; the latest slice waits in the cache for
+            // jump-to-latest (see recenterToLatest).
+            if (recenter && timeline.isParkedOffLiveEdge(state.messages.get(roomJid) ?? [], state.windowAtLiveEdge.get(roomJid) !== false)) {
+              return state
+            }
+            const update = mergeCachedRoomMessages(state, roomJid, cachedMessages)
+            if (!recenter) return update ?? state
+            // Recenter: force the flag true (even when the merge was a no-op because the
+            // newest window was already resident).
+            const base = update?.windowAtLiveEdge ?? state.windowAtLiveEdge
+            if (base.get(roomJid) === true) return update ?? state
+            return { ...(update ?? {}), windowAtLiveEdge: new Map(base).set(roomJid, true) }
+          })
+        }
+        return cachedMessages
+      } catch (error) {
+        console.error('Failed to load room messages from IndexedDB:', error)
+        return []
+      }
+    })
   },
 
   loadMessagesAroundFromCache: async (roomJid, anchorRow, options = {}) => {
     const isCurrent = captureRoomCacheRead(roomJid)
-    if (!messageCache.isMessageCacheAvailable()) {
-      return []
-    }
-
-    try {
-      const slice = await messageCache.getRoomMessagesAround(roomJid, anchorRow, options).then(messages => refreshCachedCorrections(messages, isCurrent))
+    return withMessageCacheOperation('room', roomJid, async () => {
       if (!isCurrent()) return []
-      if (slice.length > 0) {
-        set((state) => mergeCachedRoomAround(state, roomJid, slice, anchorRow,
-          options.before ?? messageCache.AROUND_CONTEXT_BEFORE) ?? state)
+      if (!messageCache.isMessageCacheAvailable()) {
+        return []
       }
-      return slice
-    } catch (error) {
-      console.error('Failed to load room messages around anchor from IndexedDB:', error)
-      return []
-    }
+
+      try {
+        const slice = await messageCache.getRoomMessagesAround(roomJid, anchorRow, options).then(messages => refreshCachedCorrections(messages, isCurrent))
+        if (!isCurrent()) return []
+        if (slice.length > 0) {
+          flushPendingRoomOccupants(roomJid)
+          set((state) => mergeCachedRoomAround(state, roomJid, slice, anchorRow,
+            options.before ?? messageCache.AROUND_CONTEXT_BEFORE) ?? state)
+        }
+        return slice
+      } catch (error) {
+        console.error('Failed to load room messages around anchor from IndexedDB:', error)
+        return []
+      }
+    })
   },
 
   loadOlderMessagesFromCache: async (roomJid, limit = 50) => {
     const isCurrent = captureRoomCacheRead(roomJid)
-    if (!messageCache.isMessageCacheAvailable()) {
-      return []
-    }
-
-    try {
-      const resident = get().messages.get(roomJid) ?? []
-      if (!get().rooms.has(roomJid) || resident.length === 0) {
+    return withMessageCacheOperation('room', roomJid, async () => {
+      if (!isCurrent()) return []
+      if (!messageCache.isMessageCacheAvailable()) {
         return []
       }
 
-      // Get the oldest message timestamp we have in memory
-      const oldestInMemory = resident[0]
-      const beforeDate = oldestInMemory.timestamp
-
-      // Load older messages from IndexedDB
-      const cachedMessages = await messageCache.getRoomMessages(roomJid, {
-        before: beforeDate,
-        limit,
-      }).then(messages => refreshCachedCorrections(messages, isCurrent))
-      if (!isCurrent()) return []
-
-      if (cachedMessages.length > 0) {
-        // Prepend to existing messages via the shared timeline machine
-        set((state) => {
-          const newRooms = new Map(state.rooms)
-          const existing = newRooms.get(roomJid)
-          if (!existing) return state
-          const resident = state.messages.get(roomJid) ?? []
-
-          // Reconcile edits, preserve resident identity, sort, and keep-oldest trim
-          // (load-older slides the window so scroll-back past the bound works).
-          // If keep-oldest evicted the newest resident message, the window has
-          // slid off the live edge → gate live appends in addMessage.
-          const { merged, newestEvicted } = timeline.loadOlderSlice(
-            reconcileCachedCorrections(resident, cachedMessages, getStorageScopeJid()),
-            cachedMessages,
-            roomTimelineConfig()
-          )
-
-          const written = commitCachedRoomMessages(state, roomJid, merged,
-            newestEvicted ? false : undefined)
-          if (!written) return state
-          return written
-        })
-      }
-
-      return cachedMessages
-    } catch (error) {
-      console.error('Failed to load older room messages from IndexedDB:', error)
-      return []
-    }
-  },
-
-  loadNewerMessagesFromCache: async (roomJid, limit = 50) => {
-    const isCurrent = captureRoomCacheRead(roomJid)
-    if (!messageCache.isMessageCacheAvailable()) {
-      return []
-    }
-
-    try {
-      while (isCurrent()) {
+      try {
         const resident = get().messages.get(roomJid) ?? []
         if (!get().rooms.has(roomJid) || resident.length === 0) {
           return []
         }
 
-        // Get the newest message timestamp we have in memory
-        const newestInMemory = resident[resident.length - 1]
-        const afterDate = newestInMemory.timestamp
+        // Get the oldest message timestamp we have in memory
+        const oldestInMemory = resident[0]
+        const beforeDate = oldestInMemory.timestamp
 
-        // Load newer messages from IndexedDB
+        // Load older messages from IndexedDB
         const cachedMessages = await messageCache.getRoomMessages(roomJid, {
-          after: afterDate,
+          before: beforeDate,
           limit,
         }).then(messages => refreshCachedCorrections(messages, isCurrent))
         if (!isCurrent()) return []
 
-        // Fewer than the requested limit came back ⇒ nothing more newer remains in the
-        // cache, so the window has reached the tail (live edge) regardless of whether the
-        // batch was empty or partial.
-        const reachedTail = cachedMessages.length < limit
-
         if (cachedMessages.length > 0) {
-          // Append to existing messages via the shared timeline machine
+          flushPendingRoomOccupants(roomJid)
+          // Prepend to existing messages via the shared timeline machine
           set((state) => {
             const newRooms = new Map(state.rooms)
             const existing = newRooms.get(roomJid)
             if (!existing) return state
             const resident = state.messages.get(roomJid) ?? []
 
-            // Reconcile edits, preserve resident identity, sort, and keep-newest trim
-            // (load-newer slides the window back down toward the live edge).
-            const { merged } = timeline.loadNewerSlice(
+            // Reconcile edits, preserve resident identity, sort, and keep-oldest trim
+            // (load-older slides the window so scroll-back past the bound works).
+            // If keep-oldest evicted the newest resident message, the window has
+            // slid off the live edge → gate live appends in addMessage.
+            const { merged, newestEvicted } = timeline.loadOlderSlice(
               reconcileCachedCorrections(resident, cachedMessages, getStorageScopeJid()),
               cachedMessages,
               roomTimelineConfig()
             )
 
             const written = commitCachedRoomMessages(state, roomJid, merged,
-              reachedTail ? true : undefined)
+              newestEvicted ? false : undefined)
             if (!written) return state
             return written
           })
-        } else if (reachedTail) {
-          // Empty batch: still need to flip the flag if the room isn't already at the edge.
-          set((state) => {
-            if (state.windowAtLiveEdge.get(roomJid) !== false) return state
-            return { windowAtLiveEdge: new Map(state.windowAtLiveEdge).set(roomJid, true) }
-          })
         }
 
-        if (reachedTail || cachedMessages.some(message => !isSpamModerated(message))) return cachedMessages
-        const nextTimestamp = get().messages.get(roomJid)?.at(-1)?.timestamp.getTime()
-        if (nextTimestamp === undefined || nextTimestamp <= afterDate.getTime()) return cachedMessages
+        return cachedMessages
+      } catch (error) {
+        console.error('Failed to load older room messages from IndexedDB:', error)
+        return []
       }
-      return []
-    } catch (error) {
-      console.error('Failed to load newer room messages from IndexedDB:', error)
-      return []
-    }
+    })
+  },
+
+  loadNewerMessagesFromCache: async (roomJid, limit = 50) => {
+    const isCurrent = captureRoomCacheRead(roomJid)
+    return withMessageCacheOperation('room', roomJid, async () => {
+      if (!isCurrent()) return []
+      if (!messageCache.isMessageCacheAvailable()) {
+        return []
+      }
+
+      try {
+        while (isCurrent()) {
+          const resident = get().messages.get(roomJid) ?? []
+          if (!get().rooms.has(roomJid) || resident.length === 0) {
+            return []
+          }
+
+          // Get the newest message timestamp we have in memory
+          const newestInMemory = resident[resident.length - 1]
+          const afterDate = newestInMemory.timestamp
+
+          // Load newer messages from IndexedDB
+          const cachedMessages = await messageCache.getRoomMessages(roomJid, {
+            after: afterDate,
+            limit,
+          }).then(messages => refreshCachedCorrections(messages, isCurrent))
+          if (!isCurrent()) return []
+
+          // Fewer than the requested limit came back ⇒ nothing more newer remains in the
+          // cache, so the window has reached the tail (live edge) regardless of whether the
+          // batch was empty or partial.
+          const reachedTail = cachedMessages.length < limit
+
+          if (cachedMessages.length > 0) {
+            flushPendingRoomOccupants(roomJid)
+            // Append to existing messages via the shared timeline machine
+            set((state) => {
+              const newRooms = new Map(state.rooms)
+              const existing = newRooms.get(roomJid)
+              if (!existing) return state
+              const resident = state.messages.get(roomJid) ?? []
+
+              // Reconcile edits, preserve resident identity, sort, and keep-newest trim
+              // (load-newer slides the window back down toward the live edge).
+              const { merged } = timeline.loadNewerSlice(
+                reconcileCachedCorrections(resident, cachedMessages, getStorageScopeJid()),
+                cachedMessages,
+                roomTimelineConfig()
+              )
+
+              const written = commitCachedRoomMessages(state, roomJid, merged,
+                reachedTail ? true : undefined)
+              if (!written) return state
+              return written
+            })
+          } else if (reachedTail) {
+            // Empty batch: still need to flip the flag if the room isn't already at the edge.
+            set((state) => {
+              if (state.windowAtLiveEdge.get(roomJid) !== false) return state
+              return { windowAtLiveEdge: new Map(state.windowAtLiveEdge).set(roomJid, true) }
+            })
+          }
+
+          if (reachedTail || cachedMessages.some(message => !isSpamModerated(message))) return cachedMessages
+          const nextTimestamp = get().messages.get(roomJid)?.at(-1)?.timestamp.getTime()
+          if (nextTimestamp === undefined || nextTimestamp <= afterDate.getTime()) return cachedMessages
+        }
+        return []
+      } catch (error) {
+        console.error('Failed to load newer room messages from IndexedDB:', error)
+        return []
+      }
+    })
   },
 
   recenterToLatest: async (roomJid) => {
@@ -3384,6 +3541,7 @@ export const roomStore = createStore<RoomState>()(
     // loadMessagesFromCache leaves in place, so it merges the peeked slice itself. A full
     // window's worth keeps the merge contiguous: keep-newest drops the parked rows.
     const latest = await get().loadMessagesFromCache(roomJid, { limit: getResidentWindowSize(), peek: true })
+    if (latest.length > 0) flushPendingRoomOccupants(roomJid)
     // The flag is forced true even when the newest window was already fully resident.
     set((state) => {
       const update = latest.length > 0 ? mergeCachedRoomMessages(state, roomJid, latest) : null
@@ -3402,8 +3560,7 @@ export const roomStore = createStore<RoomState>()(
     }
 
     // Check if room exists first - no point querying cache for non-existent rooms
-    const room = get().rooms.get(roomJid)
-    if (!room) {
+    if (!get().rooms.has(roomJid)) {
       return null
     }
 
@@ -3417,6 +3574,9 @@ export const roomStore = createStore<RoomState>()(
       if (!isCurrent()) return null
 
       if (cachedMessages.length > 0) {
+        flushPendingRoomOccupants(roomJid)
+        const room = get().rooms.get(roomJid)
+        if (!room) return null
         const latestMessage = findLastNonIgnoredMessage(cachedMessages, roomJid, room.nickToJidCache)
         if (!latestMessage) return null
 
@@ -3466,8 +3626,7 @@ export const roomStore = createStore<RoomState>()(
         try {
           const cachedMessages = await messageCache.getRoomMessages(room.jid, { limit: 10, latest: true })
           if (!isCurrent() || cachedMessages.length === 0) return null
-          const latest = findLastNonIgnoredMessage(cachedMessages, room.jid, room.nickToJidCache)
-          return latest ? { roomJid: room.jid, latest, isCurrent } : null
+          return { roomJid: room.jid, cachedMessages, isCurrent }
         } catch {
           // Best-effort per room - one room's cache failure shouldn't block others.
           return null
@@ -3475,8 +3634,11 @@ export const roomStore = createStore<RoomState>()(
       })
     )
 
-    const updates = previews.filter((p): p is { roomJid: string; latest: RoomMessage; isCurrent: () => boolean } => p !== null)
+    const updates = previews.filter((p): p is { roomJid: string; cachedMessages: RoomMessage[]; isCurrent: () => boolean } => p !== null)
     if (updates.length === 0) return
+    for (const { roomJid, isCurrent } of updates) {
+      if (isCurrent()) flushPendingRoomOccupants(roomJid)
+    }
 
     // Apply every preview in a single write. shouldUpdateLastMessage guards against
     // clobbering a fresher preview that a join/catch-up may have set in the meantime.
@@ -3484,11 +3646,13 @@ export const roomStore = createStore<RoomState>()(
       const newMeta = new Map(state.roomMeta)
       const newRooms = new Map(state.rooms)
       let changed = false
-      for (const { roomJid, latest, isCurrent } of updates) {
+      for (const { roomJid, cachedMessages, isCurrent } of updates) {
         if (!isCurrent()) continue
         const room = state.rooms.get(roomJid)
         const meta = state.roomMeta.get(roomJid)
         if (!room || !meta) continue
+        const latest = findLastNonIgnoredMessage(cachedMessages, roomJid, room.nickToJidCache)
+        if (!latest) continue
         if (!shouldUpdateLastMessage(meta.lastMessage, latest)) continue
         newMeta.set(roomJid, { ...meta, lastMessage: latest })
         newRooms.set(roomJid, { ...room, lastMessage: latest })
@@ -3514,6 +3678,7 @@ export const roomStore = createStore<RoomState>()(
   },
 
   mergeRoomMAMMessages: (roomJid, archivePage, page, complete, direction, options = {}) => {
+    flushPendingRoomOccupants(roomJid)
     const { isFetchLatest = false } = options
     const run = roomArchiveMerge.begin(roomJid, archivePage, page, complete, direction, options)
     const mamMessages = run.messages
@@ -3668,6 +3833,7 @@ export const roomStore = createStore<RoomState>()(
    * Used by MAM preview refresh to update sidebar displays.
    */
   updateLastMessagePreview: (roomJid, lastMessage) => {
+    flushPendingRoomOccupants(roomJid)
     set((state) => {
       const room = state.rooms.get(roomJid)
       const meta = state.roomMeta.get(roomJid)
@@ -3852,7 +4018,7 @@ export const roomStore = createStore<RoomState>()(
     }
     return hasNeutral ? 'neutral' : 'none'
   },
-}))
+})))
 )
 
 roomStore.subscribe((state, previous) => {
@@ -3875,4 +4041,38 @@ roomStore.subscribe((state, previous) => {
   if (!roomJid) return
   if (state.messages.get(roomJid) === previous.messages.get(roomJid)) return
   roomReadTracker.retryRemoteDivider(roomJid)
+})
+
+function refreshRoomVisibility(roomJid: string): void {
+  roomReadTracker.noteUnreadInputsChanged(roomJid)
+  const room = roomStore.getState().rooms.get(roomJid)
+  if (room?.supportsMAM && !room.isQuickChat) roomReadTracker.scheduleRecount(roomJid)
+}
+
+ignoreStore.subscribe((state, previous) => {
+  if (state.ignoredUsers === previous.ignoredUsers) return
+  for (const roomJid of roomStore.getState().rooms.keys()) {
+    if (state.ignoredUsers[roomJid] === previous.ignoredUsers[roomJid]) continue
+    refreshRoomVisibility(roomJid)
+  }
+})
+
+function sameNickToJidMappings(current?: Map<string, string>, previous?: Map<string, string>): boolean {
+  if (current === previous) return true
+  if ((current?.size ?? 0) !== (previous?.size ?? 0)) return false
+  for (const [nick, jid] of current ?? []) {
+    if (previous?.get(nick) !== jid) return false
+  }
+  return true
+}
+
+// Presence can supply a real JID for cached history that has no occupant ID.
+roomStore.subscribe((state, previous) => {
+  if (state.roomRuntime === previous.roomRuntime) return
+  for (const [roomJid, runtime] of state.roomRuntime) {
+    const before = previous.roomRuntime.get(roomJid)
+    if (!before || sameNickToJidMappings(runtime.nickToJidCache, before.nickToJidCache)) continue
+    const users = ignoreStore.getState().getIgnoredForRoom(roomJid)
+    if (users.length) refreshRoomVisibility(roomJid)
+  }
 })

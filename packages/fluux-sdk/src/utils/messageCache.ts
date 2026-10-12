@@ -1563,6 +1563,24 @@ export async function getMessage(
   }
 }
 
+/** Resolve an unselected update using the resident store's reference policy. */
+export async function getMessageByReference(
+  conversationId: string,
+  reference: string,
+): Promise<Message | null> {
+  const scope = captureStorageScope()
+  const db = await getDB(scope.jid)
+  const store = db.transaction(MESSAGES_STORE).store
+  for (const probe of referenceProbes<StoredMessage>(reference, 'client-id-first')) {
+    const tiers: IdentityTier[] = probe.tier === 'client-id' ? ['fallback', 'stanzaId', 'correctionStanzaId'] : [probe.tier]
+    const groups = await Promise.all(tiers.map(tier => findChatRowsForTier(store, conversationId, tier, reference)))
+    const [row] = groups.flat()
+    scope.assertCurrent()
+    if (row) return deserializeMessage(row)
+  }
+  return null
+}
+
 export interface RoomMessageReference {
   roomJid: string
   id: string
@@ -2815,6 +2833,8 @@ export async function getRoomMessageCount(roomJid: string): Promise<number> {
  * Count unread room messages in the durable archive, independent of what is
  * resident in memory. Room counterpart of {@link countUnreadInArchive} — see it
  * for the general shape.
+ * The optional `isVisible` predicate excludes hidden rows before applying the
+ * unread cap; it does not change the read boundary.
  *
  * Cursors `room_ts_from_id` — `[roomJid, timestamp, from, id]` — forward from
  * `floor`. This is that index's first consumer. The upper bound is
@@ -2842,7 +2862,10 @@ export async function getRoomMessageCount(roomJid: string): Promise<number> {
  * Returns `null` on any IndexedDB error, so callers can distinguish "zero
  * unread" from "could not determine."
  */
-export async function countRoomUnreadInArchive(roomJid: string, args: UnreadCountArgs): Promise<ArchiveCount | null> {
+export async function countRoomUnreadInArchive(
+  roomJid: string, args: UnreadCountArgs,
+  isVisible?: (message: RoomMessage) => boolean,
+): Promise<ArchiveCount | null> {
   const { floor, pointer, unreadCap = DEFAULT_UNREAD_CAP } = args
   try {
     const db = await getDB(getStorageScopeJid())
@@ -2858,7 +2881,7 @@ export async function countRoomUnreadInArchive(roomJid: string, args: UnreadCoun
       const stored = cursor.value
       if (stored.roomJid === roomJid) {
         const message = deserializeRoomMessage(stored)
-        if (!message.isOutgoing && isRenderableStoredMessage(message)) {
+        if (!message.isOutgoing && isRenderableStoredMessage(message) && (!isVisible || isVisible(message))) {
           const position: ExactPosition = {
             role: 'exact',
             timestamp: stored.timestamp,

@@ -341,6 +341,7 @@
         "voiceRequestSent": "It-talba biex titkellem intbagħtet",
         "voiceRequests": "Talbiet biex titkellem",
         "grantVoice": "Agħti vuċi",
+        "voiceApprovalUnanswered": "Il-kamra ma tatx il-vuċi. Forsi l-persuna telqet mill-kamra jew diġà għandha l-vuċi.",
         "revokeVoice": "Irrevoka vuċi",
         "grantModerator": "Agħti moderatur",
         "revokeModerator": "Irrevoka moderatur",
@@ -392,6 +393,9 @@
         "whisperingTo": "Qiegħed tsussurra b'mod privat lil {{nick}}",
         "whisperThread": "Privat ma' {{nick}}",
         "whisperCounterpartGone": "{{nick}} m'għadux fil-kamra, ma tistax twieġeb",
+        "whisperAttachmentTitle": "Tibgħat anness privat?",
+        "whisperAttachmentWarning": "Il-messaġġ privat huwa temporanju, iżda l-fajls jibqgħu fuq is-server tat-tlugħ skont il-politika ta’ żamma tiegħu. Ir-riċevituri jistgħu jniżżlu u jżommu kopji.",
+        "whisperAttachmentRetention": "Żamma fuq is-server tat-tlugħ: {{duration}}. Ir-riċevituri jistgħu jniżżlu u jżommu kopji.",
         "whisperPlaceholder": "Sussurra lil {{nick}}...",
         "ignoreUser": "Injora f'din il-kamra",
         "stopIgnoring": "Ieqaf tinjora",
@@ -459,6 +463,7 @@
         "nickEdgeWhitespace": "L-isem għandu spazji żejda fit-truf",
         "nickHiddenChars": "L-isem fih karattri moħbija",
         "mentionSuggestions": "Suġġerimenti ta' msemmija",
+        "mentionsCount": "Referenzi: {{count}}",
         "unreadMessages": "{{displayCount}} messaġġ mhux moqri",
         "unreadMessages_two": "{{displayCount}} messaġġi mhux moqrija",
         "unreadMessages_few": "{{displayCount}} messaġġi mhux moqrija",
@@ -496,6 +501,7 @@
         "replyQuoteHiddenEncrypted": "Kwotazzjoni moħbija: l-oriġinal kien ikkriptat",
         "forwardMessage": "Ibgħat 'il quddiem (dalwaqt)",
         "moreReactions": "Aktar reazzjonijiet",
+        "reactions": "Reazzjonijiet",
         "reactionOthers": "{{count}} oħrajn",
         "moreOptions": "Aktar għażliet",
         "reactWith": "Reazzjoni b'{{emoji}}",
@@ -540,6 +546,7 @@
         "copyLinkChoose": "Liema link tikkopja?",
         "openInBrowser": "Iftaħ fil-browser",
         "saveImage": "Issejvja l-istampa",
+        "mediaUnavailableOrUnsupported": "Dan il-fajl ma jistax jindaqq hawn: jista’ ma jkunx disponibbli jew ikun f’format mhux appoġġjat",
         "videoFormatUnsupported": "Dan il-format tal-vidjo ma jistax jindaqq hawn",
         "videoUnavailable": "Il-vidjo m'għadux disponibbli",
         "audioFormatUnsupported": "Dan il-format tal-awdjo ma jistax jindaqq hawn",
@@ -654,6 +661,17 @@
         "yesterday": "Ilbieraħ"
     },
     "settings": {
+    "nativeNotificationTone": "Ħoss tan-notifiki",
+    "nativeNotificationToneDescription": "Agħżel il-ħoss għan-notifiki fl-isfond. Sieket ma jbiddilx il-ħsejjes fl-app.",
+    "nativeSoundDescription": "Daqq ħsejjes fl-app u għan-notifiki fl-isfond.",
+    "notificationTone_default": "Default tas-sistema",
+    "notificationTone_bell": "Qanpiena",
+    "notificationTone_chime": "Tisfir",
+    "notificationTone_pulse": "Polz",
+    "notificationTone_silent": "Siekt",
+    "oxNotificationPreview": "Previżjonijiet OpenPGP fin-notifiki",
+    "oxNotificationPreviewDescription": "Ħalli l-estensjoni tan-notifiki ġġib u tiddeċifra l-messaġġi ta’ dan il-kont. Il-previżjonijiet isegwu s-settings tal-iOS u jistgħu jidhru fuq l-iskrin imsakkar meta jintgħażel Dejjem.",
+    "oxNotificationPreviewFailed": "Ma setgħux jiġu attivati l-previżjonijiet. Iċċekkja li OpenPGP u l-konnessjoni ssejvjata huma disponibbli.",
         "title": "Issettjar",
         "categories": {
             "profile": "Profil",
@@ -733,6 +751,7 @@
         "accentThemeDefault": "Predefinit tat-tema",
         "fontSize": "Daqs tal-font",
         "fontSizeDescription": "Aġġusta d-daqs tat-test fl-app",
+        "fontSizeSystemDescription": "Relattiv għad-daqs tat-test issettjat fis-Settings tal-iOS",
         "decreaseFontSize": "Naqqas id-daqs tal-font",
         "increaseFontSize": "Kabbar id-daqs tal-font",
         "sound": "Daqqa ħsejjes ta' notifika",
@@ -1526,5 +1545,12 @@
             "archiveUnsupported": "Is-server ma jappoġġax it-tiftix fl-arkivju. Ipprova fittex ġewwa konversazzjoni.",
             "serverFailed": "It-tiftix fis-server falla"
         }
+    },
+    "notificationPreview": {
+        "activity": "Attività ġdida",
+        "reaction": "{{nickname}} irreaġixxa: {{text}}",
+        "edit": "{{nickname}} (editjat): {{text}}",
+        "retraction": "{{nickname}} ħassar messaġġ",
+        "messages": "{{nickname}}: {{count}} messaġġi ġodda"
     }
 }

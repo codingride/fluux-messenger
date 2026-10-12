@@ -1,4 +1,5 @@
 import type { ChatMessageTarget } from './chat'
+import type { GapInterval } from './pagination'
 /**
  * The state surface {@link XMPPClient} writes through.
  *
@@ -226,18 +227,9 @@ export interface ChatBindings {
 
   /** Every non-archived conversation with its in-memory messages, for MAM catch-up. */
   getAllConversations: () => Array<{ id: string; messages: Message[] }>
-  /** Persisted forward-gap boundary for automatic catch-up recovery. */
-  getConversationGapStart?: (conversationId: string) => number | undefined
-  /**
-   * Archive id of the recorded gap's coverage edge (GapInterval.startId) —
-   * id-exact resume cursor, preferred over the timestamp fallback above.
-   */
-  getConversationGapStartId?: (conversationId: string) => string | undefined
-  /**
-   * Archive id of the recorded gap's contiguous-coverage bottom (GapInterval.endId) —
-   * the proven upper edge of the contiguous-from-live region.
-   */
-  getConversationGapEndId?: (conversationId: string) => string | undefined
+  /** Persisted history gaps, oldest first: catch-up resumes from an open one
+   *  and seeds its backward walk from the newest one's upper edge. */
+  getConversationGaps?: (conversationId: string) => readonly GapInterval[]
   /**
    * True when a disjoint fetch-latest flagged the contiguous coverage BOTTOM
    * as unproven (no gap edge, no resident boundary) — the seeder must not
@@ -252,6 +244,15 @@ export interface ChatBindings {
   getConversationPendingStanzaId?: (conversationId: string) => string | undefined
   /** XEP-0490: drop a stashed marker the archive proved it no longer holds. */
   discardPurgedRemoteDisplayed?: (conversationId: string, stanzaId: string) => void
+  /** XEP-0490: order the stashed marker against the message cache. Resolves, once applied, to whether the cache holds it. */
+  resolvePendingRemoteDisplayedFromCache?: (conversationId: string) => Promise<boolean>
+  /** XEP-0490: order the stashed marker against its archived row, fetched by id. Stores nothing. */
+  placeRemoteDisplayedRow?: (conversationId: string, stanzaId: string, row: Message) => Promise<void>
+  /**
+   * Whether the coverage record's oldest message is still in the message cache. A record whose
+   * bottom is gone (local storage cleared underneath it) is dropped and reported false.
+   */
+  verifyConversationCoverageBottom?: (conversationId: string) => Promise<boolean>
   /**
    * Currently ACTIVE conversation id (null when none). Re-checked at every
    * Phase B iteration of the pointer-stitch walk: backward pages into the
@@ -507,18 +508,9 @@ export interface RoomBindings {
 
   // ----- Composite getters -----
 
-  /** Persisted forward-gap boundary for automatic catch-up recovery. */
-  getRoomGapStart?: (roomJid: string) => number | undefined
-  /**
-   * Archive id of the recorded gap's coverage edge (GapInterval.startId) —
-   * id-exact resume cursor, preferred over the timestamp fallback above.
-   */
-  getRoomGapStartId?: (roomJid: string) => string | undefined
-  /**
-   * Archive id of the recorded gap's contiguous-coverage bottom (GapInterval.endId) —
-   * the proven upper edge of the contiguous-from-live region.
-   */
-  getRoomGapEndId?: (roomJid: string) => string | undefined
+  /** Persisted history gaps, oldest first: catch-up resumes from an open one
+   *  and seeds its backward walk from the newest one's upper edge. */
+  getRoomGaps?: (roomJid: string) => readonly GapInterval[]
   /**
    * True when a disjoint fetch-latest flagged the contiguous coverage BOTTOM
    * as unproven (no gap edge, no resident boundary) — the seeder must not
@@ -533,6 +525,15 @@ export interface RoomBindings {
   getRoomPendingStanzaId?: (roomJid: string) => string | undefined
   /** XEP-0490: drop a stashed marker the archive proved it no longer holds. */
   discardPurgedRemoteDisplayed?: (roomJid: string, stanzaId: string) => void
+  /** XEP-0490: order the stashed marker against the message cache. Resolves, once applied, to whether the cache holds it. */
+  resolvePendingRemoteDisplayedFromCache?: (roomJid: string) => Promise<boolean>
+  /** XEP-0490: order the stashed marker against its archived row, fetched by id. Stores nothing. */
+  placeRemoteDisplayedRow?: (roomJid: string, stanzaId: string, row: RoomMessage) => Promise<void>
+  /**
+   * Whether the coverage record's oldest message is still in the message cache. A record whose
+   * bottom is gone (local storage cleared underneath it) is dropped and reported false.
+   */
+  verifyRoomCoverageBottom?: (roomJid: string) => Promise<boolean>
   /**
    * Every room with its in-memory runtime messages. Read seam for the
    * deferred-decrypt engine (mirrors chat.getAllStoredMessages for MUC).

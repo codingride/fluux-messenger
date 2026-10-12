@@ -29,10 +29,12 @@ import { useAutoUpdate } from './hooks'
 import { useIgnoreSync } from './hooks/useIgnoreSync'
 import { useExternalLinkHandler } from './hooks/useExternalLinkHandler'
 import { usePlatformState } from './hooks/usePlatformState'
+import { useFinishSendsInBackground } from './hooks/useFinishSendsInBackground'
 import { useMcpBridge } from './hooks/useMcpBridge'
 import { useAccountScopeRehydration } from './hooks/useAccountScopeRehydration'
 import { useNativeContextMenuSuppression } from './hooks/useNativeContextMenuSuppression'
 import { useWindowBehaviorSync } from './hooks/useWindowBehaviorSync'
+import { endPushSession } from './hooks/useNativePush'
 import { clearLocalData } from './utils/clearLocalData'
 import { startMemoryProbe } from './utils/memoryProbe'
 import { startSystemNotificationEffect } from '@/effects/systemNotificationEffect'
@@ -98,6 +100,7 @@ function App() {
   // Must stay mounted even during the full-screen auto-reconnect spinner:
   // native keepalive / wake listeners are what unstick reconnect after long sleep.
   const { displayActive } = usePlatformState()
+  useFinishSendsInBackground(client)
   useAccountScopeRehydration()
   const update = useAutoUpdate({ autoCheck: true })
 
@@ -119,6 +122,7 @@ function App() {
     const onClearStorageRequested = () => {
       void (async () => {
         console.log('[CLI] Clearing local storage due to --clear-storage flag')
+        await endPushSession(client.push)
         try {
           await client.disconnect()
         } catch {

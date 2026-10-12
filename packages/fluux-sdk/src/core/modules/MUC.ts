@@ -1,3 +1,5 @@
+import { attachmentElements } from './attachmentElements'
+import { captureOccupantAvatar } from '../../utils/avatarState'
 import { xml, Element } from '@xmpp/client'
 import { BaseModule, type ModuleDependencies } from './BaseModule'
 import { MUCVoice } from './MUCVoice'
@@ -46,6 +48,7 @@ import type {
   AdminRoom,
   RoomFeatures,
   RoomMessage,
+  FileAttachment,
   ChatStateNotification,
 } from '../types'
 import type { StoredRoomMessage } from '../types/message-internal'
@@ -353,6 +356,8 @@ export class MUC extends BaseModule {
     const occupantIdEl = stanza.getChild('occupant-id', NS_OCCUPANT_ID)
     const occupantId = occupantIdEl?.attrs.id
 
+    captureOccupantAvatar(this.avatarState, roomJid, nick, avatarHash, realJid, occupantId)
+
     const occupant: RoomOccupant = {
       nick,
       jid: realJid,
@@ -482,8 +487,7 @@ export class MUC extends BaseModule {
         buffer.push(occupant)
         this.pendingOccupants.set(roomJid, buffer)
       } else {
-        // Room already joined - add occupant immediately (e.g., late joiner or presence update)
-        // SDK event only - binding calls store.addOccupant
+        // Post-join store update timing is owned by createStoreBindings.
         this.deps.emitSDK('room:occupant-joined', { roomJid, occupant })
 
         if (avatarHash) {
@@ -1596,14 +1600,22 @@ export class MUC extends BaseModule {
    * @param roomJid bare room JID, e.g. 'room@conference.example.com'
    * @param nick    target occupant's nickname
    * @param body    message text
+   * @param options optional uploaded file attachment
    * @returns the generated message id
    */
-  async sendWhisper(roomJid: string, nick: string, body: string): Promise<string> {
+  async sendWhisper(roomJid: string, nick: string, body: string, options?: { attachment?: FileAttachment }): Promise<string> {
+    const attachment = options?.attachment
+    if (attachment?.encryption || attachment?.thumbnail?.encryption) {
+      throw new Error('Encrypted attachments require an encrypted conversation')
+    }
+    const fullBody = attachment ? (!body || body === attachment.url ? attachment.url : `${body}\n${attachment.url}`) : body
+    const fallbackStart = attachment && body && body !== attachment.url ? body.length + 1 : 0
     const id = generateUUID()
     const to = `${roomJid}/${nick}`
 
     const message = xml('message', { to, type: 'chat', id },
-      xml('body', {}, body),
+      xml('body', {}, fullBody),
+      ...(attachment ? attachmentElements(attachment, fullBody, fallbackStart, fullBody.length) : []),
       xml('active', { xmlns: NS_CHATSTATES }),
       xml('x', { xmlns: NS_MUC_USER }),
       createOriginIdElement(id),
@@ -1611,7 +1623,7 @@ export class MUC extends BaseModule {
     )
     await this.deps.sendStanza(message)
 
-    const room = this.deps.stores?.room.getRoom(roomJid)
+    const room = this.getRoomWithOccupants(roomJid)
     if (!room) logWarn(`sendWhisper: room ${roomJid} not found in store — sender nick will be empty`)
     const ourNick = room?.nickname || ''
     // Counterpart's stable occupant-id (XEP-0421), resolved from the live occupant
@@ -1626,7 +1638,8 @@ export class MUC extends BaseModule {
       from: `${roomJid}/${ourNick}`,
       nick: ourNick,
       occupantId: undefined,
-      body,
+      body: body === attachment?.url ? '' : body,
+      ...(attachment && { attachment }),
       timestamp: new Date(),
       isOutgoing: true,
       isPrivate: true,

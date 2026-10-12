@@ -38,6 +38,11 @@ export interface PlatformCapabilities {
 
   /** Credentials live in the OS keychain instead of browser storage. */
   readonly nativeKeychain: boolean
+  /**
+   * localStorage keys live in native storage, because the webview may evict
+   * its own. Keys describing the IndexedDB cache stay in the webview.
+   */
+  readonly nativeLocalStorage: boolean
   /** OpenPGP runs natively, with its key unlocked by a secret in the OS keychain. */
   readonly nativeOpenpgp: boolean
   /** The FAST token lives in the OS keychain instead of browser storage. */
@@ -116,6 +121,8 @@ export interface PlatformCapabilities {
    * XMPP push app server (XEP-0357).
    */
   readonly usesNativePush: boolean
+  /** Accepted gestures can use UIKit feedback generators. */
+  readonly nativeHaptics: boolean
 
   // ----- Window and process -----
 
@@ -172,6 +179,11 @@ export interface PlatformCapabilities {
    * the wake, so it is checked at once rather than through sleep detection.
    */
   readonly suspendedInBackground: boolean
+  /**
+   * The OS grants a limited time after the app leaves the foreground, on
+   * request, to finish sending messages and files before it is suspended.
+   */
+  readonly finishesWorkInBackground: boolean
 
   // ----- Shell integration -----
 
@@ -196,6 +208,11 @@ export interface PlatformCapabilities {
   readonly nativeUploads: boolean
   /** The local MCP bridge server can run. */
   readonly hasMcpBridge: boolean
+  /**
+   * Text starts from the size the user set for the OS (Dynamic Type on iOS),
+   * and the app's own font size scales it.
+   */
+  readonly followsSystemTextSize: boolean
 }
 
 /**
@@ -215,6 +232,7 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     os,
     nativeXmppProxy: desktop || (shell === 'mobile' && (os === 'ios' || os === 'android')),
     nativeKeychain: desktop || (shell === 'mobile' && os === 'ios'),
+    nativeLocalStorage: ios,
     nativeOpenpgp,
     keychainSessionSecrets: shell === 'mobile' && os === 'ios',
     nativeDownloads: desktop,
@@ -225,7 +243,7 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     notificationsNeedFileUrls: desktop,
     opensLinksInSystemBrowser: native,
     interceptsInAppNavigation: native,
-    nativeHttpFetch: desktop,
+    nativeHttpFetch: desktop || ios,
     // Windows is the only host with a taskbar attention request behind it.
     canRequestWindowAttention: desktop && os === 'windows',
     // macOS hides the window on close instead; there is no tray preference.
@@ -243,6 +261,7 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     // Notifications.
     notificationsManagedByOS: desktop || (shell === 'mobile' && (os === 'android' || os === 'ios')),
     usesWebPush: web,
+    nativeHaptics: ios,
     usesNativePush: shell === 'mobile' && os === 'ios',
 
     // Window and process. macOS overlays its window controls on the content,
@@ -259,10 +278,11 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     needsWebviewReloadBeforeRelogin: desktop,
     webviewStallsAfterSleep: desktop,
     suspendedInBackground: shell === 'mobile',
+    finishesWorkInBackground: ios,
 
     // Shell integration.
     hasOSIdleDetection: desktop,
-    hasDeepLinkEvents: desktop,
+    hasDeepLinkEvents: desktop || ios,
     hasWindowFullscreenEvents: desktop,
     syncsNativeTitleBarTheme: desktop,
     hasNativeAppBadge: desktop,
@@ -270,5 +290,6 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     hasNativeContextMenu: desktop,
     nativeUploads: desktop || ios,
     hasMcpBridge: desktop,
+    followsSystemTextSize: ios,
   }
 }

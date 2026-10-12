@@ -121,10 +121,16 @@
       "os": "ios",
       "level": "device",
       "capabilities": [
+        "finishesWorkInBackground",
+        "followsSystemTextSize",
+        "hasDeepLinkEvents",
         "hasStableInstallIdentity",
         "interceptsInAppNavigation",
         "keychainSessionSecrets",
+        "nativeHaptics",
+        "nativeHttpFetch",
         "nativeKeychain",
+        "nativeLocalStorage",
         "nativeMediaCache",
         "nativeOpenpgp",
         "nativeUploads",
@@ -217,6 +223,7 @@
       "needsWebviewReloadBeforeRelogin",
       "webviewStallsAfterSleep",
       "suspendedInBackground",
+      "finishesWorkInBackground",
       "hasStableInstallIdentity",
       "needsTabCoordination"
     ],
@@ -235,6 +242,7 @@
       "nativeHttpFetch",
       "nativeUploads",
       "storageIsDurable",
+      "nativeLocalStorage",
       "savesThroughShareSheet"
     ],
     "notifications": [
@@ -260,7 +268,9 @@
       "syncsNativeTitleBarTheme",
       "hasNativeContextMenu",
       "hasMcpBridge",
-      "scrollInputAlwaysObserved"
+      "scrollInputAlwaysObserved",
+      "followsSystemTextSize",
+      "nativeHaptics"
     ]
   },
   "scenarios": [

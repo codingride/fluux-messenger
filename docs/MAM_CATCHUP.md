@@ -32,6 +32,30 @@ user's flag. The store rule is covered by
 publication regressions are in
 `packages/fluux-sdk/src/core/modules/MAM.archivedFlag.integration.test.ts`.
 
+## Message Updates During Cache Hydration
+
+Chats and rooms share the ordering boundary in
+`packages/fluux-sdk/src/stores/shared/messageUpdateHandoff.ts`. Cache loads include their
+resident-store commits. Standalone link previews resolve and persist within that boundary;
+a preview for a nonresident cached target is applied if its target becomes resident.
+
+Reactions and ordinary resident message updates, including archive ID restoration and poll
+reconciliation, keep their synchronous store mutation and start their existing cache writes
+immediately. Their reconciliation waits for preceding hydration, selects only accepted fields,
+and skips fields superseded by a newer pending update to the same target. Account, store-reset
+and entity-generation guards cancel obsolete handoffs. The handoff never inserts an unknown
+target or replaces a resident row with an old whole-row snapshot.
+
+Correction/retraction sinks and source-owned content updates retain their native ordering and
+preview source ownership. Correction completion can depend on hydration and decryption of the same revision;
+making hydration await that completion creates a cycle. Pending retraction notes remain
+synchronous. Delayed room arrivals retain their publication owner: dependent updates wait for
+that publication before entering the shared handoff, without requeueing the arrival itself.
+
+Controlled store-binding regressions are in
+`packages/fluux-sdk/src/bindings/messageUpdates.integration.test.ts`; inactive and activation-time
+preview rendering and cache reload cases are in `e2e/message-updates.ts`.
+
 ## Message Corrections
 
 Corrections cross the SDK event boundary before history rows are deduplicated. The store checks
@@ -169,14 +193,38 @@ results refresh the sidebar previews as they arrive.
   moves the read pointer. Bounded repair queries and walks carrying message
   modifications cannot certify coverage without a durability proof.
 - For an inactive entity whose XEP-0490 read marker is still unresolved, a
-  second phase walks backward from the live-edge window toward that marker.
-  A marker the message cache already holds never needs it: the store orders a
-  stashed marker from the cache as soon as it is stashed. A
-  page cap, an active-entity bail, a missing or non-advancing cursor, and a
-  cache-seeded archive-start response are inconclusive, so the marker remains
-  pending. A complete response proves absence only after the walk descended
-  from the live edge, or when a fetch-latest response returned the whole
-  archive.
+  second phase looks for the marked message, cheapest place first. The store
+  orders the marker from the message cache every time the marker is delivered,
+  so the session seed of a marker stashed in an earlier session is enough when
+  the message is cached. A migrated floor pointer whose own message the cache
+  does not hold is ordered by its timestamp, the boundary the unread count
+  uses: a marker strictly after it advances the pointer, and one at or before
+  it stays pending. The second phase checks the cache once more and
+  stops when the cache holds the message, then asks the archive for the
+  message by id. The lookup uses plain RSM paging, since the XEP-0313 `ids`
+  field is optional and ejabberd does not implement it: one-item pages ask for
+  the message just before the id, then the one after that predecessor, which is
+  the marked message exactly when the archive holds it. A returned message orders
+  the marker without being stored, and a backward walk descends to its
+  timestamp from the upper edge of the recorded gap holding it, else from the
+  bottom of the held history, so the messages after it can be counted. The
+  message is absent when the server rejects its id as a cursor
+  (item-not-found), or another message, or none, follows its predecessor.
+  A returned entry this client does
+  not display proves the message exists but cannot be placed, so its marker
+  stays pending without a walk.
+- Each search logs one `Read marker search` line naming the entity (a
+  conversation by its domain only), the archive lookup's answer, how the
+  search ended, and the gap-fill and walk pages it used.
+- When the archive cannot answer (a query fails or returns no `<fin/>`), the phase fills the recorded gaps newest first, then walks
+  backward below the held history. All of it shares one page budget per pass.
+  A page cap, an active-entity bail, and a missing or non-advancing cursor are
+  inconclusive, so the marker remains pending. An archive-start response
+  proves absence after a walk that descended from the live edge, after a
+  fetch-latest response that returned the whole archive, or after a walk that
+  started at the coverage bottom when no gap is recorded and the coverage
+  bottom is still cached. A coverage record whose bottom is no longer cached
+  is dropped instead.
 - When the server proves that the frozen marker is absent and it has not been
   replaced during the walk, the chat or room store removes only that pending
   marker, recomputes unread from the local pointer, and allows the local read
@@ -271,10 +319,39 @@ historical window with the latest slice. An empty window can hydrate at the live
 its flag was false.
 
 For initial and manual catch-up, `catchUpSeed` selects the latest cached slice when the window
-is parked and that slice is nonempty; otherwise it uses the resident messages. The recorded
-gap boundary still takes precedence over this seed when selecting the query cursor. The
+is parked and that slice is nonempty; otherwise it uses the resident messages. An open gap
+(see [History gaps](#history-gaps)), or the gap the user asked to fill, still takes precedence
+over this seed when selecting the query cursor. The
 shared transitions and their regression cases live in
 `packages/fluux-sdk/src/stores/shared/messageTimeline.ts` and `messageTimeline.test.ts`.
+
+## History gaps
+
+A gap records a known hole in the archive coverage of one room or conversation: history is
+held below its `start` and, when its `end` is set, above that end. Each entity keeps a list
+of gaps, ordered and disjoint; at most the newest is open (`end` unset, nothing held above).
+The list is persisted (`fluux-room-gaps` per account for rooms, the chat blob for
+conversations), and entries written as a single interval are read as a one-element list.
+Each gap gets its own "Load missing messages" marker on the first message after its start;
+a gap lying entirely below the loaded window gets none until the user scrolls back to it.
+
+- A forward walk carries the timestamp it started from (`walkOriginTs`). It is contiguous
+  from there, so each page moves up the start of every gap it reached, removes the gaps it
+  crossed, and leaves the gaps below its origin untouched. A walk that reaches live removes
+  every gap at or above its origin.
+- A walk that started at the top of held history and stops short opens a new gap at its
+  newest message. The fixed-window repair (`client.rooms.resync()`) heals the gaps inside its
+  window but never opens one (`healGapsOnly`).
+- A backward page shrinks or clears each gap it reaches into or across. A fetch-latest that
+  leaves every gap unchanged and lands disjoint above the resident boundary records a seam.
+- Catch-up aligns to live from the open gap when there is one, otherwise from the newest
+  held message. Closed gaps further down stay recorded and heal on demand, so a long absence
+  after an earlier one leaves two marked holes rather than one marked and one silent.
+- Windowed context queries (`preserveGapMarker`) and walks without an origin leave the gaps
+  untouched.
+
+The transitions are in `packages/fluux-sdk/src/stores/shared/mamGap.ts`, with unit and
+property tests beside it.
 
 ## Deduplication
 

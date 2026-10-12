@@ -113,7 +113,6 @@ function debugLog(action: string, data?: Record<string, unknown>) {
 // CONSTANTS
 // ============================================================================
 
-const FAB_THRESHOLD = 300 // pixels from bottom to show "scroll to bottom" button
 const LOAD_NEWER_THRESHOLD = 4 // px from the resident-window bottom to auto-load newer (slid-up windows)
 
 /**
@@ -227,6 +226,7 @@ export interface UseMessageListScrollResult {
   reassertUnreadMarker: () => void
   setScrollContainerRef: (element: HTMLDivElement | null) => void
   contentWrapperRef: React.RefCallback<HTMLDivElement>
+  commitVirtualizerLayout: (commit: () => void) => void
   handleScroll: (e: React.UIEvent<HTMLDivElement>) => void
   handleWheel: (e: React.WheelEvent<HTMLDivElement>) => void
   handleLoadEarlier: () => void
@@ -500,6 +500,10 @@ export function useMessageListScroll({
       input,
       resetInput,
     })
+    if (DEBUG) debugLog('VIEWPORT observation', {
+      generation: positioningControllerRef.current?.snapshot().active?.request.generation,
+      previous, geometry, movement, controllerOwnsPixels: reassertLoopRef.current !== null,
+    })
     if (movement?.userDelta) {
       session.recordViewport(id, geometry, findBottomAnchor(scroller))
       if (!resetInput) observeUserMovement(id, movement.userDelta, scroller)
@@ -581,7 +585,7 @@ export function useMessageListScroll({
   const refreshScrollToBottomFab = useStableCallback(() => {
     const scroller = scrollerRef.current
     if (!scroller) return
-    const show = shouldShowScrollToBottomFab(getDistanceFromBottom(scroller), FAB_THRESHOLD, pinBottomClaim().isHeld())
+    const show = shouldShowScrollToBottomFab(getDistanceFromBottom(scroller), AT_BOTTOM_THRESHOLD, pinBottomClaim().isHeld())
     setShowScrollToBottom(prev => prev !== show ? show : prev)
   })
 
@@ -760,6 +764,10 @@ export function useMessageListScroll({
         active.request.desired.kind !== 'live-edge' &&
         active.phase.kind !== 'settled',
       ),
+    })
+    if (DEBUG) debugLog('ROW GROWTH decision', {
+      decision, generation: active?.request.generation, pinClaimHeld: pinBottomClaim().isHeld(),
+      distanceFromBottom: getDistanceFromBottom(liveScroller), heightDelta: uncompensatedGrowth,
     })
     if (decision === 'pin') reconcileLiveEdgeRef.current('row-growth', true)
   }
@@ -1038,6 +1046,17 @@ export function useMessageListScroll({
 
   const observeNativeGeometry = (id: string) => { observeViewportGeometry(id) }
 
+  const commitVirtualizerLayout = useStableCallback((commit: () => void) => {
+    const id = activeConversationIdRef.current
+    if (latestRef.current.staticMode) {
+      commit()
+      return
+    }
+    observeViewportGeometry(id)
+    commit()
+    observeViewportGeometry(id)
+  })
+
   const reconcileContentLayout = () => {
     const id = activeConversationIdRef.current
     if (latestRef.current.staticMode) return false
@@ -1224,6 +1243,10 @@ export function useMessageListScroll({
       controllerOwnsPixels: programmaticScroll,
       now,
     })
+    if (DEBUG) debugLog('SCROLL observation', {
+      generation: positioningControllerRef.current?.snapshot().active?.request.generation,
+      previousGeometry, geometry, viewportObservation, controllerOwnsPixels: programmaticScroll,
+    })
     rebaseViewportAfterResize(conversationId, el, previousGeometry, geometry, viewportObservation?.userDelta ?? 0)
     const genuineUserScroll = viewportObservation?.genuineUserScroll ?? false
     observeUserMovement(conversationId, viewportObservation?.userDelta ?? 0, el)
@@ -1251,7 +1274,7 @@ export function useMessageListScroll({
     // scrollTop: on WebKit a tall bottom row's post-paint growth fires 'scroll' events reporting a
     // transiently large distFromBottom before the loop re-pins, which would otherwise flash the FAB
     // on open-at-bottom (intermittent race). The loop settles AT the bottom, so the FAB stays hidden.
-    const shouldShowFab = shouldShowScrollToBottomFab(distFromBottom, FAB_THRESHOLD, pinBottomClaim().isHeld())
+    const shouldShowFab = shouldShowScrollToBottomFab(distFromBottom, AT_BOTTOM_THRESHOLD, pinBottomClaim().isHeld())
     setShowScrollToBottom(prev => prev !== shouldShowFab ? shouldShowFab : prev)
 
     if (firstNewMessageId) {
@@ -1954,7 +1977,10 @@ export function useMessageListScroll({
   // EFFECT: New message arrives
   // ==========================================================================
 
-  useEffect(() => {
+  // The virtualizer queues a render when this write changes its window. Flush it in the layout
+  // phase: a passive-effect write leaves work pending across synchronous backlog store updates,
+  // which React counts as one nested update chain even when the messages keep advancing.
+  useLayoutEffect(() => {
     const scroller = scrollerRef.current
     if (!scroller || !hasInitializedRef.current || staticMode) return
 
@@ -2163,6 +2189,10 @@ export function useMessageListScroll({
         active.phase.kind !== 'settled',
       ),
     })
+    if (DEBUG) debugLog('ROW GROWTH signature decision', {
+      decision, generation: active?.request.generation, pinClaimHeld: pinBottomClaim().isHeld(),
+      distanceFromBottom: getDistanceFromBottom(scroller), baseline, height: scroller.scrollHeight,
+    })
     if (decision === 'pin') reconcileLiveEdgeRef.current('row-growth', true)
   }, [rowGrowthSignature, conversationId, staticMode, reconcileMessageTargetAfterResize])
 
@@ -2258,6 +2288,7 @@ export function useMessageListScroll({
     reassertUnreadMarker,
     setScrollContainerRef,
     contentWrapperRef: setContentRef,
+    commitVirtualizerLayout,
     handleScroll,
     handleWheel,
     handleLoadEarlier,

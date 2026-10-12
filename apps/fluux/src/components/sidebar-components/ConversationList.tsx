@@ -18,7 +18,7 @@ import { Tooltip } from '../Tooltip'
 import { useSidebarZone, ContactTooltipContent } from './types'
 import { formatConversationTime } from '@/utils/dateFormat'
 import { useDayChange } from '@/hooks/useDayChange'
-import { formatUnreadCount } from '@/utils/formatUnreadCount'
+import { AvatarUnreadBadge } from './AvatarUnreadBadge'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { Trash2, Archive, ArchiveRestore, MessageCircle } from 'lucide-react'
 import { ListEmpty } from '../ui/ListEmpty'
@@ -274,7 +274,7 @@ export const ConversationItem = memo(function ConversationItem({
         onClick={handleClick}
         onMouseEnter={onMouseEnter}
         onMouseMove={onMouseMove}
-        className={`w-full relative px-2 sidebar-row rounded border flex items-center text-start cursor-pointer
+        className={`w-full relative px-2 sidebar-row touch-menu-row rounded border flex items-center text-start cursor-pointer
                     transition-colors ${isMenuTarget ? 'ring-2 ring-fluux-brand ring-inset z-10' : ''} ${isActive
                       ? "bg-fluux-sidebar-item-active text-fluux-text border-transparent before:content-[''] before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-r-full before:bg-fluux-sidebar-item-active-accent"
                       : isMenuTarget
@@ -308,11 +308,7 @@ export const ConversationItem = memo(function ConversationItem({
               overlay={isTyping && !isActive ? <TypingIndicator /> : undefined}
             />
           )}
-          {conversation.unreadCount > 0 && (
-            <span className="absolute -top-1 -end-1 z-10 min-w-4 h-4 px-1 bg-fluux-badge-strong text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-              {formatUnreadCount(conversation.unreadCount)}
-            </span>
-          )}
+          <AvatarUnreadBadge count={conversation.unreadCount} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">

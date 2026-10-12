@@ -340,6 +340,7 @@
         "voiceRequestSent": "Žiadosť o hlas odoslaná",
         "voiceRequests": "Žiadosti o hlas",
         "grantVoice": "Udeliť hlas",
+        "voiceApprovalUnanswered": "Miestnosť neudelila hlas. Osoba možno opustila miestnosť alebo už hlas má.",
         "revokeVoice": "Odobrať hlas",
         "grantModerator": "Udeliť moderátora",
         "revokeModerator": "Odobrať moderátora",
@@ -391,6 +392,9 @@
         "whisperingTo": "Šepkáte súkromne {{nick}}",
         "whisperThread": "Súkromne s {{nick}}",
         "whisperCounterpartGone": "{{nick}} už nie je v miestnosti, nemôžete odpovedať",
+        "whisperAttachmentTitle": "Odoslať súkromnú prílohu?",
+        "whisperAttachmentWarning": "Súkromná správa je dočasná, ale súbory zostávajú na serveri na nahrávanie podľa jeho pravidiel uchovávania. Príjemcovia si môžu stiahnuť a ponechať kópie.",
+        "whisperAttachmentRetention": "Uchovávanie na serveri na nahrávanie: {{duration}}. Príjemcovia si môžu stiahnuť a ponechať kópie.",
         "whisperPlaceholder": "Šepkať {{nick}}...",
         "ignoreUser": "Ignorovať v tejto miestnosti",
         "stopIgnoring": "Prestať ignorovať",
@@ -458,6 +462,7 @@
         "nickEdgeWhitespace": "Meno obsahuje medzery na okrajoch",
         "nickHiddenChars": "Meno obsahuje skryté znaky",
         "mentionSuggestions": "Návrhy zmienok",
+        "mentionsCount": "Zmienky: {{count}}",
         "unreadMessages": "{{displayCount}} neprečítaná správa",
         "unreadMessages_few": "{{displayCount}} neprečítané správy",
         "unreadMessages_many": "{{displayCount}} neprečítanej správy",
@@ -494,6 +499,7 @@
         "replyQuoteHiddenEncrypted": "Citácia skrytá: originál bol šifrovaný",
         "forwardMessage": "Preposlať správu (už čoskoro)",
         "moreReactions": "Viac reakcií",
+        "reactions": "Reakcie",
         "reactionOthers": "{{count}} ďalších",
         "moreOptions": "Viac možností",
         "reactWith": "Reagovať s {{emoji}}",
@@ -537,6 +543,7 @@
         "copyLinkChoose": "Ktorý odkaz kopírovať?",
         "openInBrowser": "Otvoriť v prehliadači",
         "saveImage": "Uložiť obrázok",
+        "mediaUnavailableOrUnsupported": "Tento súbor sa tu nedá prehrať: môže byť nedostupný alebo v nepodporovanom formáte",
         "videoFormatUnsupported": "Tento formát videa sa tu nedá prehrať",
         "videoUnavailable": "Video už nie je dostupné",
         "audioFormatUnsupported": "Tento formát zvuku sa tu nedá prehrať",
@@ -651,6 +658,17 @@
         "yesterday": "Včera"
     },
     "settings": {
+    "nativeNotificationTone": "Zvuk upozornení",
+    "nativeNotificationToneDescription": "Vyberte zvuk upozornení na pozadí. Tichý režim zachová zvuky v aplikácii.",
+    "nativeSoundDescription": "Prehrávať zvuky v aplikácii a pri upozorneniach na pozadí.",
+    "notificationTone_default": "Predvolený systémový zvuk",
+    "notificationTone_bell": "Zvonček",
+    "notificationTone_chime": "Zvonkohra",
+    "notificationTone_pulse": "Pulz",
+    "notificationTone_silent": "Tichý režim",
+    "oxNotificationPreview": "Náhľady OpenPGP v oznámeniach",
+    "oxNotificationPreviewDescription": "Povoliť rozšíreniu oznámení načítať a dešifrovať správy tohto účtu. Náhľady sa riadia nastaveniami iOS a môžu sa zobraziť na zamknutej obrazovke, ak je vybraté Vždy.",
+    "oxNotificationPreviewFailed": "Náhľady sa nepodarilo zapnúť. Overte, či sú dostupné OpenPGP a uložené pripojenie.",
         "title": "Nastavenia",
         "categories": {
             "profile": "Profil",
@@ -730,6 +748,7 @@
         "accentThemeDefault": "Predvolené témy",
         "fontSize": "Veľkosť písma",
         "fontSizeDescription": "Upraviť veľkosť textu v aplikácii",
+        "fontSizeSystemDescription": "Vzhľadom na veľkosť textu nastavenú v Nastaveniach iOS",
         "decreaseFontSize": "Zmenšiť písmo",
         "increaseFontSize": "Zväčšiť písmo",
         "sound": "Prehrávať zvuky oznámení",
@@ -1523,5 +1542,12 @@
             "archiveUnsupported": "Server nepodporuje hľadanie v archíve. Skúste hľadať vo vnútri konverzácie.",
             "serverFailed": "Hľadanie na serveri zlyhalo"
         }
+    },
+    "notificationPreview": {
+        "activity": "Nová aktivita",
+        "reaction": "{{nickname}} reaguje: {{text}}",
+        "edit": "{{nickname}} (upravené): {{text}}",
+        "retraction": "{{nickname}} odstránil(a) správu",
+        "messages": "{{nickname}}: nové správy — {{count}}"
     }
 }

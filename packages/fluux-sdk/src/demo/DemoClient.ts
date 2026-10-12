@@ -29,6 +29,7 @@ import { fromCodePointOffset } from '../utils/xep0426'
 import { connectionStore } from '../stores/connectionStore'
 import { chatStore } from '../stores/chatStore'
 import { roomStore } from '../stores/roomStore'
+import { rosterStore } from '../stores/rosterStore'
 import { eventsStore } from '../stores/eventsStore'
 import type { Contact } from '../core/types/roster'
 import type { CoverageRecord } from '../core/types/pagination'
@@ -236,17 +237,27 @@ export class DemoClient extends XMPPClient {
       selfNick,
       conferenceService: this.conferenceService,
     })
+    // Equal-delay events form one delivery task so an instant backlog does not render per message.
+    const batches = new Map<number, typeof events>()
+    for (const event of events) {
+      const batch = batches.get(event.delayMs)
+      if (batch) batch.push(event)
+      else batches.set(event.delayMs, [event])
+    }
+    let stopped = false
     let timers: ReturnType<typeof setTimeout>[] = [
-      ...events.map(ev =>
+      ...Array.from(batches, ([delayMs, batch]) =>
         setTimeout(() => {
-
-          // Same cast style as dispatchStep(): payloads are generated to match the event.
-          this.emitSDK(ev.type as Parameters<typeof this.emitSDK>[0], ev.payload as never)
-        }, ev.delayMs),
+          for (const ev of batch) {
+            if (stopped) break
+            // Same cast style as dispatchStep(): payloads are generated to match the event.
+            this.emitSDK(ev.type as Parameters<typeof this.emitSDK>[0], ev.payload as never)
+          }
+        }, delayMs),
       ),
     ]
 
-    // Registered after every event timer, so at the same delay it fires last —
+    // Registered after every batch timer, so at the same delay it fires last —
     // which is what makes this a completion signal rather than a race.
     const lastDelayMs = events.reduce((max, ev) => Math.max(max, ev.delayMs), 0)
     let settle!: () => void
@@ -257,6 +268,7 @@ export class DemoClient extends XMPPClient {
 
     return {
       stop: () => {
+        stopped = true
         for (const t of timers) clearTimeout(t)
         timers = []
         settle()
@@ -442,6 +454,7 @@ export class DemoClient extends XMPPClient {
     // Set the current JID so modules (e.g., chat.sendMessage) can read it
     this.currentJid = data.self.jid
     this.selfJid = data.self.jid
+    rosterStore.getState().switchAccount(data.self.jid.split('/')[0])
 
     // Derive conference service from domain
     this.conferenceService = `conference.${data.self.domain}`

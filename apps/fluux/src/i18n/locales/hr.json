@@ -339,6 +339,7 @@
         "voiceRequestSent": "Zahtjev za riječ je poslan",
         "voiceRequests": "Zahtjevi za riječ",
         "grantVoice": "Dodijeli glas",
+        "voiceApprovalUnanswered": "Soba nije dodijelila pravo glasa. Osoba je možda napustila sobu ili već ima pravo glasa.",
         "revokeVoice": "Oduzmi glas",
         "grantModerator": "Dodijeli moderatora",
         "revokeModerator": "Oduzmi moderatora",
@@ -390,6 +391,9 @@
         "whisperingTo": "Šaputate privatno {{nick}}-u",
         "whisperThread": "Privatno s {{nick}}",
         "whisperCounterpartGone": "{{nick}} više nije u sobi, ne možete odgovoriti",
+        "whisperAttachmentTitle": "Poslati privatni privitak?",
+        "whisperAttachmentWarning": "Privatna poruka je privremena, ali datoteke ostaju na poslužitelju za prijenos prema njegovim pravilima čuvanja. Primatelji mogu preuzeti i zadržati kopije.",
+        "whisperAttachmentRetention": "Čuvanje na poslužitelju za prijenos: {{duration}}. Primatelji mogu preuzeti i zadržati kopije.",
         "whisperPlaceholder": "Šapni {{nick}}...",
         "ignoreUser": "Ignoriraj u ovoj sobi",
         "stopIgnoring": "Prestani ignorirati",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "Ime sadrži dodatne razmake na rubovima",
         "nickHiddenChars": "Ime sadrži skrivene znakove",
         "mentionSuggestions": "Prijedlozi spominjanja",
+        "mentionsCount": "Spominjanja: {{count}}",
         "unreadMessages": "{{displayCount}} nepročitana poruka",
         "unreadMessages_few": "{{displayCount}} nepročitane poruke",
         "unreadMessages_other": "{{displayCount}} nepročitanih poruka"
@@ -492,6 +497,7 @@
         "replyQuoteHiddenEncrypted": "Citat skriven: izvornik je bio šifriran",
         "forwardMessage": "Proslijedi poruku (uskoro dolazi)",
         "moreReactions": "Više reakcija",
+        "reactions": "Reakcije",
         "reactionOthers": "{{count}} drugih",
         "moreOptions": "Više opcija",
         "reactWith": "Reagiraj s {{emoji}}",
@@ -534,6 +540,7 @@
         "copyLinkChoose": "Koju poveznicu kopirati?",
         "openInBrowser": "Otvori u pregledniku",
         "saveImage": "Spremi sliku",
+        "mediaUnavailableOrUnsupported": "Ovu datoteku ovdje nije moguće reproducirati: možda nije dostupna ili je u nepodržanom formatu",
         "videoFormatUnsupported": "Ovaj videoformat nije moguće reproducirati ovdje",
         "videoUnavailable": "Video više nije dostupan",
         "audioFormatUnsupported": "Ovaj audioformat nije moguće reproducirati ovdje",
@@ -648,6 +655,17 @@
         "yesterday": "Jučer"
     },
     "settings": {
+    "nativeNotificationTone": "Zvuk obavijesti",
+    "nativeNotificationToneDescription": "Odaberite zvuk obavijesti u pozadini. Tiho zadržava zvukove u aplikaciji.",
+    "nativeSoundDescription": "Reproduciraj zvukove u aplikaciji i za obavijesti u pozadini.",
+    "notificationTone_default": "Zadano sustava",
+    "notificationTone_bell": "Zvono",
+    "notificationTone_chime": "Zvončići",
+    "notificationTone_pulse": "Puls",
+    "notificationTone_silent": "Tiho",
+    "oxNotificationPreview": "OpenPGP pregledi u obavijestima",
+    "oxNotificationPreviewDescription": "Dopustite proširenju obavijesti dohvat i dešifriranje poruka ovog računa. Pregledi slijede postavke iOS-a i mogu se pojaviti na zaključanom zaslonu ako je odabrano Uvijek.",
+    "oxNotificationPreviewFailed": "Nije moguće uključiti preglede. Provjerite jesu li OpenPGP i spremljena veza dostupni.",
         "title": "Postavke",
         "categories": {
             "profile": "Profil",
@@ -727,6 +745,7 @@
         "accentThemeDefault": "Zadano teme",
         "fontSize": "Veličina fonta",
         "fontSizeDescription": "Prilagodite veličinu teksta u aplikaciji",
+        "fontSizeSystemDescription": "U odnosu na veličinu teksta postavljenu u postavkama iOS-a",
         "decreaseFontSize": "Smanji veličinu fonta",
         "increaseFontSize": "Povećaj veličinu fonta",
         "sound": "Reproduciraj zvukove obavijesti",
@@ -1520,5 +1539,12 @@
             "archiveUnsupported": "Poslužitelj ne podržava pretragu arhive. Pokušajte pretraživati unutar razgovora.",
             "serverFailed": "Pretraga poslužitelja nije uspjela"
         }
+    },
+    "notificationPreview": {
+        "activity": "Nova aktivnost",
+        "reaction": "{{nickname}} reagira: {{text}}",
+        "edit": "{{nickname}} (uređeno): {{text}}",
+        "retraction": "{{nickname}} je izbrisao/la poruku",
+        "messages": "{{nickname}}: nove poruke — {{count}}"
     }
 }

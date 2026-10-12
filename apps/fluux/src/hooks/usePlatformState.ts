@@ -723,6 +723,18 @@ export function usePlatformState() {
     }
   }, [status, client, shouldHandleWake, maybeReloadOnLongWake, logEvent])
 
+  // ── Effect 4b: Client state indication ────────────────────────────────────
+  // Independent of the connection status: the SDK keeps the state and sends it
+  // once a session can carry it. A hidden page is inactive; an unfocused but
+  // visible window stays active, so chat states keep arriving in real time.
+
+  useEffect(() => {
+    const update = () => client.setClientState(document.hidden ? 'inactive' : 'active')
+    update()
+    document.addEventListener('visibilitychange', update)
+    return () => document.removeEventListener('visibilitychange', update)
+  }, [client])
+
   // ── Effect 5: Tauri native events (keepalive + proxy watchdog) ────────────
 
   useEffect(() => {
@@ -798,8 +810,8 @@ export function usePlatformState() {
   useEffect(() => {
     if (status === 'online') {
       // Background sync (MAM, roster, rooms) causes many legitimate store
-      // updates in the first seconds — raise the render loop error threshold
-      // so the detector doesn't trigger on normal connection activity.
+      // updates in the first seconds. See startSyncGracePeriod() for the
+      // detector limits that apply during connection activity.
       startSyncGracePeriod()
 
       // Transition presence machine to connected state

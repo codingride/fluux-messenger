@@ -340,6 +340,7 @@
         "voiceRequestSent": "Pedido de voz enviado",
         "voiceRequests": "Pedidos de voz",
         "grantVoice": "Conceder voz",
+        "voiceApprovalUnanswered": "A sala não concedeu voz. A pessoa pode ter saído da sala ou já ter voz.",
         "revokeVoice": "Revogar voz",
         "grantModerator": "Conceder moderador",
         "revokeModerator": "Revogar moderador",
@@ -392,6 +393,9 @@
         "whisperingTo": "Sussurrando em privado para {{nick}}",
         "whisperThread": "Privado com {{nick}}",
         "whisperCounterpartGone": "{{nick}} já não está na sala, não podes responder",
+        "whisperAttachmentTitle": "Enviar um anexo privado?",
+        "whisperAttachmentWarning": "A mensagem privada é efémera, mas os ficheiros ficam no servidor de envio segundo a sua política de conservação. Os destinatários podem descarregar e guardar cópias.",
+        "whisperAttachmentRetention": "Conservação no servidor de envio: {{duration}}. Os destinatários podem descarregar e guardar cópias.",
         "whisperPlaceholder": "Sussurrar para {{nick}}...",
         "ignoreUser": "Ignorar nesta sala",
         "stopIgnoring": "Parar de ignorar",
@@ -459,6 +463,7 @@
         "nickEdgeWhitespace": "O nome tem espaços extra nas extremidades",
         "nickHiddenChars": "O nome contém caracteres ocultos",
         "mentionSuggestions": "Sugestões de menções",
+        "mentionsCount": "Menções: {{count}}",
         "unreadMessages": "{{displayCount}} mensagem não lida",
         "unreadMessages_many": "{{displayCount}} de mensagens não lidas",
         "unreadMessages_other": "{{displayCount}} mensagens não lidas"
@@ -494,6 +499,7 @@
         "replyQuoteHiddenEncrypted": "Citação oculta: o original estava cifrado",
         "forwardMessage": "Encaminhar mensagem (brevemente)",
         "moreReactions": "Mais reações",
+        "reactions": "Reações",
         "reactionOthers": "{{count}} outros",
         "moreOptions": "Mais opções",
         "reactWith": "Reagir com {{emoji}}",
@@ -536,6 +542,7 @@
         "copyLinkChoose": "Qual link copiar?",
         "openInBrowser": "Abrir no navegador",
         "saveImage": "Guardar imagem",
+        "mediaUnavailableOrUnsupported": "Este ficheiro não pode ser reproduzido aqui: pode estar indisponível ou num formato não suportado",
         "videoFormatUnsupported": "Este formato de vídeo não pode ser reproduzido aqui",
         "videoUnavailable": "Vídeo já não disponível",
         "audioFormatUnsupported": "Este formato de áudio não pode ser reproduzido aqui",
@@ -650,6 +657,17 @@
         "yesterday": "Ontem"
     },
     "settings": {
+    "nativeNotificationTone": "Som das notificações",
+    "nativeNotificationToneDescription": "Escolha o som das notificações em segundo plano. Silencioso mantém os sons da aplicação.",
+    "nativeSoundDescription": "Reproduzir sons na aplicação e nas notificações em segundo plano.",
+    "notificationTone_default": "Predefinição do sistema",
+    "notificationTone_bell": "Sino",
+    "notificationTone_chime": "Carrilhão",
+    "notificationTone_pulse": "Pulso",
+    "notificationTone_silent": "Silencioso",
+    "oxNotificationPreview": "Pré-visualizações OpenPGP nas notificações",
+    "oxNotificationPreviewDescription": "Permitir que a extensão de notificações obtenha e desencripte mensagens desta conta. As pré-visualizações seguem as definições do iOS e podem aparecer no ecrã bloqueado se selecionar Sempre.",
+    "oxNotificationPreviewFailed": "Não foi possível ativar as pré-visualizações. Verifique se o OpenPGP e a ligação guardada estão disponíveis.",
         "title": "Definições",
         "categories": {
             "profile": "Perfil",
@@ -729,6 +747,7 @@
         "accentThemeDefault": "Padrão do tema",
         "fontSize": "Tamanho da fonte",
         "fontSizeDescription": "Ajustar o tamanho do texto no aplicativo",
+        "fontSizeSystemDescription": "Em relação ao tamanho do texto definido nos Ajustes do iOS",
         "decreaseFontSize": "Diminuir tamanho da fonte",
         "increaseFontSize": "Aumentar tamanho da fonte",
         "sound": "Reproduzir sons de notificação",
@@ -1522,5 +1541,12 @@
             "archiveUnsupported": "O servidor não suporta a pesquisa no arquivo. Tente pesquisar dentro de uma conversa.",
             "serverFailed": "A pesquisa no servidor falhou"
         }
+    },
+    "notificationPreview": {
+        "activity": "Nova atividade",
+        "reaction": "{{nickname}} reagiu: {{text}}",
+        "edit": "{{nickname}} (edição): {{text}}",
+        "retraction": "{{nickname}} eliminou uma mensagem",
+        "messages": "{{nickname}}: {{count}} novas mensagens"
     }
 }

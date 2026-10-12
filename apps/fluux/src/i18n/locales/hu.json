@@ -339,6 +339,7 @@
         "voiceRequestSent": "Szókérés elküldve",
         "voiceRequests": "Szókérések",
         "grantVoice": "Szó megadása",
+        "voiceApprovalUnanswered": "A szoba nem adott hangot. Lehet, hogy a személy elhagyta a szobát, vagy már van hangja.",
         "revokeVoice": "Szó megvonása",
         "grantModerator": "Moderátor megadása",
         "revokeModerator": "Moderátor megvonása",
@@ -390,6 +391,9 @@
         "whisperingTo": "Privát suttogás {{nick}} felé",
         "whisperThread": "Privát: {{nick}}",
         "whisperCounterpartGone": "{{nick}} már nincs a szobában, nem válaszolhatsz",
+        "whisperAttachmentTitle": "Privát melléklet küldése?",
+        "whisperAttachmentWarning": "A privát üzenet átmeneti, de a fájlok a feltöltési szerveren maradnak annak megőrzési szabályai szerint. A címzettek letölthetik és megtarthatják a másolatokat.",
+        "whisperAttachmentRetention": "Megőrzés a feltöltési szerveren: {{duration}}. A címzettek letölthetik és megtarthatják a másolatokat.",
         "whisperPlaceholder": "Suttogás {{nick}} felé...",
         "ignoreUser": "Mellőzés ebben a szobában",
         "stopIgnoring": "Mellőzés befejezése",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "A név szélein extra szóközök vannak",
         "nickHiddenChars": "A név rejtett karaktereket tartalmaz",
         "mentionSuggestions": "Említésjavaslatok",
+        "mentionsCount": "Említések: {{count}}",
         "unreadMessages": "{{displayCount}} olvasatlan üzenet",
         "unreadMessages_other": "{{displayCount}} olvasatlan üzenet"
     },
@@ -491,6 +496,7 @@
         "replyQuoteHiddenEncrypted": "Idézet elrejtve: az eredeti titkosított volt",
         "forwardMessage": "Üzenet továbbítása (hamarosan)",
         "moreReactions": "További reakciók",
+        "reactions": "Reakciók",
         "reactionOthers": "{{count}} másik",
         "moreOptions": "További lehetőségek",
         "reactWith": "Reagálás: {{emoji}}",
@@ -532,6 +538,7 @@
         "copyLinkChoose": "Melyik linket másoljuk?",
         "openInBrowser": "Megnyitás böngészőben",
         "saveImage": "Kép mentése",
+        "mediaUnavailableOrUnsupported": "Ez a fájl itt nem játszható le: lehet, hogy nem érhető el, vagy nem támogatott formátumú",
         "videoFormatUnsupported": "Ez a videóformátum itt nem játszható le",
         "videoUnavailable": "A videó már nem érhető el",
         "audioFormatUnsupported": "Ez a hangformátum itt nem játszható le",
@@ -646,6 +653,17 @@
         "yesterday": "Tegnap"
     },
     "settings": {
+    "nativeNotificationTone": "Értesítési hang",
+    "nativeNotificationToneDescription": "Válassza ki a háttérértesítések hangját. A Néma megőrzi az alkalmazás hangjait.",
+    "nativeSoundDescription": "Hangok lejátszása az alkalmazásban és a háttérértesítéseknél.",
+    "notificationTone_default": "Rendszer alapértelmezése",
+    "notificationTone_bell": "Csengő",
+    "notificationTone_chime": "Harangjáték",
+    "notificationTone_pulse": "Pulzus",
+    "notificationTone_silent": "Néma",
+    "oxNotificationPreview": "OpenPGP-előnézetek az értesítésekben",
+    "oxNotificationPreviewDescription": "Engedélyezze az értesítési bővítménynek a fiók üzeneteinek letöltését és visszafejtését. Az előnézetek az iOS beállításait követik, és a Mindig opcióval a zárolási képernyőn is megjelenhetnek.",
+    "oxNotificationPreviewFailed": "Az előnézetek nem kapcsolhatók be. Ellenőrizze, hogy az OpenPGP és a mentett kapcsolat elérhető-e.",
         "title": "Beállítások",
         "categories": {
             "profile": "Profil",
@@ -725,6 +743,7 @@
         "accentThemeDefault": "Téma alapértelmezett",
         "fontSize": "Betűméret",
         "fontSizeDescription": "Szövegméret módosítása az alkalmazásban",
+        "fontSizeSystemDescription": "Az iOS beállításaiban megadott szövegmérethez képest",
         "decreaseFontSize": "Betűméret csökkentése",
         "increaseFontSize": "Betűméret növelése",
         "sound": "Értesítési hangok lejátszása",
@@ -1518,5 +1537,12 @@
             "archiveUnsupported": "A szerver nem támogatja az archívumban való keresést. Próbáljon egy beszélgetésen belül keresni.",
             "serverFailed": "A szerveres keresés sikertelen"
         }
+    },
+    "notificationPreview": {
+        "activity": "Új tevékenység",
+        "reaction": "{{nickname}} reagált: {{text}}",
+        "edit": "{{nickname}} (szerkesztve): {{text}}",
+        "retraction": "{{nickname}} törölt egy üzenetet",
+        "messages": "{{nickname}}: {{count}} új üzenet"
     }
 }

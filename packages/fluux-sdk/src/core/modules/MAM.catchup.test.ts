@@ -15,6 +15,7 @@ import {
   type MockStoreBindings,
 } from '../test-utils'
 import { MAM_ROOM_FORWARD_MAX_PAGES_MANUAL } from '../../utils/mamCatchUpUtils'
+import { setLogSink } from '../logger'
 
 let mockXmppClientInstance: MockXmppClient
 
@@ -485,7 +486,7 @@ describe('MAM Background Catch-Up', () => {
         { type: 'chat' as const, id: 'newer', conversationId: 'alice@example.com', from: 'alice@example.com', body: 'newer', timestamp: newerAboveGap, isOutgoing: false, isDelayed: false },
       ]
       vi.mocked(mockStores.chat.getAllConversations).mockReturnValue([{ id: 'alice@example.com', messages }] as any)
-      vi.mocked(mockStores.chat.getConversationGapStart!).mockReturnValue(gapStart.getTime())
+      vi.mocked(mockStores.chat.getConversationGaps!).mockReturnValue([{ start: gapStart.getTime() }])
 
       const querySpy = vi.spyOn(getInternalSurfaceForTesting(xmppClient).mam, 'queryArchive').mockResolvedValue({ messages: [], complete: true, page: {} })
 
@@ -502,7 +503,6 @@ describe('MAM Background Catch-Up', () => {
     it('fetch-latest for a persisted conversation whose cache is empty this run (preview anchor retired)', async () => {
       await connectClient()
       vi.mocked(mockStores.chat.getAllConversations).mockReturnValue([{ id: 'alice@example.com', messages: [] }] as any)
-      vi.mocked(mockStores.chat.getConversationGapStart!).mockReturnValue(undefined)
       vi.mocked(mockStores.chat.getConversationLastTimestamp!).mockReturnValue(new Date('2026-05-14T09:00:00Z').getTime())
 
       const querySpy = vi.spyOn(getInternalSurfaceForTesting(xmppClient).mam, 'queryArchive').mockResolvedValue({ messages: [], complete: false, page: {} })
@@ -517,7 +517,6 @@ describe('MAM Background Catch-Up', () => {
 
   describe('catchUpConversationHistory (latest-first orchestrator)', () => {
     const setupChat = (pending: string | undefined) => {
-      vi.mocked(mockStores.chat.getConversationGapStart!).mockReturnValue(undefined)
       vi.mocked(mockStores.chat.getConversationPendingStanzaId!).mockReturnValue(pending)
     }
 
@@ -629,7 +628,6 @@ describe('MAM Background Catch-Up', () => {
     it('does NOT discard when the marker changes during an archive-start query', async () => {
       await connectClient()
       let pending = 'mds-ptr'
-      vi.mocked(mockStores.chat.getConversationGapStart!).mockReturnValue(undefined)
       vi.mocked(mockStores.chat.getConversationPendingStanzaId!).mockImplementation(() => pending)
       let resolveBackward!: (result: any) => void
       let signalQueryStarted!: () => void
@@ -659,7 +657,6 @@ describe('MAM Background Catch-Up', () => {
     it('does NOT discard when the marker changes during an intermediate page', async () => {
       await connectClient()
       let pending = 'mds-ptr'
-      vi.mocked(mockStores.chat.getConversationGapStart!).mockReturnValue(undefined)
       vi.mocked(mockStores.chat.getConversationPendingStanzaId!).mockImplementation(() => pending)
 
       vi.spyOn(getInternalSurfaceForTesting(xmppClient).mam, 'queryArchive').mockImplementation(async (opts: any) => {
@@ -683,7 +680,6 @@ describe('MAM Background Catch-Up', () => {
     it('does NOT discard when the marker changes during Phase A', async () => {
       await connectClient()
       let pending = 'mds-ptr'
-      vi.mocked(mockStores.chat.getConversationGapStart!).mockReturnValue(undefined)
       vi.mocked(mockStores.chat.getConversationPendingStanzaId!).mockImplementation(() => pending)
       let resolvePhaseA!: (result: any) => void
       let signalQueryStarted!: () => void
@@ -937,9 +933,8 @@ describe('MAM Background Catch-Up', () => {
       await connectClient()
       // Pointer pending; Phase A completes forward with nothing to bail on.
       vi.mocked(mockStores.chat.getConversationPendingStanzaId!).mockReturnValue('mds-ptr')
-      vi.mocked(mockStores.chat.getConversationGapStart!).mockReturnValue(undefined)
       // A recorded gap whose upper edge is 'seam-top' — the contiguous bottom.
-      vi.mocked(mockStores.chat.getConversationGapEndId!).mockReturnValue('seam-top')
+      vi.mocked(mockStores.chat.getConversationGaps!).mockReturnValue([{ start: 0, end: 1, endId: 'seam-top' }])
       // A search island sits far below; probeCacheBottom would return it.
       vi.mocked(mockStores.chat.loadMessagesFromCache!).mockResolvedValue([
         { id: 'island-old', stanzaId: 'island-old', timestamp: new Date('2020-01-01T00:00:00Z') },
@@ -967,7 +962,6 @@ describe('MAM Background Catch-Up', () => {
       // No recorded gap edge, but a prior disjoint fetch-latest flagged the
       // contiguous bottom unproven: the cache-oldest row is NOT provably
       // contiguous with live, so the probe must be skipped and Phase B no-op.
-      vi.mocked(mockStores.chat.getConversationGapEndId!).mockReturnValue(undefined)
       vi.mocked(mockStores.chat.getConversationCoverageUnproven!).mockReturnValue(true)
       vi.mocked(mockStores.chat.loadMessagesFromCache!).mockResolvedValue([
         { id: 'island-old', stanzaId: 'island-old', timestamp: new Date('2020-01-01T00:00:00Z') },
@@ -997,7 +991,6 @@ describe('MAM Background Catch-Up', () => {
       setupChat('mds-ptr')
       // No recorded gap, but a persisted coverage record survives the fresh
       // session: seed from its bottomId, never from the cache-oldest island.
-      vi.mocked(mockStores.chat.getConversationGapEndId!).mockReturnValue(undefined)
       vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
       vi.mocked(mockStores.chat.loadMessagesFromCache!).mockResolvedValue([
         { id: 'island-old', stanzaId: 'island-old', timestamp: new Date('2020-01-01T00:00:00Z') },
@@ -1075,8 +1068,7 @@ describe('MAM Background Catch-Up', () => {
     it('resumes a recorded gap id-exact (after: seam startId)', async () => {
       await connectClient()
       setupChat(undefined)
-      vi.mocked(mockStores.chat.getConversationGapStart!).mockReturnValue(new Date('2026-05-14T09:00:00Z').getTime())
-      vi.mocked(mockStores.chat.getConversationGapStartId!).mockReturnValue('gap-edge-7')
+      vi.mocked(mockStores.chat.getConversationGaps!).mockReturnValue([{ start: new Date('2026-05-14T09:00:00Z').getTime(), startId: 'gap-edge-7' }])
 
       const querySpy = vi.spyOn(getInternalSurfaceForTesting(xmppClient).mam, 'queryArchive').mockResolvedValue({ messages: [], complete: true, page: {} })
 
@@ -1142,6 +1134,299 @@ describe('MAM Background Catch-Up', () => {
       expect(calls).toHaveLength(2)
     })
 
+    describe('locating a pending marker before walking', () => {
+      const edge = [{ timestamp: new Date('2026-06-01T12:00:00Z'), stanzaId: 'edge' }]
+      const run = () => getInternalSurfaceForTesting(xmppClient).mam.catchUpConversationHistory(
+        'alice@example.com', edge, { sessionStartTime: Date.now(), stitchReadPointer: true })
+      const mam = () => getInternalSurfaceForTesting(xmppClient).mam
+      const recordQueries = (onQuery?: (opts: any) => void) => {
+        const calls: any[] = []
+        vi.spyOn(mam(), 'queryArchive').mockImplementation(async (opts: any) => {
+          calls.push(opts)
+          onQuery?.(opts)
+          if (opts.after === 'edge') return { messages: [], complete: true, page: {} }
+          return { messages: [], complete: false, page: { first: 'older' } }
+        })
+        return calls
+      }
+      const backward = (calls: any[]) => calls.filter((c) => c.before !== undefined && c.before !== '')
+      const clearPending = () => vi.mocked(mockStores.chat.getConversationPendingStanzaId!).mockReturnValue(undefined)
+
+      describe('logs one line per marker search', () => {
+        let lines: string[]
+        beforeEach(() => {
+          lines = []
+          setLogSink((_level, message) => { lines.push(message) })
+        })
+        afterEach(() => setLogSink(null))
+        const searchLines = () => lines.filter((l) => l.startsWith('Read marker search'))
+
+        it('names a marker found in the cache', async () => {
+          await connectClient()
+          setupChat('mds-ptr')
+          vi.mocked(mockStores.chat.resolvePendingRemoteDisplayedFromCache!).mockImplementation(async () => { clearPending(); return true })
+          recordQueries()
+
+          await run()
+
+          expect(searchLines()).toEqual(['Read marker search ...@example.com: found in the cache'])
+        })
+
+        it('names an archive answer and the pages it took', async () => {
+          await connectClient()
+          setupChat('mds-ptr')
+          vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+          vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'absent' })
+          recordQueries()
+
+          await run()
+
+          expect(searchLines()).toEqual(['Read marker search ...@example.com: archive lookup absent, marker discarded (0 gap pages, 0 walk pages)'])
+        })
+
+        it('names a found entry this client does not display', async () => {
+          await connectClient()
+          setupChat('mds-ptr')
+          vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'found', timestamp: new Date('2026-05-01T00:00:00Z') })
+          recordQueries()
+
+          await run()
+
+          expect(searchLines()).toEqual(['Read marker search ...@example.com: archive lookup found, entry not displayed by this client, marker left pending (0 gap pages, 0 walk pages)'])
+        })
+
+        it('names an inconclusive walk', async () => {
+          await connectClient()
+          setupChat('mds-ptr')
+          vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+          vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'unknown' })
+          vi.spyOn(mam(), 'queryArchive').mockImplementation(async (opts: any) => {
+            if (opts.after === 'edge') return { messages: [], complete: true, page: {} }
+            return { messages: [], complete: true, page: { first: 'archive-start' } }
+          })
+
+          await run()
+
+          expect(searchLines()).toEqual(['Read marker search ...@example.com: archive lookup unknown, walk reached the archive start without proof, marker left pending (0 gap pages, 1 walk page)'])
+        })
+
+        it('logs nothing when no marker is pending', async () => {
+          await connectClient()
+          setupChat(undefined)
+          recordQueries()
+
+          await run()
+
+          expect(searchLines()).toEqual([])
+        })
+      })
+
+      it('places the marker from the cache without asking the archive for it', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+        vi.mocked(mockStores.chat.resolvePendingRemoteDisplayedFromCache!).mockImplementation(async () => { clearPending() })
+        const lookup = vi.spyOn(mam(), 'lookUpArchivedMessage')
+        const calls = recordQueries()
+
+        await run()
+
+        expect(mockStores.chat.resolvePendingRemoteDisplayedFromCache).toHaveBeenCalledWith('alice@example.com')
+        expect(lookup).not.toHaveBeenCalled()
+        expect(backward(calls)).toHaveLength(0)
+      })
+
+      it('neither searches nor concludes for a cached marker the cache could not order', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+        vi.mocked(mockStores.chat.verifyConversationCoverageBottom!).mockResolvedValue(true)
+        vi.mocked(mockStores.chat.resolvePendingRemoteDisplayedFromCache!).mockResolvedValue(true)
+        const lookup = vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'unknown' })
+        const calls: any[] = []
+        vi.spyOn(mam(), 'queryArchive').mockImplementation(async (opts: any) => {
+          calls.push(opts)
+          if (opts.after === 'edge') return { messages: [], complete: true, page: {} }
+          return { messages: [], complete: true, page: { first: 'archive-start' } }
+        })
+
+        await run()
+
+        expect(lookup).not.toHaveBeenCalled()
+        expect(backward(calls)).toHaveLength(0)
+        expect(mockStores.chat.discardPurgedRemoteDisplayed).not.toHaveBeenCalled()
+      })
+
+      it('fetches the marker by id, places it, and walks down to it from the held history', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+        const row = { id: 'm-ptr', stanzaId: 'mds-ptr', timestamp: new Date('2026-05-01T00:00:00Z') }
+        vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'found', timestamp: row.timestamp, row: row as any })
+        vi.mocked(mockStores.chat.placeRemoteDisplayedRow!).mockImplementation(async () => { clearPending() })
+        const calls: any[] = []
+        vi.spyOn(mam(), 'queryArchive').mockImplementation(async (opts: any) => {
+          calls.push(opts)
+          if (opts.after === 'edge') return { messages: [], complete: true, page: {} }
+          if (opts.before === 'coverage-bottom') {
+            return { messages: [{ timestamp: new Date('2026-05-20T00:00:00Z') }] as any, complete: false, page: { first: 'p1' } }
+          }
+          return { messages: [{ timestamp: new Date('2026-04-20T00:00:00Z') }] as any, complete: false, page: { first: 'p2' } }
+        })
+
+        await run()
+
+        expect(mam().lookUpArchivedMessage).toHaveBeenCalledWith('alice@example.com', false, 'mds-ptr')
+        expect(mockStores.chat.placeRemoteDisplayedRow).toHaveBeenCalledWith('alice@example.com', 'mds-ptr', row)
+        expect(backward(calls).map((c) => c.before)).toEqual(['coverage-bottom', 'p1'])
+      })
+
+      it('keeps a marker found by id on an entry this client does not display pending, without walking', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+        vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'found', timestamp: new Date('2026-05-01T00:00:00Z') })
+        const calls = recordQueries()
+
+        await run()
+
+        expect(mockStores.chat.placeRemoteDisplayedRow).not.toHaveBeenCalled()
+        expect(mockStores.chat.discardPurgedRemoteDisplayed).not.toHaveBeenCalled()
+        expect(backward(calls)).toHaveLength(0)
+      })
+
+      it('never concludes absence for a marker found by id that its row could not order', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+        vi.mocked(mockStores.chat.verifyConversationCoverageBottom!).mockResolvedValue(true)
+        const row = { id: 'm-ptr', stanzaId: 'mds-ptr', timestamp: new Date('2026-05-01T00:00:00Z') }
+        vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'found', timestamp: row.timestamp, row: row as any })
+        vi.spyOn(mam(), 'queryArchive').mockImplementation(async (opts: any) => {
+          if (opts.after === 'edge') return { messages: [], complete: true, page: {} }
+          return { messages: [], complete: true, page: { first: 'archive-start' } }
+        })
+
+        await run()
+
+        expect(mockStores.chat.discardPurgedRemoteDisplayed).not.toHaveBeenCalled()
+      })
+
+      it('discards a marker the archive reports absent by id, without walking', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+        vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'absent' })
+        const calls = recordQueries()
+
+        await run()
+
+        expect(mockStores.chat.discardPurgedRemoteDisplayed).toHaveBeenCalledWith('alice@example.com', 'mds-ptr')
+        expect(backward(calls)).toHaveLength(0)
+      })
+
+      it('walks the recorded gap holding a marker found by id down from its upper edge to the marker', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+        const gap = { start: Date.parse('2026-04-01T00:00:00Z'), startId: 'gap-start', end: Date.parse('2026-05-10T00:00:00Z'), endId: 'gap-end' }
+        vi.mocked(mockStores.chat.getConversationGaps!).mockReturnValue([gap])
+        const row = { id: 'm-ptr', stanzaId: 'mds-ptr', timestamp: new Date('2026-05-01T00:00:00Z') }
+        vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'found', timestamp: row.timestamp, row: row as any })
+        vi.mocked(mockStores.chat.placeRemoteDisplayedRow!).mockImplementation(async () => { clearPending() })
+        const calls: any[] = []
+        vi.spyOn(mam(), 'queryArchive').mockImplementation(async (opts: any) => {
+          calls.push(opts)
+          if (opts.after === 'edge') return { messages: [], complete: true, page: {} }
+          return { messages: [{ timestamp: new Date('2026-04-30T00:00:00Z') }] as any, complete: false, page: { first: 'below-marker' } }
+        })
+
+        await run()
+
+        expect(calls.some((c) => c.after === 'gap-start')).toBe(false)
+        expect(backward(calls).map((c) => c.before)).toEqual(['gap-end'])
+      })
+
+      it('without a by-id answer, fills recorded gaps before walking below the held history', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        const gap = { start: Date.parse('2026-04-01T00:00:00Z'), startId: 'gap-start', end: Date.parse('2026-05-10T00:00:00Z'), endId: 'gap-end' }
+        vi.mocked(mockStores.chat.getConversationGaps!).mockReturnValue([gap])
+        vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'unknown' })
+        const calls = recordQueries((opts) => {
+          // The marker was in the gap: the fill's merge placed it.
+          if (opts.after === 'gap-start') clearPending()
+        })
+
+        await run()
+
+        expect(calls.some((c) => c.after === 'gap-start')).toBe(true)
+        expect(backward(calls)).toHaveLength(0)
+      })
+
+      it('stops filling a gap that the page did not shrink', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        const gap = { start: Date.parse('2026-04-01T00:00:00Z'), startId: 'gap-start', end: Date.parse('2026-05-10T00:00:00Z'), endId: 'gap-end' }
+        vi.mocked(mockStores.chat.getConversationGaps!).mockReturnValue([gap])
+        vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'unknown' })
+        const calls = recordQueries()
+
+        await run()
+
+        expect(calls.filter((c) => c.after === 'gap-start')).toHaveLength(1)
+      })
+
+      it('concludes a walk from the held history at the archive start once the history is proven held', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+        vi.mocked(mockStores.chat.verifyConversationCoverageBottom!).mockResolvedValue(true)
+        vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'unknown' })
+        vi.spyOn(mam(), 'queryArchive').mockImplementation(async (opts: any) => {
+          if (opts.after === 'edge') return { messages: [], complete: true, page: {} }
+          return { messages: [], complete: true, page: { first: 'archive-start' } }
+        })
+
+        await run()
+
+        expect(mockStores.chat.discardPurgedRemoteDisplayed).toHaveBeenCalledWith('alice@example.com', 'mds-ptr')
+      })
+
+      it('does not conclude when the held history has a recorded gap', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+        vi.mocked(mockStores.chat.getConversationGaps!).mockReturnValue([{ start: 1, end: 2, endId: 'gap-end' }])
+        vi.mocked(mockStores.chat.verifyConversationCoverageBottom!).mockResolvedValue(true)
+        vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'unknown' })
+        vi.spyOn(mam(), 'queryArchive').mockImplementation(async (opts: any) => {
+          if (opts.after === 'edge') return { messages: [], complete: true, page: {} }
+          return { messages: [], complete: true, page: { first: 'archive-start' } }
+        })
+
+        await run()
+
+        expect(mockStores.chat.discardPurgedRemoteDisplayed).not.toHaveBeenCalled()
+      })
+
+      it('does not conclude when the oldest held message is no longer cached', async () => {
+        await connectClient()
+        setupChat('mds-ptr')
+        vi.mocked(mockStores.chat.getConversationCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+        vi.mocked(mockStores.chat.verifyConversationCoverageBottom!).mockResolvedValue(false)
+        vi.spyOn(mam(), 'lookUpArchivedMessage').mockResolvedValue({ kind: 'unknown' })
+        vi.spyOn(mam(), 'queryArchive').mockImplementation(async (opts: any) => {
+          if (opts.after === 'edge') return { messages: [], complete: true, page: {} }
+          return { messages: [], complete: true, page: { first: 'archive-start' } }
+        })
+
+        await run()
+
+        expect(mockStores.chat.discardPurgedRemoteDisplayed).not.toHaveBeenCalled()
+      })
+    })
+
     it('skips the Phase B walk when the fetch-latest establishing windowBottom already exhausted the archive', async () => {
       await connectClient()
       setupChat('mds-ptr') // pending pointer never clears in this test
@@ -1165,7 +1450,6 @@ describe('MAM Background Catch-Up', () => {
   describe('catchUpRoomHistory (latest-first orchestrator, room twin)', () => {
     const roomJid = 'room1@conference.example.com'
     const setupRoom = (pending: string | undefined) => {
-      vi.mocked(mockStores.room.getRoomGapStart!).mockReturnValue(undefined)
       vi.mocked(mockStores.room.getRoomPendingStanzaId!).mockReturnValue(pending)
       vi.mocked(mockStores.room.getRoom).mockReturnValue({ jid: roomJid, nickname: 'me' } as any)
     }
@@ -1269,9 +1553,8 @@ describe('MAM Background Catch-Up', () => {
     it('seeds Phase B from the recorded gap upper edge, ignoring a disjoint cache island below it', async () => {
       await connectClient()
       setupRoom('mds-ptr')
-      vi.mocked(mockStores.room.getRoomGapStart!).mockReturnValue(undefined)
       // A recorded gap whose upper edge is 'seam-top' — the contiguous bottom.
-      vi.mocked(mockStores.room.getRoomGapEndId!).mockReturnValue('seam-top')
+      vi.mocked(mockStores.room.getRoomGaps!).mockReturnValue([{ start: 0, end: 1, endId: 'seam-top' }])
       // A search island sits far below; probeCacheBottom would return it.
       vi.mocked(mockStores.room.loadMessagesFromCache!).mockResolvedValue([
         { id: 'island-old', stanzaId: 'island-old', timestamp: new Date('2020-01-01T00:00:00Z') },
@@ -1296,7 +1579,6 @@ describe('MAM Background Catch-Up', () => {
     it('does NOT descend Phase B from the cache bottom when coverage is flagged unproven and no gap edge exists (finding 10)', async () => {
       await connectClient()
       setupRoom('mds-ptr')
-      vi.mocked(mockStores.room.getRoomGapEndId!).mockReturnValue(undefined)
       vi.mocked(mockStores.room.getRoomCoverageUnproven!).mockReturnValue(true)
       vi.mocked(mockStores.room.loadMessagesFromCache!).mockResolvedValue([
         { id: 'island-old', stanzaId: 'island-old', timestamp: new Date('2020-01-01T00:00:00Z') },
@@ -1480,14 +1762,85 @@ describe('MAM Background Catch-Up', () => {
     it('resumes a recorded gap id-exact (after: seam startId)', async () => {
       await connectClient()
       setupRoom(undefined)
-      vi.mocked(mockStores.room.getRoomGapStart!).mockReturnValue(new Date('2026-05-14T09:00:00Z').getTime())
-      vi.mocked(mockStores.room.getRoomGapStartId!).mockReturnValue('gap-edge-7')
+      vi.mocked(mockStores.room.getRoomGaps!).mockReturnValue([{ start: new Date('2026-05-14T09:00:00Z').getTime(), startId: 'gap-edge-7' }])
 
       const querySpy = vi.spyOn(getInternalSurfaceForTesting(xmppClient).mam, 'queryRoomArchive').mockResolvedValue({ messages: [], complete: true, page: {} })
 
       await getInternalSurfaceForTesting(xmppClient).mam.catchUpRoomHistory(roomJid, [{ timestamp: new Date('2026-06-01T12:00:00Z'), stanzaId: 'newer' }])
 
-      expect(querySpy).toHaveBeenCalledWith(expect.objectContaining({ after: 'gap-edge-7' }))
+      expect(querySpy).toHaveBeenCalledWith(expect.objectContaining({
+        after: 'gap-edge-7',
+        walkOriginTs: new Date('2026-05-14T09:00:00Z').getTime(),
+      }))
+    })
+
+    it('aligns to live from the newest held message when only closed gaps are recorded', async () => {
+      // An older hole is recorded and history is held above it. Resuming from
+      // that hole with the bail cap could never reach the held edge of a busy
+      // room, so every session would bridge to live with a fetch-latest and
+      // leave a new, unrecorded hole above the held edge.
+      await connectClient()
+      setupRoom(undefined)
+      vi.mocked(mockStores.room.getRoomGaps!).mockReturnValue([{
+        start: new Date('2026-08-27T11:17:48Z').getTime(),
+        end: new Date('2026-08-31T06:08:54Z').getTime(),
+        startId: 'aug-27',
+      }])
+
+      const querySpy = vi.spyOn(getInternalSurfaceForTesting(xmppClient).mam, 'queryRoomArchive').mockResolvedValue({ messages: [], complete: true, page: {} })
+
+      const heldEdge = new Date('2026-09-01T22:30:00Z')
+      await getInternalSurfaceForTesting(xmppClient).mam.catchUpRoomHistory(roomJid, [{ timestamp: heldEdge, stanzaId: 'sept-1' }])
+
+      expect(querySpy).toHaveBeenCalledWith(expect.objectContaining({ after: 'sept-1', walkOriginTs: heldEdge.getTime() }))
+    })
+
+    it('fetches the marker from the room archive by id, places it, and walks down from the held history', async () => {
+      await connectClient()
+      setupRoom('mds-ptr')
+      vi.mocked(mockStores.room.getRoomCoverage!).mockReturnValue({ bottomId: 'coverage-bottom' })
+      const row = { roomJid, id: 'c1', from: `${roomJid}/alice`, stanzaId: 'mds-ptr', timestamp: new Date('2026-05-01T00:00:00Z') }
+      const lookup = vi.spyOn(getInternalSurfaceForTesting(xmppClient).mam, 'lookUpArchivedMessage')
+        .mockResolvedValue({ kind: 'found', timestamp: row.timestamp, row: row as any })
+      vi.mocked(mockStores.room.placeRemoteDisplayedRow!).mockImplementation(async () => {
+        vi.mocked(mockStores.room.getRoomPendingStanzaId!).mockReturnValue(undefined)
+      })
+      const querySpy = vi.spyOn(getInternalSurfaceForTesting(xmppClient).mam, 'queryRoomArchive')
+        .mockResolvedValue({ messages: [], complete: true, page: {} })
+
+      await getInternalSurfaceForTesting(xmppClient).mam.catchUpRoomHistory(
+        roomJid, [{ timestamp: new Date('2026-06-01T00:00:00Z'), stanzaId: 'top' }], { stitchReadPointer: true },
+      )
+
+      expect(mockStores.room.resolvePendingRemoteDisplayedFromCache).toHaveBeenCalledWith(roomJid)
+      expect(lookup).toHaveBeenCalledWith(roomJid, true, 'mds-ptr')
+      expect(mockStores.room.placeRemoteDisplayedRow).toHaveBeenCalledWith(roomJid, 'mds-ptr', row)
+      expect(querySpy.mock.calls.filter(([opts]: any[]) => opts.before !== undefined).map(([opts]: any[]) => opts.before))
+        .toEqual(['coverage-bottom'])
+    })
+
+    it('seeds Phase B from the newest gap upper edge when several gaps are recorded', async () => {
+      await connectClient()
+      setupRoom('mds-ptr')
+      vi.mocked(mockStores.room.getRoomGaps!).mockReturnValue([
+        { start: 10, end: 20, endId: 'older-top' },
+        { start: 30, end: 40, endId: 'newer-top' },
+      ])
+
+      // Neither gap fill heals its gap or finds the marker, so the walk below runs.
+      const querySpy = vi.spyOn(getInternalSurfaceForTesting(xmppClient).mam, 'queryRoomArchive')
+        .mockImplementation(async (opts: any) => {
+          if (opts.before === undefined) return { messages: [], complete: true, page: {} }
+          vi.mocked(mockStores.room.getRoomPendingStanzaId!).mockReturnValue(undefined)
+          return { messages: [], complete: false, page: { first: 'below' } }
+        })
+
+      await getInternalSurfaceForTesting(xmppClient).mam.catchUpRoomHistory(
+        roomJid, [{ timestamp: new Date(50), stanzaId: 'top' }], { stitchReadPointer: true },
+      )
+
+      const backward = querySpy.mock.calls.map(([opts]) => opts).filter((opts: any) => opts.before !== undefined)
+      expect(backward[0]).toMatchObject({ before: 'newer-top' })
     })
   })
 
@@ -1766,8 +2119,10 @@ describe('MAM Background Catch-Up', () => {
       }))
     })
 
-    it('sets preserveGapMarker so the bounded repair never hides a real gap marker', async () => {
+    it('heals the gaps inside its window without opening one', async () => {
       await connectClient()
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-06T20:43:14.314Z'))
 
       vi.mocked(mockStores.room.joinedRooms).mockReturnValue([
         { jid: 'room1@conference.example.com', supportsMAM: true, isQuickChat: false, joined: true, messages: [] },
@@ -1780,8 +2135,11 @@ describe('MAM Background Catch-Up', () => {
       await catchUpPromise
 
       expect(emitSDKSpy).toHaveBeenCalledWith('room:history-messages', expect.objectContaining({
-        preserveGapMarker: true,
+        walkOriginTs: new Date('2026-08-22T20:43:14.314Z').getTime(),
+        healGapsOnly: true,
+        preserveGapMarker: undefined,
       }))
+      vi.useRealTimers()
     })
 
     it('should emit console event with room count and days', async () => {

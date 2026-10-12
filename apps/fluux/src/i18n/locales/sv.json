@@ -339,6 +339,7 @@
         "voiceRequestSent": "Begäran om talrätt skickad",
         "voiceRequests": "Begäranden om talrätt",
         "grantVoice": "Ge röst",
+        "voiceApprovalUnanswered": "Rummet gav inte yttranderätt. Personen kan ha lämnat rummet eller redan ha yttranderätt.",
         "revokeVoice": "Ta bort röst",
         "grantModerator": "Ge moderator",
         "revokeModerator": "Ta bort moderator",
@@ -390,6 +391,9 @@
         "whisperingTo": "Viskar privat till {{nick}}",
         "whisperThread": "Privat med {{nick}}",
         "whisperCounterpartGone": "{{nick}} är inte längre i rummet, du kan inte svara",
+        "whisperAttachmentTitle": "Skicka en privat bilaga?",
+        "whisperAttachmentWarning": "Det privata meddelandet är tillfälligt, men filer finns kvar på uppladdningsservern enligt dess lagringspolicy. Mottagare kan ladda ner och behålla kopior.",
+        "whisperAttachmentRetention": "Lagring på uppladdningsservern: {{duration}}. Mottagare kan ladda ner och behålla kopior.",
         "whisperPlaceholder": "Viska till {{nick}}...",
         "ignoreUser": "Ignorera i detta rum",
         "stopIgnoring": "Sluta ignorera",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "Namnet har extra mellanslag i kanterna",
         "nickHiddenChars": "Namnet innehåller dolda tecken",
         "mentionSuggestions": "Omnämnandeförslag",
+        "mentionsCount": "Omnämnanden: {{count}}",
         "unreadMessages": "{{displayCount}} oläst meddelande",
         "unreadMessages_other": "{{displayCount}} olästa meddelanden"
     },
@@ -491,6 +496,7 @@
         "replyQuoteHiddenEncrypted": "Citat dolt: originalet var krypterat",
         "forwardMessage": "Vidarebefordra meddelande (kommer snart)",
         "moreReactions": "Fler reaktioner",
+        "reactions": "Reaktioner",
         "reactionOthers": "{{count}} andra",
         "moreOptions": "Fler alternativ",
         "reactWith": "Reagera med {{emoji}}",
@@ -532,6 +538,7 @@
         "copyLinkChoose": "Vilken länk vill du kopiera?",
         "openInBrowser": "Öppna i webbläsare",
         "saveImage": "Spara bild",
+        "mediaUnavailableOrUnsupported": "Den här filen kan inte spelas upp här: den kanske inte är tillgänglig eller har ett format som inte stöds",
         "videoFormatUnsupported": "Det här videoformatet kan inte spelas upp här",
         "videoUnavailable": "Videon är inte längre tillgänglig",
         "audioFormatUnsupported": "Det här ljudformatet kan inte spelas upp här",
@@ -646,6 +653,17 @@
         "yesterday": "Igår"
     },
     "settings": {
+    "nativeNotificationTone": "Aviseringsljud",
+    "nativeNotificationToneDescription": "Välj ljud för aviseringar i bakgrunden. Tyst behåller ljuden i appen.",
+    "nativeSoundDescription": "Spela upp ljud i appen och vid aviseringar i bakgrunden.",
+    "notificationTone_default": "Systemstandard",
+    "notificationTone_bell": "Klocka",
+    "notificationTone_chime": "Klockspel",
+    "notificationTone_pulse": "Puls",
+    "notificationTone_silent": "Tyst",
+    "oxNotificationPreview": "OpenPGP-förhandsvisningar i notiser",
+    "oxNotificationPreviewDescription": "Tillåt notistillägget att hämta och dekryptera meddelanden för det här kontot. Förhandsvisningar följer iOS-inställningarna och kan visas på låsskärmen om Alltid är valt.",
+    "oxNotificationPreviewFailed": "Det gick inte att aktivera förhandsvisningar. Kontrollera att OpenPGP och din sparade anslutning är tillgängliga.",
         "title": "Inställningar",
         "categories": {
             "profile": "Profil",
@@ -725,6 +743,7 @@
         "accentThemeDefault": "Temastandard",
         "fontSize": "Teckenstorlek",
         "fontSizeDescription": "Justera textstorleken i appen",
+        "fontSizeSystemDescription": "I förhållande till textstorleken som är inställd i iOS-inställningar",
         "decreaseFontSize": "Minska textstorlek",
         "increaseFontSize": "Öka textstorlek",
         "sound": "Spela upp aviseringsljud",
@@ -1518,5 +1537,12 @@
             "archiveUnsupported": "Servern stöder inte arkivsökning. Försök söka inom en konversation.",
             "serverFailed": "Serversökningen misslyckades"
         }
+    },
+    "notificationPreview": {
+        "activity": "Ny aktivitet",
+        "reaction": "{{nickname}} reagerade: {{text}}",
+        "edit": "{{nickname}} (redigerat): {{text}}",
+        "retraction": "{{nickname}} raderade ett meddelande",
+        "messages": "{{nickname}}: {{count}} nya meddelanden"
     }
 }

@@ -339,6 +339,7 @@
         "voiceRequestSent": "הבקשה לזכות דיבור נשלחה",
         "voiceRequests": "בקשות לזכות דיבור",
         "grantVoice": "הענקת קול",
+        "voiceApprovalUnanswered": "החדר לא העניק זכות דיבור. ייתכן שהאדם עזב את החדר או שכבר יש לו זכות דיבור.",
         "revokeVoice": "שלילת קול",
         "grantModerator": "הענקת הרשאת מנהל שיחה",
         "revokeModerator": "שלילת הרשאת מנהל שיחה",
@@ -390,6 +391,9 @@
         "whisperingTo": "לוחש בפרטיות ל-{{nick}}",
         "whisperThread": "פרטי עם {{nick}}",
         "whisperCounterpartGone": "{{nick}} כבר לא נמצא בחדר, אי אפשר להשיב",
+        "whisperAttachmentTitle": "לשלוח קובץ מצורף פרטי?",
+        "whisperAttachmentWarning": "ההודעה הפרטית זמנית, אך הקבצים נשארים בשרת ההעלאה בהתאם למדיניות השמירה שלו. הנמענים יכולים להוריד ולשמור עותקים.",
+        "whisperAttachmentRetention": "משך השמירה בשרת ההעלאה: {{duration}}. הנמענים יכולים להוריד ולשמור עותקים.",
         "whisperPlaceholder": "לחש ל-{{nick}}...",
         "ignoreUser": "התעלם בחדר זה",
         "stopIgnoring": "הפסק להתעלם",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "השם מכיל רווחים נוספים בקצוות",
         "nickHiddenChars": "השם מכיל תווים נסתרים",
         "mentionSuggestions": "הצעות אזכור",
+        "mentionsCount": "אזכורים: {{count}}",
         "unreadMessages": "הודעה אחת שלא נקראה",
         "unreadMessages_two": "2 הודעות שלא נקראו",
         "unreadMessages_other": "{{displayCount}} הודעות שלא נקראו"
@@ -492,6 +497,7 @@
         "replyQuoteHiddenEncrypted": "הציטוט הוסתר: המקור היה מוצפן",
         "forwardMessage": "העברת הודעה (בקרוב)",
         "moreReactions": "תגובות נוספות",
+        "reactions": "תגובות",
         "reactionOthers": "{{count}} אחרים",
         "moreOptions": "אפשרויות נוספות",
         "reactWith": "הגב עם {{emoji}}",
@@ -534,6 +540,7 @@
         "copyLinkChoose": "איזה קישור להעתיק?",
         "openInBrowser": "פתיחה בדפדפן",
         "saveImage": "שמירת תמונה",
+        "mediaUnavailableOrUnsupported": "לא ניתן לנגן את הקובץ הזה כאן: ייתכן שהוא אינו זמין או שהוא בפורמט שאינו נתמך",
         "videoFormatUnsupported": "לא ניתן להפעיל כאן את פורמט הווידאו הזה",
         "videoUnavailable": "הסרטון אינו זמין יותר",
         "audioFormatUnsupported": "לא ניתן להפעיל כאן את פורמט האודיו הזה",
@@ -648,6 +655,17 @@
         "yesterday": "אתמול"
     },
     "settings": {
+    "nativeNotificationTone": "צליל התראות",
+    "nativeNotificationToneDescription": "בחרו את הצליל להתראות ברקע. שקט אינו משנה את הצלילים ביישום.",
+    "nativeSoundDescription": "השמעת צלילים ביישום ועבור התראות ברקע.",
+    "notificationTone_default": "ברירת המחדל של המערכת",
+    "notificationTone_bell": "פעמון",
+    "notificationTone_chime": "צלצול",
+    "notificationTone_pulse": "פעימה",
+    "notificationTone_silent": "שקט",
+    "oxNotificationPreview": "תצוגות מקדימות של OpenPGP בהתראות",
+    "oxNotificationPreviewDescription": "לאפשר להרחבת ההתראות לאחזר ולפענח הודעות עבור חשבון זה. התצוגות המקדימות פועלות לפי הגדרות iOS ועשויות להופיע במסך הנעילה כאשר נבחרת האפשרות תמיד.",
+    "oxNotificationPreviewFailed": "לא ניתן להפעיל תצוגות מקדימות. יש לוודא ש־OpenPGP והחיבור השמור זמינים.",
         "title": "הגדרות",
         "categories": {
             "profile": "פרופיל",
@@ -727,6 +745,7 @@
         "accentThemeDefault": "ברירת מחדל של ערכת נושא",
         "fontSize": "גודל גופן",
         "fontSizeDescription": "התאם את גודל הטקסט באפליקציה",
+        "fontSizeSystemDescription": "ביחס לגודל הטקסט שהוגדר בהגדרות iOS",
         "decreaseFontSize": "הקטן גודל גופן",
         "increaseFontSize": "הגדל גודל גופן",
         "sound": "השמע צלילי התראה",
@@ -1520,5 +1539,12 @@
             "archiveUnsupported": "השרת אינו תומך בחיפוש בארכיון. נסו לחפש בתוך שיחה.",
             "serverFailed": "החיפוש בשרת נכשל"
         }
+    },
+    "notificationPreview": {
+        "activity": "פעילות חדשה",
+        "reaction": "{{nickname}} הגיב/ה: {{text}}",
+        "edit": "{{nickname}} (עריכה): {{text}}",
+        "retraction": "{{nickname}} מחק/ה הודעה",
+        "messages": "{{nickname}}: {{count}} הודעות חדשות"
     }
 }

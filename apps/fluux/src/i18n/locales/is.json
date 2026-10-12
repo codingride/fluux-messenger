@@ -339,6 +339,7 @@
         "voiceRequestSent": "Beiðni um orðið send",
         "voiceRequests": "Beiðnir um orðið",
         "grantVoice": "Veita rödd",
+        "voiceApprovalUnanswered": "Spjallrásin veitti ekki málfrelsi. Viðkomandi gæti hafa yfirgefið spjallrásina eða þegar haft málfrelsi.",
         "revokeVoice": "Afturkalla rödd",
         "grantModerator": "Veita umsjónarmann",
         "revokeModerator": "Afturkalla umsjónarmann",
@@ -390,6 +391,9 @@
         "whisperingTo": "Hvíslað í einrúmi til {{nick}}",
         "whisperThread": "Einka með {{nick}}",
         "whisperCounterpartGone": "{{nick}} er ekki lengur í herberginu, þú getur ekki svarað",
+        "whisperAttachmentTitle": "Senda einkaviðhengi?",
+        "whisperAttachmentWarning": "Einkaskilaboðin eru tímabundin, en skrár eru á upphleðsluþjóninum samkvæmt varðveislureglum hans. Viðtakendur geta sótt og geymt afrit.",
+        "whisperAttachmentRetention": "Varðveislutími á upphleðsluþjóni: {{duration}}. Viðtakendur geta sótt og geymt afrit.",
         "whisperPlaceholder": "Hvísla til {{nick}}...",
         "ignoreUser": "Hunsa í þessu herbergi",
         "stopIgnoring": "Hætta að hunsa",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "Nafnið er með auka bil á endunum",
         "nickHiddenChars": "Nafnið inniheldur falda stafi",
         "mentionSuggestions": "Tillögur að tilvísunum",
+        "mentionsCount": "Tilvísanir: {{count}}",
         "unreadMessages": "{{displayCount}} ólesið skilaboð",
         "unreadMessages_other": "{{displayCount}} ólesin skilaboð"
     },
@@ -491,6 +496,7 @@
         "replyQuoteHiddenEncrypted": "Tilvitnun falin: upprunalega skeytið var dulkóðað",
         "forwardMessage": "Áframsenda skilaboð (væntanlegt)",
         "moreReactions": "Fleiri viðbrögð",
+        "reactions": "Viðbrögð",
         "reactionOthers": "{{count}} aðrir",
         "moreOptions": "Fleiri valkostir",
         "reactWith": "Bregðast við með {{emoji}}",
@@ -532,6 +538,7 @@
         "copyLinkChoose": "Hvaða tengil á að afrita?",
         "openInBrowser": "Opna í vafra",
         "saveImage": "Vista mynd",
+        "mediaUnavailableOrUnsupported": "Ekki er hægt að spila þessa skrá hér: hún er hugsanlega ekki tiltæk eða á sniði sem ekki er stutt",
         "videoFormatUnsupported": "Ekki er hægt að spila þetta myndbandssnið hér",
         "videoUnavailable": "Myndband ekki lengur tiltækt",
         "audioFormatUnsupported": "Ekki er hægt að spila þetta hljóðsnið hér",
@@ -646,6 +653,17 @@
         "yesterday": "Í gær"
     },
     "settings": {
+    "nativeNotificationTone": "Tilkynningahljóð",
+    "nativeNotificationToneDescription": "Veldu hljóð fyrir tilkynningar í bakgrunni. Hljóðlaust breytir ekki hljóðum í forritinu.",
+    "nativeSoundDescription": "Spila hljóð í forritinu og fyrir tilkynningar í bakgrunni.",
+    "notificationTone_default": "Sjálfgefið kerfishljóð",
+    "notificationTone_bell": "Bjalla",
+    "notificationTone_chime": "Klukknaspil",
+    "notificationTone_pulse": "Púls",
+    "notificationTone_silent": "Hljóðlaust",
+    "oxNotificationPreview": "OpenPGP-forskoðun í tilkynningum",
+    "oxNotificationPreviewDescription": "Leyfa tilkynningaviðbótinni að sækja og afkóða skilaboð fyrir þennan reikning. Forskoðun fylgir iOS-stillingum og getur birst á lásskjánum ef Alltaf er valið.",
+    "oxNotificationPreviewFailed": "Ekki tókst að virkja forskoðun. Athugaðu að OpenPGP og vistuð tenging séu tiltæk.",
         "title": "Stillingar",
         "categories": {
             "profile": "Prófíll",
@@ -725,6 +743,7 @@
         "accentThemeDefault": "Sjálfgefið þema",
         "fontSize": "Leturstærð",
         "fontSizeDescription": "Stilla texastærð í appinu",
+        "fontSizeSystemDescription": "Miðað við textastærðina sem er stillt í stillingum iOS",
         "decreaseFontSize": "Minnka leturstærð",
         "increaseFontSize": "Stækka leturstærð",
         "sound": "Spila tilkynningahljóð",
@@ -1518,5 +1537,12 @@
             "archiveUnsupported": "Þjónninn styður ekki leit í skjalasafni. Prófaðu að leita innan samtals.",
             "serverFailed": "Leit á þjóninum mistókst"
         }
+    },
+    "notificationPreview": {
+        "activity": "Ný virkni",
+        "reaction": "{{nickname}} brást við: {{text}}",
+        "edit": "{{nickname}} (breytt): {{text}}",
+        "retraction": "{{nickname}} eyddi skilaboðum",
+        "messages": "{{nickname}}: {{count}} ný skilaboð"
     }
 }

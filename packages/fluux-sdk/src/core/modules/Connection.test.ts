@@ -2776,6 +2776,65 @@ describe('XMPPClient Connection', () => {
     })
   })
 
+  describe('whenSentAcknowledged', () => {
+    async function connectWithQueue(queue: unknown[]) {
+      const connectPromise = xmppClient.connect({
+        jid: 'user@example.com',
+        password: 'secret',
+        server: 'example.com',
+        skipDiscovery: true,
+      })
+      mockXmppClientInstance._emit('online')
+      await connectPromise
+      Object.assign(mockXmppClientInstance.streamManagement, { enabled: true, outbound_q: queue })
+    }
+    function track(promise: Promise<void>) {
+      const state = { done: false }
+      void promise.then(() => { state.done = true })
+      return state
+    }
+
+    it('resolves at once without a session', async () => {
+      const state = track(xmppClient.whenSentAcknowledged())
+      await vi.advanceTimersByTimeAsync(0)
+      expect(state.done).toBe(true)
+    })
+
+    it('resolves at once when every sent stanza is acknowledged', async () => {
+      await connectWithQueue([])
+      const state = track(xmppClient.whenSentAcknowledged())
+      await vi.advanceTimersByTimeAsync(0)
+      expect(state.done).toBe(true)
+    })
+
+    it('waits for the acknowledgement of the last sent stanza', async () => {
+      const queue = [{ stanza: 'first' }, { stanza: 'second' }]
+      await connectWithQueue(queue)
+      const state = track(xmppClient.whenSentAcknowledged())
+
+      queue.shift()
+      mockXmppClientInstance._emitSM('ack', 'first')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(state.done).toBe(false)
+
+      queue.shift()
+      mockXmppClientInstance._emitSM('ack', 'second')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(state.done).toBe(true)
+    })
+
+    it('stops waiting when the session ends', async () => {
+      await connectWithQueue([{ stanza: 'pending' }])
+      const state = track(xmppClient.whenSentAcknowledged())
+      await vi.advanceTimersByTimeAsync(0)
+      expect(state.done).toBe(false)
+
+      mockXmppClientInstance._emit('disconnect', { clean: false })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(state.done).toBe(true)
+    })
+  })
+
   describe('getStreamManagementState caching', () => {
     it('should return null when no SM state exists', () => {
       // No connection, no cache
@@ -4031,6 +4090,53 @@ describe('XMPPClient Connection', () => {
       const featuresEl3 = makeFeaturesWithSm()
       elementHandler(featuresEl3)
       expect((featuresEl3 as any).children.find((c: any) => c.name === 'sm')).toBeUndefined()
+    })
+  })
+
+  describe('client state indication (XEP-0352)', () => {
+    async function connectWith(featureChildren: Array<{ name: string; attrs: Record<string, string> }>) {
+      const connectPromise = xmppClient.connect({
+        jid: 'user@example.com',
+        password: 'secret',
+        server: 'example.com',
+        skipDiscovery: true,
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      const prependCall = mockXmppClientInstance.prependListener.mock.calls.find(([event]) => event === 'element')
+      const elementHandler = prependCall?.[1] as (el: unknown) => void
+      elementHandler(createMockElement('features', { xmlns: 'http://etherx.jabber.org/streams' }, featureChildren))
+      mockXmppClientInstance._emit('online')
+      await connectPromise
+    }
+
+    const csiSends = () =>
+      mockXmppClientInstance.send.mock.calls
+        .map(([el]) => el as { name: string; attrs: Record<string, string> })
+        .filter((el) => el.attrs?.xmlns === 'urn:xmpp:csi:0')
+        .map((el) => el.name)
+
+    it('sends the client state once the server advertises CSI', async () => {
+      await connectWith([{ name: 'csi', attrs: { xmlns: 'urn:xmpp:csi:0' } }])
+
+      xmppClient.setClientState('inactive')
+      xmppClient.setClientState('active')
+
+      expect(csiSends()).toEqual(['inactive', 'active'])
+    })
+
+    it('sends an inactive state set before connecting when the session starts', async () => {
+      xmppClient.setClientState('inactive')
+      await connectWith([{ name: 'csi', attrs: { xmlns: 'urn:xmpp:csi:0' } }])
+
+      expect(csiSends()).toEqual(['inactive'])
+    })
+
+    it('sends nothing to a server without CSI', async () => {
+      await connectWith([{ name: 'bind', attrs: { xmlns: 'urn:ietf:params:xml:ns:xmpp-bind' } }])
+
+      xmppClient.setClientState('inactive')
+
+      expect(csiSends()).toEqual([])
     })
   })
 

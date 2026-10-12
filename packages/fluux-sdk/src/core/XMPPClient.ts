@@ -1,3 +1,4 @@
+import { AvatarStateOwner, captureOccupantAvatar, registerAvatarStateOwner } from '../utils/avatarState'
 import { Client, Element } from '@xmpp/client'
 import { createActor, type Subscription, type Snapshot } from 'xstate'
 import type { EventHook } from './EventHook'
@@ -15,6 +16,7 @@ import type {
   PrivacyOptions,
   PresenceOptions,
   SystemState,
+  ClientState,
 } from './types'
 import {
   presenceMachine,
@@ -395,6 +397,7 @@ export class XMPPClient {
   public connectionActor!: ConnectionActor
 
   private stores: StoreBindings | null = null
+  private storeBindings: ReturnType<typeof createStoreBindings> | null = null
   private eventHandlers: Map<keyof ClientEvents, Set<ClientEvents[keyof ClientEvents]>> = new Map()
 
   /**
@@ -403,6 +406,7 @@ export class XMPPClient {
    */
   private sdkEventHandlers: Map<keyof SDKEvents, Set<SDKEventHandler<keyof SDKEvents>>> = new Map()
 
+  private readonly avatarState = new AvatarStateOwner(() => this.currentJid ? getBareJid(this.currentJid) : null)
   private pendingContactAvatarChecks: Set<string> = new Set()
 
 
@@ -478,6 +482,7 @@ export class XMPPClient {
    * ```
    */
   constructor(config: XMPPClientConfig = {}) {
+    registerAvatarStateOwner(this, this.avatarState)
     // Legacy webviews lack crypto.randomUUID, which @xmpp/client calls when
     // generating ids. Installed here (not as an import-time side effect) so
     // it survives tree-shaking and covers the /core entry point too.
@@ -610,6 +615,7 @@ export class XMPPClient {
       console: consoleStore.getState(),
       ignore: ignoreStore.getState(),
     }))
+    this.storeBindings = unsubscribeStoreBindings
     this.cleanupFunctions.push(unsubscribeStoreBindings)
 
     // Set up store-based side effects (activeConversation -> load cache, MAM fetch)
@@ -694,9 +700,12 @@ export class XMPPClient {
 
     const moduleDeps = {
       stores: this.stores,
+      flushRoomOccupants: (roomJid?: string) => this.storeBindings?.flushOccupants(roomJid),
+      waitForRoomOccupants: (roomJid: string) => this.storeBindings?.waitForOccupants(roomJid) ?? Promise.resolve(),
       presence: this.presenceReader,
       sendStanza: (stanza: Element) => this.sendStanza(stanza),
       sendIQ: (iq: Element, timeoutMs?: number) => this.sendIQ(iq, timeoutMs),
+      avatarState: this.avatarState,
       getCurrentJid: () => this.currentJid,
       emit: <K extends keyof ClientEvents>(event: K, ...args: Parameters<ClientEvents[K]>) => this.emit(event, ...args),
       emitSDK: <K extends keyof SDKEvents>(event: K, payload: SDKEvents[K]) => this.emitSDK(event, payload),
@@ -767,6 +776,7 @@ export class XMPPClient {
 
     // Set up disconnect handler to transition presence machine
     this.connection.setDisconnectHandler(() => {
+      this.avatarState.cancel()
       this.presenceActor.send({ type: 'DISCONNECT' })
       // Tear down the E2EEManager when the user disconnects — the manager
       // is tied to a logged-in identity. If they reconnect (same JID or
@@ -819,10 +829,12 @@ export class XMPPClient {
       // Listen for MUC occupant avatar updates (XEP-0398)
       // Emitted by MUC module when an occupant's presence contains vcard-temp:x:update
       this.onInternal('occupantAvatarUpdate', async (roomJid, nick, hash, realJid, occupantId, invalidationJid) => {
-        const removalVersion = this.profile.getContactAvatarRemovalVersion(realJid ?? `${roomJid}/${nick}`)
         const stateJid = this.profile.getOccupantAvatarStateKey(roomJid, nick, realJid, occupantId)
-        await this.profile.clearVCardNegativeCache(`${roomJid}/${nick}`, invalidationJid ?? realJid, hash, stateJid)
-        if (removalVersion !== this.profile.getContactAvatarRemovalVersion(realJid ?? `${roomJid}/${nick}`)) return
+        const invalidation = this.profile.clearVCardNegativeCache(`${roomJid}/${nick}`, invalidationJid ?? realJid, hash, stateJid)
+        const version = captureOccupantAvatar(this.avatarState, roomJid, nick, hash, realJid, occupantId)
+        await invalidation
+        await this.storeBindings?.waitForOccupants(roomJid)
+        if (!version.current()) return
         // Only fetch if the avatar hash changed to avoid re-downloading on every presence
         const room = this.stores?.room.getRoom(roomJid)
         const occupant = room?.occupants.get(nick)
@@ -842,9 +854,10 @@ export class XMPPClient {
       // Emitted by PubSub module for real events or Roster for vcard-temp:x:update
       this.onInternal('avatarMetadataUpdate', async (jid, hash, ownPresence) => {
         if (hash) {
-          const removalVersion = this.profile.getContactAvatarRemovalVersion(jid)
-          await this.profile.clearVCardNegativeCache(getBareJid(jid), undefined, hash)
-          if (ownPresence || removalVersion !== this.profile.getContactAvatarRemovalVersion(jid)) return
+          const invalidation = this.profile.clearVCardNegativeCache(getBareJid(jid), undefined, hash)
+          const version = this.avatarState.capture(getBareJid(jid))
+          await invalidation
+          if (ownPresence || !version.current()) return
           // Skip if contact already has this avatar hash with a loaded avatar
           const contact = this.stores?.roster.getContact(jid)
           if (contact?.avatarHash === hash && contact?.avatar) {
@@ -948,6 +961,8 @@ export class XMPPClient {
    * This is the new event system designed for event-based decoupling.
    * Events use object payloads instead of positional arguments for better
    * extensibility and type safety.
+   * Synchronous handler exceptions are logged, and remaining subscribers still
+   * receive the event.
    *
    * @param event - The event name (e.g., 'chat:message', 'room:joined')
    * @param handler - Callback receiving the event payload object
@@ -990,7 +1005,13 @@ export class XMPPClient {
    */
   emitSDK<K extends keyof SDKEvents>(event: K, payload: SDKEvents[K]): void {
     this.sdkEventHandlers.get(event)?.forEach((handler) => {
-      ;(handler as SDKEventHandler<K>)(payload)
+      try {
+        ;(handler as SDKEventHandler<K>)(payload)
+      } catch (error) {
+        // Parser element callbacks run before its cursor is restored. Letting a
+        // subscriber throw here corrupts the stream and skips later subscribers.
+        console.error(`[SDK] Subscriber failed for ${event}:`, error)
+      }
     })
   }
 
@@ -1097,6 +1118,7 @@ export class XMPPClient {
    */
   async connect(options: ConnectOptions): Promise<void> {
     const scopedJid = getBareJid(options.jid)
+    rosterStore.getState().switchAccount(scopedJid)
     const previousScope = getStorageScopeJid()
     if (previousScope !== scopedJid) {
       setStorageScopeJid(scopedJid)
@@ -1296,6 +1318,43 @@ export class XMPPClient {
   }
 
   /**
+   * Tell the server whether the user is looking at the client (XEP-0352
+   * Client State Indication). While inactive, the server may hold back
+   * presence, chat states and PEP updates; messages still arrive at once.
+   *
+   * The state is kept across reconnects and sent once the server advertises
+   * support, so it can be set at any time, even before connecting.
+   *
+   * @example
+   * ```typescript
+   * document.addEventListener('visibilitychange', () => {
+   *   client.setClientState(document.hidden ? 'inactive' : 'active')
+   * })
+   * ```
+   */
+  setClientState(state: ClientState): void {
+    this.connection.setClientState(state)
+  }
+
+  /**
+   * Resolves once the server has acknowledged every stanza sent so far
+   * (XEP-0198 Stream Management), or at once when nothing is waiting for an
+   * acknowledgement. It also resolves when the session ends.
+   *
+   * A client the OS is about to suspend can wait on it to know its last
+   * messages reached the server.
+   *
+   * @example
+   * ```typescript
+   * await client.messages.sendMessage('user@example.com', 'Hello!')
+   * await client.whenSentAcknowledged()
+   * ```
+   */
+  whenSentAcknowledged(): Promise<void> {
+    return this.connection.whenSentAcknowledged()
+  }
+
+  /**
    * Clear persisted presence state (called on explicit logout).
    *
    * @example
@@ -1327,6 +1386,7 @@ export class XMPPClient {
    * ```
    */
   destroy(): void {
+    this.avatarState.cancel()
     // Unload all event hooks
     for (const hook of this.eventHooks.values()) {
       hook.onunload()
@@ -1350,7 +1410,7 @@ export class XMPPClient {
   }
 
   /**
-   * Flush any pending debounced snapshot writes to storage.
+   * Commit queued occupant updates, then flush debounced snapshot writes to storage.
    *
    * Call this from `beforeunload`/`pagehide` handlers so the latest store
    * state (roster, rooms, profile) survives page reload. SM counters still
@@ -1358,6 +1418,7 @@ export class XMPPClient {
    * reliability during unload.
    */
   async flushStateSnapshot(): Promise<void> {
+    this.storeBindings?.flushOccupants()
     if (this.stateSnapshot) {
       await this.stateSnapshot.flush()
     }

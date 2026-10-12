@@ -340,6 +340,7 @@
         "voiceRequestSent": "Balss tiesību pieprasījums nosūtīts",
         "voiceRequests": "Balss tiesību pieprasījumi",
         "grantVoice": "Piešķirt balsi",
+        "voiceApprovalUnanswered": "Istaba nepiešķīra balsstiesības. Iespējams, persona ir pametusi istabu vai tai jau ir balsstiesības.",
         "revokeVoice": "Atņemt balsi",
         "grantModerator": "Piešķirt moderatoru",
         "revokeModerator": "Atņemt moderatoru",
@@ -391,6 +392,9 @@
         "whisperingTo": "Čukstat privāti {{nick}}",
         "whisperThread": "Privāti ar {{nick}}",
         "whisperCounterpartGone": "{{nick}} vairs nav istabā, jūs nevarat atbildēt",
+        "whisperAttachmentTitle": "Nosūtīt privātu pielikumu?",
+        "whisperAttachmentWarning": "Privātais ziņojums ir īslaicīgs, bet faili paliek augšupielādes serverī saskaņā ar tā glabāšanas politiku. Saņēmēji var lejupielādēt un saglabāt kopijas.",
+        "whisperAttachmentRetention": "Glabāšana augšupielādes serverī: {{duration}}. Saņēmēji var lejupielādēt un saglabāt kopijas.",
         "whisperPlaceholder": "Čukstēt {{nick}}...",
         "ignoreUser": "Ignorēt šajā istabā",
         "stopIgnoring": "Pārtraukt ignorēšanu",
@@ -459,6 +463,7 @@
         "nickHiddenChars": "Vārds satur slēptas rakstzīmes",
         "mentionSuggestions": "Pieminējumu ieteikumi",
         "unreadMessages_zero": "{{displayCount}} neizlasītu ziņojumu",
+        "mentionsCount": "Pieminējumi: {{count}}",
         "unreadMessages": "{{displayCount}} neizlasīts ziņojums",
         "unreadMessages_other": "{{displayCount}} neizlasīti ziņojumi"
     },
@@ -493,6 +498,7 @@
         "replyQuoteHiddenEncrypted": "Citāts paslēpts: oriģināls bija šifrēts",
         "forwardMessage": "Pārsūtīt ziņojumu (drīzumā)",
         "moreReactions": "Vairāk reakciju",
+        "reactions": "Reakcijas",
         "reactionOthers": "{{count}} citi",
         "moreOptions": "Vairāk opciju",
         "reactWith": "Reaģēt ar {{emoji}}",
@@ -535,6 +541,7 @@
         "copyLinkChoose": "Kuru saiti kopēt?",
         "openInBrowser": "Atvērt pārlūkā",
         "saveImage": "Saglabāt attēlu",
+        "mediaUnavailableOrUnsupported": "Šo failu šeit nevar atskaņot: tas var nebūt pieejams vai būt neatbalstītā formātā",
         "videoFormatUnsupported": "Šo video formātu šeit nevar atskaņot",
         "videoUnavailable": "Video vairs nav pieejams",
         "audioFormatUnsupported": "Šo audio formātu šeit nevar atskaņot",
@@ -649,6 +656,17 @@
         "yesterday": "Vakar"
     },
     "settings": {
+    "nativeNotificationTone": "Paziņojumu skaņa",
+    "nativeNotificationToneDescription": "Izvēlieties fona paziņojumu skaņu. Klusums saglabā lietotnes skaņas.",
+    "nativeSoundDescription": "Atskaņot skaņas lietotnē un fona paziņojumiem.",
+    "notificationTone_default": "Sistēmas noklusējums",
+    "notificationTone_bell": "Zvans",
+    "notificationTone_chime": "Zvanu melodija",
+    "notificationTone_pulse": "Pulss",
+    "notificationTone_silent": "Klusums",
+    "oxNotificationPreview": "OpenPGP priekšskatījumi paziņojumos",
+    "oxNotificationPreviewDescription": "Atļaut paziņojumu paplašinājumam saņemt un atšifrēt šī konta ziņojumus. Priekšskatījumi ievēro iOS iestatījumus un var parādīties bloķēšanas ekrānā, ja atlasīts Vienmēr.",
+    "oxNotificationPreviewFailed": "Neizdevās ieslēgt priekšskatījumus. Pārbaudiet, vai OpenPGP un saglabātais savienojums ir pieejami.",
         "title": "Iestatījumi",
         "categories": {
             "profile": "Profils",
@@ -728,6 +746,7 @@
         "accentThemeDefault": "Tēmas noklusējums",
         "fontSize": "Fonta lielums",
         "fontSizeDescription": "Pielāgojiet teksta lielumu lietotnē",
+        "fontSizeSystemDescription": "Attiecībā pret teksta lielumu, kas iestatīts iOS iestatījumos",
         "decreaseFontSize": "Samazināt fonta lielumu",
         "increaseFontSize": "Palielināt fonta lielumu",
         "sound": "Atskaņot paziņojumu skaņas",
@@ -1521,5 +1540,12 @@
             "archiveUnsupported": "Serveris neatbalsta arhīva meklēšanu. Mēģiniet meklēt sarunas iekšienē.",
             "serverFailed": "Meklēšana serverī neizdevās"
         }
+    },
+    "notificationPreview": {
+        "activity": "Jauna aktivitāte",
+        "reaction": "{{nickname}} reaģēja: {{text}}",
+        "edit": "{{nickname}} (rediģēts): {{text}}",
+        "retraction": "{{nickname}} izdzēsa ziņojumu",
+        "messages": "{{nickname}}: {{count}} jauni ziņojumi"
     }
 }

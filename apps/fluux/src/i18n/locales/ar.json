@@ -339,6 +339,7 @@
         "voiceRequestSent": "تم إرسال طلب الإذن بالكلام",
         "voiceRequests": "طلبات الإذن بالكلام",
         "grantVoice": "منح صوت",
+        "voiceApprovalUnanswered": "لم تمنح الغرفة حق الكلام. ربما غادر الشخص الغرفة أو لديه حق الكلام بالفعل.",
         "revokeVoice": "سحب الصوت",
         "grantModerator": "منح دور المشرف",
         "revokeModerator": "سحب دور المشرف",
@@ -390,6 +391,9 @@
         "whisperingTo": "تهمس بشكل خاص إلى {{nick}}",
         "whisperThread": "خاص مع {{nick}}",
         "whisperCounterpartGone": "{{nick}} لم يعد موجودًا في الغرفة, لا يمكنك الرد",
+        "whisperAttachmentTitle": "إرسال مرفق خاص؟",
+        "whisperAttachmentWarning": "الرسالة الخاصة مؤقتة، لكن الملفات تبقى على خادم الرفع وفقًا لسياسة الاحتفاظ به. يمكن للمستلمين تنزيل نسخ والاحتفاظ بها.",
+        "whisperAttachmentRetention": "مدة الاحتفاظ على خادم الرفع: {{duration}}. يمكن للمستلمين تنزيل نسخ والاحتفاظ بها.",
         "whisperPlaceholder": "اهمس إلى {{nick}}...",
         "ignoreUser": "تجاهل في هذه الغرفة",
         "stopIgnoring": "إلغاء التجاهل",
@@ -458,6 +462,7 @@
         "nickHiddenChars": "يحتوي الاسم على أحرف مخفية",
         "mentionSuggestions": "اقتراحات الإشارات",
         "unreadMessages_zero": "لا رسائل غير مقروءة",
+        "mentionsCount": "الإشارات: {{count}}",
         "unreadMessages": "رسالة واحدة غير مقروءة",
         "unreadMessages_two": "رسالتان غير مقروءتين",
         "unreadMessages_few": "{{displayCount}} رسائل غير مقروءة",
@@ -495,6 +500,7 @@
         "replyQuoteHiddenEncrypted": "تم إخفاء الاقتباس: كانت الرسالة الأصلية مُشفَّرة",
         "forwardMessage": "إعادة توجيه الرسالة (قريبًا)",
         "moreReactions": "المزيد من التفاعلات",
+        "reactions": "التفاعلات",
         "reactionOthers": "{{count}} آخرين",
         "moreOptions": "المزيد من الخيارات",
         "reactWith": "التفاعل بـ {{emoji}}",
@@ -540,6 +546,7 @@
         "copyLinkChoose": "نسخ أي رابط؟",
         "openInBrowser": "فتح في المتصفح",
         "saveImage": "حفظ الصورة",
+        "mediaUnavailableOrUnsupported": "لا يمكن تشغيل هذا الملف هنا: قد يكون غير متاح أو بتنسيق غير مدعوم",
         "videoFormatUnsupported": "لا يمكن تشغيل تنسيق الفيديو هذا هنا",
         "videoUnavailable": "الفيديو لم يعد متاحًا",
         "audioFormatUnsupported": "لا يمكن تشغيل تنسيق الصوت هذا هنا",
@@ -654,6 +661,17 @@
         "yesterday": "أمس"
     },
     "settings": {
+    "nativeNotificationTone": "نغمة الإشعارات",
+    "nativeNotificationToneDescription": "اختر صوت الإشعارات في الخلفية. يحافظ الوضع الصامت على الأصوات داخل التطبيق.",
+    "nativeSoundDescription": "تشغيل الأصوات داخل التطبيق وللإشعارات في الخلفية.",
+    "notificationTone_default": "الافتراضي للنظام",
+    "notificationTone_bell": "جرس",
+    "notificationTone_chime": "رنين",
+    "notificationTone_pulse": "نبض",
+    "notificationTone_silent": "صامت",
+    "oxNotificationPreview": "معاينات OpenPGP في الإشعارات",
+    "oxNotificationPreviewDescription": "اسمح لامتداد الإشعارات بجلب رسائل هذا الحساب وفك تشفيرها. تتبع المعاينات إعدادات iOS وقد تظهر على شاشة القفل عند اختيار «دائمًا».",
+    "oxNotificationPreviewFailed": "تعذّر تفعيل المعاينات. تحقق من توفر OpenPGP والاتصال المحفوظ.",
         "title": "الإعدادات",
         "categories": {
             "profile": "الملف الشخصي",
@@ -733,6 +751,7 @@
         "accentThemeDefault": "الافتراضي للسمة",
         "fontSize": "حجم الخط",
         "fontSizeDescription": "ضبط حجم النص عبر التطبيق",
+        "fontSizeSystemDescription": "نسبةً إلى حجم النص المحدد في إعدادات iOS",
         "decreaseFontSize": "تصغير حجم الخط",
         "increaseFontSize": "تكبير حجم الخط",
         "sound": "تشغيل أصوات الإشعارات",
@@ -1526,5 +1545,12 @@
             "archiveUnsupported": "الخادم لا يدعم البحث في الأرشيف. جرّب البحث داخل محادثة.",
             "serverFailed": "فشل البحث في الخادم"
         }
+    },
+    "notificationPreview": {
+        "activity": "نشاط جديد",
+        "reaction": "تفاعل {{nickname}}: {{text}}",
+        "edit": "{{nickname}} (تعديل): {{text}}",
+        "retraction": "حذف {{nickname}} رسالة",
+        "messages": "{{nickname}}: {{count}} رسائل جديدة"
     }
 }

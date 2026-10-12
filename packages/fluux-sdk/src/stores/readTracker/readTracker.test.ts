@@ -8,6 +8,7 @@ import {
   type ReadTrackerStorage,
 } from './index'
 import { connectionStore } from '../connectionStore'
+import { subscribeLocalReads } from '../localReadEvents'
 import { transientCounts, _clearAllTransientForTesting } from '../shared/transientUnread'
 
 import { makeReadPointer } from '../shared/readPointer'
@@ -201,6 +202,41 @@ describe.each<ReadTrackerKind>(['chat', 'room'])('read tracker (%s)', (kind) => 
       const key = tracker.scopeKey(ENTITY)
       reportViewport(key, beginViewportGeneration(key), evidence)
     }
+
+    it('reports committed local reads without importing remote MDS positions', () => {
+      connectionStore.getState().setJid(ALICE + '/synthetic')
+      const { memory, storage } = memoryStorage()
+      const tracker = makeTracker(storage)
+      const received = vi.fn()
+      const stop = subscribeLocalReads(received)
+      try {
+        tracker.applyRemoteDisplayed(ENTITY, 's1')
+        expect(received).not.toHaveBeenCalled()
+        reportAtEdge(tracker)
+        connectionStore.getState().setWindowVisible(false)
+        tracker.advance(ENTITY, { id: 'm2' })
+        expect(received).not.toHaveBeenCalled()
+        connectionStore.getState().setWindowVisible(true)
+        tracker.advance(ENTITY, { id: 'm2' })
+        expect(received).toHaveBeenLastCalledWith({ account: ALICE, kind, conversationId: ENTITY, pointer: memory.view.readPointer })
+        tracker.markReadToNewest(ENTITY)
+        expect(received).toHaveBeenCalledTimes(2)
+        expect(received.mock.calls[1][0].pointer.identity.messageId).toBe('m3')
+        tracker.markReadToNewest(ENTITY)
+        expect(received).toHaveBeenCalledTimes(2)
+      } finally { stop() }
+    })
+    it('reports an explicitly seen older row without importing the remote position ahead of it', () => {
+      connectionStore.getState().setJid(ALICE + '/synthetic')
+      const { storage } = memoryStorage({ readPointer: makeReadPointer(messages[3], kind) })
+      const tracker = makeTracker(storage)
+      const received = vi.fn()
+      const stop = subscribeLocalReads(received)
+      try {
+        tracker.advance(ENTITY, { id: 'm1' })
+        expect(received).toHaveBeenCalledWith({ account: ALICE, kind, conversationId: ENTITY, pointer: makeReadPointer(messages[1], kind), messageOnly: true })
+      } finally { stop() }
+    })
 
     it('ignores what is painted while the window is hidden', () => {
       const { memory, storage } = memoryStorage()
@@ -417,6 +453,106 @@ describe.each<ReadTrackerKind>(['chat', 'room'])('read tracker (%s)', (kind) => 
 
         await vi.waitFor(() => expect(memory.view.readPointer?.identity.messageId).toBe('m4'))
         expect(memory.view.pendingRemoteMarker).toBeUndefined()
+      })
+
+      it('looks a re-delivered stash up in the cache again', async () => {
+        const later: NotificationMessage = { ...messages[3], id: 'm4', stanzaId: 's4', timestamp: new Date(1004) }
+        stashedRows = [later]
+        const { memory, storage } = memoryStorage({ isActive: false, pendingRemoteMarker: 's4' })
+        const tracker = makeTracker(storage)
+
+        tracker.applyRemoteDisplayed(ENTITY, 's4')
+
+        await vi.waitFor(() => expect(memory.view.readPointer?.identity.messageId).toBe('m4'))
+        expect(memory.view.pendingRemoteMarker).toBeUndefined()
+      })
+
+      it('places a re-delivered stash on an own row with no displayable body', async () => {
+        const own: NotificationMessage = { ...messages[3], id: 'm4', stanzaId: 's4', body: '', isOutgoing: true, timestamp: new Date(1004) }
+        stashedRows = [own]
+        const { memory, storage } = memoryStorage({ isActive: false, pendingRemoteMarker: 's4' })
+        const tracker = makeTracker(storage)
+
+        tracker.applyRemoteDisplayed(ENTITY, 's4')
+
+        await vi.waitFor(() => expect(memory.view.pendingRemoteMarker).toBeUndefined())
+        expect(memory.view.readPointer?.identity.messageId).toBe('m4')
+      })
+
+      it('resolves the stash from the cache on request and reports whether it is still pending', async () => {
+        const { memory, storage } = memoryStorage({ isActive: false, pendingRemoteMarker: 's4' })
+        const tracker = makeTracker(storage)
+
+        await tracker.resolvePendingFromCache(ENTITY)
+        expect(memory.view.pendingRemoteMarker).toBe('s4')
+
+        stashedRows = [{ ...messages[3], id: 'm4', stanzaId: 's4', timestamp: new Date(1004) }]
+        await tracker.resolvePendingFromCache(ENTITY)
+        expect(memory.view.pendingRemoteMarker).toBeUndefined()
+        expect(memory.view.readPointer?.identity.messageId).toBe('m4')
+      })
+
+      it('does not look the cache up again while a lookup for the same stash is in flight', async () => {
+        let lookups = 0
+        let release!: () => void
+        const gate = new Promise<void>((resolve) => { release = resolve })
+        const { storage } = memoryStorage({ isActive: false, pendingRemoteMarker: 's4' })
+        const tracker = createReadTracker(kind, {
+          storage,
+          recount: () => {},
+          loadStashedMarkerRows: async () => { lookups++; await gate; return null },
+          loadPublishCandidates: async () => [],
+          historyCaughtUp: () => true,
+          coverageRecord: () => undefined,
+          resolveCoverageBottom: async () => 'missing',
+          invalidateCoverage: () => {},
+          countUnreadFromArchive: async () => null,
+          captureCacheRead: () => () => true,
+          archiveReadyForCounting: () => true,
+        })
+
+        tracker.applyRemoteDisplayed(ENTITY, 's4')
+        tracker.applyRemoteDisplayed(ENTITY, 's4')
+        const requested = tracker.resolvePendingFromCache(ENTITY)
+        release()
+        await requested
+        expect(lookups).toBe(1)
+      })
+
+      it('places a stash past a floor whose own row the cache does not hold', async () => {
+        const later: NotificationMessage = { ...messages[3], id: 'm4', stanzaId: 's4', timestamp: new Date(1004) }
+        stashedRows = [later]
+        const floor = { order: { role: 'floor' as const, timestamp: 1002 }, identity: { state: 'local' as const, messageId: 'not-cached' } }
+        const { memory, storage } = memoryStorage({ isActive: false, readPointer: floor, pendingRemoteMarker: 's4' })
+        const tracker = makeTracker(storage)
+
+        tracker.applyRemoteDisplayed(ENTITY, 's4')
+
+        await vi.waitFor(() => expect(memory.view.pendingRemoteMarker).toBeUndefined())
+        expect(memory.view.readPointer).toMatchObject({ order: { role: 'exact', timestamp: 1004 }, identity: { messageId: 'm4' } })
+      })
+
+      it('keeps a stash at or before such a floor pending', async () => {
+        stashedRows = [{ ...messages[3], id: 'm4', stanzaId: 's4', timestamp: new Date(1004) }]
+        const floor = { order: { role: 'floor' as const, timestamp: 1004 }, identity: { state: 'local' as const, messageId: 'not-cached' } }
+        const { memory, storage } = memoryStorage({ isActive: false, readPointer: floor, pendingRemoteMarker: 's4' })
+        const tracker = makeTracker(storage)
+
+        await tracker.resolvePendingFromCache(ENTITY)
+
+        expect(memory.view.pendingRemoteMarker).toBe('s4')
+        expect(memory.view.readPointer).toBe(floor)
+      })
+
+      it('does not order a resident slice against a floor whose row is merely not resident', () => {
+        const floor = { order: { role: 'floor' as const, timestamp: 1000 }, identity: { state: 'local' as const, messageId: 'not-resident' } }
+        const { memory, storage } = memoryStorage({ isActive: false, readPointer: floor })
+        const tracker = makeTracker(storage)
+
+        tracker.applyRemoteDisplayed(ENTITY, 's2')
+
+        expect(memory.view.pendingRemoteMarker).toBe('s2')
+        expect(memory.view.readPointer).toBe(floor)
       })
 
       it('releases a stash once the marker turns out to be behind the pointer', () => {

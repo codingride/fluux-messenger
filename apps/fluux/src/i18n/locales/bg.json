@@ -339,6 +339,7 @@
         "voiceRequestSent": "Заявката за глас е изпратена",
         "voiceRequests": "Заявки за глас",
         "grantVoice": "Дай глас",
+        "voiceApprovalUnanswered": "Стаята не предостави право на глас. Възможно е човекът да е напуснал стаята или вече да има право на глас.",
         "revokeVoice": "Отнеми глас",
         "grantModerator": "Направи модератор",
         "revokeModerator": "Отнеми модератор",
@@ -390,6 +391,9 @@
         "whisperingTo": "Шепнете лично на {{nick}}",
         "whisperThread": "Лично с {{nick}}",
         "whisperCounterpartGone": "{{nick}} вече не е в стаята, не можете да отговорите",
+        "whisperAttachmentTitle": "Изпращане на личен прикачен файл?",
+        "whisperAttachmentWarning": "Личното съобщение е временно, но файловете остават на сървъра за качване според неговата политика за съхранение. Получателите могат да изтеглят и запазят копия.",
+        "whisperAttachmentRetention": "Съхранение на сървъра за качване: {{duration}}. Получателите могат да изтеглят и запазят копия.",
         "whisperPlaceholder": "Шепнете на {{nick}}...",
         "ignoreUser": "Игнориране в тази стая",
         "stopIgnoring": "Спиране на игнорирането",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "Името съдържа излишни интервали в краищата",
         "nickHiddenChars": "Името съдържа скрити знаци",
         "mentionSuggestions": "Предложения за споменавания",
+        "mentionsCount": "Споменавания: {{count}}",
         "unreadMessages": "{{displayCount}} непрочетено съобщение",
         "unreadMessages_other": "{{displayCount}} непрочетени съобщения"
     },
@@ -491,6 +496,7 @@
         "replyQuoteHiddenEncrypted": "Цитатът е скрит: оригиналът беше шифрован",
         "forwardMessage": "Препрати съобщение (очаквайте скоро)",
         "moreReactions": "Още реакции",
+        "reactions": "Реакции",
         "reactionOthers": "{{count}} други",
         "moreOptions": "Още опции",
         "reactWith": "Реагирай с {{emoji}}",
@@ -532,6 +538,7 @@
         "copyLinkChoose": "Коя връзка да се копира?",
         "openInBrowser": "Отваряне в браузъра",
         "saveImage": "Запазване на изображението",
+        "mediaUnavailableOrUnsupported": "Този файл не може да се възпроизведе тук: може да е недостъпен или в неподдържан формат",
         "videoFormatUnsupported": "Този видеоформат не може да се възпроизведе тук",
         "videoUnavailable": "Видеото вече не е налично",
         "audioFormatUnsupported": "Този аудиоформат не може да се възпроизведе тук",
@@ -646,6 +653,17 @@
         "yesterday": "Вчера"
     },
     "settings": {
+    "nativeNotificationTone": "Звук на известията",
+    "nativeNotificationToneDescription": "Изберете звук за известията във фонов режим. Без звук запазва звуците в приложението.",
+    "nativeSoundDescription": "Възпроизвеждане на звуци в приложението и за известията във фонов режим.",
+    "notificationTone_default": "Системен звук",
+    "notificationTone_bell": "Камбанка",
+    "notificationTone_chime": "Камбанен звън",
+    "notificationTone_pulse": "Пулс",
+    "notificationTone_silent": "Без звук",
+    "oxNotificationPreview": "OpenPGP прегледи в известията",
+    "oxNotificationPreviewDescription": "Разрешете на разширението за известия да изтегля и дешифрира съобщенията на този акаунт. Прегледите следват настройките на iOS и могат да се появят на заключения екран при избор на Винаги.",
+    "oxNotificationPreviewFailed": "Прегледите не могат да се включат. Проверете дали OpenPGP и запазената връзка са налични.",
         "title": "Настройки",
         "categories": {
             "profile": "Профил",
@@ -725,6 +743,7 @@
         "accentThemeDefault": "По подразбиране на темата",
         "fontSize": "Размер на шрифта",
         "fontSizeDescription": "Настройте размера на текста в приложението",
+        "fontSizeSystemDescription": "Спрямо размера на текста, зададен в настройките на iOS",
         "decreaseFontSize": "Намали шрифта",
         "increaseFontSize": "Увеличи шрифта",
         "sound": "Възпроизвеждай звуци за известия",
@@ -1518,5 +1537,12 @@
             "archiveUnsupported": "Сървърът не поддържа търсене в архива. Опитайте да търсите в рамките на разговор.",
             "serverFailed": "Търсенето в сървъра не бе успешно"
         }
+    },
+    "notificationPreview": {
+        "activity": "Нова активност",
+        "reaction": "{{nickname}} реагира: {{text}}",
+        "edit": "{{nickname}} (редакция): {{text}}",
+        "retraction": "{{nickname}} изтри съобщение",
+        "messages": "{{nickname}}: {{count}} нови съобщения"
     }
 }

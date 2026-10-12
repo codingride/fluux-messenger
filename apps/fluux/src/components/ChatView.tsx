@@ -1,5 +1,6 @@
+import { iosHaptic } from '@/platform/ios/haptics'
 import { getActiveMessageListController } from './conversation/activeMessageListController'
-import type { ChatMessageTarget } from '@fluux/sdk'
+import type { ChatMessageTarget, GapInterval } from '@fluux/sdk'
 import type { MessageRowRef } from '@fluux/sdk'
 import { messageRowId, readMessageRowId, messageRowRefFromRowId } from './conversation/messageRowIdentity'
 import React, { useState, useRef, useEffect, useCallback, useMemo, useImperativeHandle, memo, type RefObject } from 'react'
@@ -42,6 +43,8 @@ import { ReactionMentions } from './conversation/ReactionMentions'
 import { reactionMentionStore } from '@/stores/reactionMentionStore'
 import { EasterEggMentions } from './conversation/EasterEggMentions'
 import { easterEggMentionStore } from '@/stores/easterEggMentionStore'
+import { donateIOSConversation } from '@/platform/ios/shareSuggestions'
+import { trackSend } from '@/utils/pendingSends'
 
 interface ChatViewProps {
   onBack?: () => void
@@ -57,11 +60,11 @@ interface ChatViewProps {
 }
 
 export function ChatView({ onBack, onSwitchToMessages, onSearchInConversation, onShowProfile, mainContentRef, composerRef, findOnPageRef }: ChatViewProps) {
-  detectRenderLoop('ChatView')
   const { t } = useTranslation()
   // Use useChatActive instead of useChat to avoid subscribing to the conversation list.
   // This prevents re-renders during background MAM sync of other conversations.
-  const { activeConversation, firstNewMessageRow, firstNewMessageIsProvisional, firstNewMessageCount, readPointerRow, activeMessages, activeTypingUsers, sendMessage, sendReaction, sendCorrection, retractMessage, retryMessage, sendChatState, isArchived, archiveConversation, unarchiveConversation, setDraft, getDraft, clearDraft, activeAnimation, sendEasterEgg, clearAnimation, clearFirstNewMessageId, advanceReadPointer, activeHistoryState, fetchOlderHistory, loadMessagesAround, loadNewer, recenterToLatest, windowAtLiveEdge, continueChatCatchUp, targetMessageId, clearTargetMessageId } = useChatActive()
+  const { activeConversation, firstNewMessageRow, firstNewMessageIsProvisional, firstNewMessageCount, readPointerRow, activeMessages, activeMessageIngressVersion, activeTypingUsers, sendMessage, sendReaction, sendCorrection, retractMessage, retryMessage, sendChatState, isArchived, archiveConversation, unarchiveConversation, setDraft, getDraft, clearDraft, activeAnimation, sendEasterEgg, clearAnimation, clearFirstNewMessageId, advanceReadPointer, activeHistoryState, fetchOlderHistory, loadMessagesAround, loadNewer, recenterToLatest, windowAtLiveEdge, continueChatCatchUp, targetMessageId, clearTargetMessageId } = useChatActive()
+  detectRenderLoop('ChatView', activeMessageIngressVersion)
   const interiorPlacementVersion = useChatStore((state) => {
     const id = state.activeConversationId
     return id ? state.interiorPlacementVersions.get(id) ?? 0 : 0
@@ -547,6 +550,7 @@ export function ChatView({ onBack, onSwitchToMessages, onSearchInConversation, o
         <MediaAutoloadProvider autoLoad={mediaAutoLoad}>
           <ChatMessageList
             messages={activeMessages}
+            messageIngressVersion={activeMessageIngressVersion}
             interiorPlacementVersion={interiorPlacementVersion}
             contactsByJid={contactsByJid}
             typingUsers={activeTypingUsers}
@@ -588,7 +592,7 @@ export function ChatView({ onBack, onSwitchToMessages, onSearchInConversation, o
           onJumpToLatest={recenterToLatest}
           isHistoryComplete={activeHistoryState?.isHistoryComplete ?? false}
           historyUnavailable={Boolean(activeHistoryState?.error)}
-          forwardGapTimestamp={activeHistoryState?.forwardGapTimestamp}
+          gaps={activeHistoryState?.gaps}
           onCatchUpHistory={continueChatCatchUp}
           isCatchingUp={activeHistoryState?.isLoading ?? false}
           // SDK auto-fetches cache + MAM in background, no blocking spinner needed
@@ -658,6 +662,7 @@ export function ChatView({ onBack, onSwitchToMessages, onSearchInConversation, o
 
 export const ChatMessageList = memo(function ChatMessageList({
   messages,
+  messageIngressVersion,
   interiorPlacementVersion = 0,
   contactsByJid,
   typingUsers,
@@ -703,11 +708,12 @@ export const ChatMessageList = memo(function ChatMessageList({
   highlightTerms,
   currentMatchId,
   lastSentMessageId,
-  forwardGapTimestamp,
+  gaps,
   onCatchUpHistory,
   isCatchingUp,
 }: {
   messages: Message[]
+  messageIngressVersion?: number
   interiorPlacementVersion?: number
   contactsByJid: Map<string, ContactIdentity>
   typingUsers: string[]
@@ -755,8 +761,8 @@ export const ChatMessageList = memo(function ChatMessageList({
   highlightTerms?: string[]
   currentMatchId?: string
   lastSentMessageId?: string | null
-  forwardGapTimestamp?: number
-  onCatchUpHistory?: () => void
+  gaps?: readonly GapInterval[]
+  onCatchUpHistory?: (gapStart: number) => void
   isCatchingUp?: boolean
 }) {
   const { t } = useTranslation()
@@ -840,6 +846,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       // external singleton keyed by conversation id).
       key={conversationId}
       messages={messages}
+      messageIngressVersion={messageIngressVersion}
       interiorPlacementVersion={interiorPlacementVersion}
       conversationId={conversationId}
       firstNewMessageRow={firstNewMessageRow}
@@ -867,7 +874,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       onJumpToLatest={onJumpToLatest}
       isHistoryComplete={isHistoryComplete}
       historyUnavailable={historyUnavailable}
-      forwardGapTimestamp={forwardGapTimestamp}
+      gaps={gaps}
       onCatchUpHistory={onCatchUpHistory}
       isCatchingUp={isCatchingUp}
       isLoading={isInitialLoading}
@@ -996,7 +1003,7 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
       ? myReactions.filter(e => e !== emoji)
       : [...myReactions, emoji]
 
-    void sendReaction(conversationId, message, newReactions, conversationType)
+    void sendReaction(conversationId, message, newReactions, conversationType).then(() => iosHaptic('selection')).catch(console.error)
   }
 
   // Build reply context using shared helper (replyTarget resolved above)
@@ -1075,6 +1082,14 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
         myReactions={myReactions}
         onReaction={handleReaction}
         getReactorName={getReactorName}
+        getReactorDetails={(jid) => {
+          const bareJid = getBareJid(jid)
+          return {
+            name: getReactorName(jid),
+            avatarIdentifier: bareJid,
+            avatarUrl: bareJid === myBareJid ? ownAvatar || undefined : contactsByJid.get(bareJid)?.avatar,
+          }
+        }}
         onReply={() => onReply(message)}
         onEdit={() => onEdit(message)}
         onDelete={async () => setShowDeleteConfirm(true)}
@@ -1266,6 +1281,7 @@ export const MessageInput = memo(function MessageInput({
   }
 
   const handleSend = async (text: string): Promise<boolean> => {
+    const sendingAccount = getStorageScopeJid()
     // Refuse to send while the local OpenPGP key is locked for an
     // encrypted conversation. Without the guard, the file upload would
     // happen plaintext-or-ciphertext-with-no-recipient (depending on
@@ -1313,9 +1329,12 @@ export const MessageInput = memo(function MessageInput({
       }
     }
 
+    if (getStorageScopeJid() !== sendingAccount) return false
+
     // The body is the file URL if no text was entered, otherwise the user's text
     const body = text || attachment?.url || ''
     const messageId = await sendMessage(conversationId, body, { replyTo, attachment: attachment ?? undefined })
+    void donateIOSConversation(sendingAccount, conversationId, type)
 
     // Notify parent of sent message ID for animation
     onMessageIdSent?.(messageId)
@@ -1358,7 +1377,7 @@ export const MessageInput = memo(function MessageInput({
         onSendCorrection={handleCorrection}
         onRetractMessage={handleRetract}
         onComposingChange={onComposingChange}
-        onSend={handleSend}
+        onSend={(text) => trackSend(handleSend(text))}
         onSendEasterEgg={(animation) => sendEasterEgg(conversationId, type, animation)}
         onSendTypingState={handleTypingState}
         typingNotificationsEnabled={true}

@@ -339,6 +339,7 @@
         "voiceRequestSent": "发言权申请已发送",
         "voiceRequests": "发言权申请",
         "grantVoice": "授予发言权",
+        "voiceApprovalUnanswered": "房间未授予发言权。此人可能已离开房间或已拥有发言权。",
         "revokeVoice": "撤销发言权",
         "grantModerator": "授予主持人",
         "revokeModerator": "撤销主持人",
@@ -390,6 +391,9 @@
         "whisperingTo": "正在私语给 {{nick}}",
         "whisperThread": "与 {{nick}} 私聊",
         "whisperCounterpartGone": "{{nick}} 已不在房间中，无法回复",
+        "whisperAttachmentTitle": "发送私信附件？",
+        "whisperAttachmentWarning": "私信是临时的，但文件会根据上传服务器的保留策略留在服务器上。接收者可以下载并保留副本。",
+        "whisperAttachmentRetention": "上传服务器保留时间：{{duration}}。接收者可以下载并保留副本。",
         "whisperPlaceholder": "私语给 {{nick}}…",
         "ignoreUser": "在此房间中忽略",
         "stopIgnoring": "停止忽略",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "名称的首尾包含多余的空格",
         "nickHiddenChars": "名称包含隐藏字符",
         "mentionSuggestions": "提及建议",
+        "mentionsCount": "提及: {{count}}",
         "unreadMessages": "{{displayCount}} 条未读消息",
         "unreadMessages_other": "{{displayCount}} 条未读消息"
     },
@@ -491,6 +496,7 @@
         "replyQuoteHiddenEncrypted": "引用已隐藏：原始消息已加密",
         "forwardMessage": "转发消息（即将推出）",
         "moreReactions": "更多回应",
+        "reactions": "回应",
         "reactionOthers": "{{count}} 人",
         "moreOptions": "更多选项",
         "reactWith": "使用 {{emoji}} 回应",
@@ -532,6 +538,7 @@
         "copyLinkChoose": "复制哪个链接？",
         "openInBrowser": "在浏览器中打开",
         "saveImage": "保存图片",
+        "mediaUnavailableOrUnsupported": "无法在此播放此文件：文件可能不可用，或格式不受支持",
         "videoFormatUnsupported": "此视频格式无法在此播放",
         "videoUnavailable": "视频不再可用",
         "audioFormatUnsupported": "此音频格式无法在此播放",
@@ -646,6 +653,17 @@
         "yesterday": "昨天"
     },
     "settings": {
+    "nativeNotificationTone": "通知提示音",
+    "nativeNotificationToneDescription": "选择后台通知的声音。静音选项会保留应用内声音。",
+    "nativeSoundDescription": "播放应用内和后台通知的声音。",
+    "notificationTone_default": "系统默认",
+    "notificationTone_bell": "铃声",
+    "notificationTone_chime": "风铃",
+    "notificationTone_pulse": "脉冲",
+    "notificationTone_silent": "静音",
+    "oxNotificationPreview": "通知中的 OpenPGP 预览",
+    "oxNotificationPreviewDescription": "允许通知扩展获取并解密此账户的消息。预览遵循 iOS 设置，选择“始终”时可能会显示在锁定屏幕上。",
+    "oxNotificationPreviewFailed": "无法启用预览。请检查 OpenPGP 和已保存的连接是否可用。",
         "title": "设置",
         "categories": {
             "profile": "个人资料",
@@ -725,6 +743,7 @@
         "accentThemeDefault": "主题默认",
         "fontSize": "字体大小",
         "fontSizeDescription": "调整应用中的文本大小",
+        "fontSizeSystemDescription": "相对于 iOS 设置中的文字大小",
         "decreaseFontSize": "减小字体大小",
         "increaseFontSize": "增大字体大小",
         "sound": "播放通知声音",
@@ -1518,5 +1537,12 @@
             "archiveUnsupported": "服务器不支持搜索存档。请尝试在某个对话中搜索。",
             "serverFailed": "服务器搜索失败"
         }
+    },
+    "notificationPreview": {
+        "activity": "新动态",
+        "reaction": "{{nickname}}作出了回应：{{text}}",
+        "edit": "{{nickname}}（编辑）：{{text}}",
+        "retraction": "{{nickname}}删除了一条消息",
+        "messages": "{{nickname}}：{{count}}条新消息"
     }
 }

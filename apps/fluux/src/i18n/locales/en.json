@@ -339,6 +339,7 @@
         "voiceRequestSent": "Voice request sent",
         "voiceRequests": "Voice requests",
         "grantVoice": "Grant voice",
+        "voiceApprovalUnanswered": "The room did not grant voice. The person may have left the room or already have voice.",
         "revokeVoice": "Revoke voice",
         "grantModerator": "Grant moderator",
         "revokeModerator": "Revoke moderator",
@@ -390,6 +391,9 @@
         "whisperingTo": "Whispering privately to {{nick}}",
         "whisperThread": "Private with {{nick}}",
         "whisperCounterpartGone": "{{nick}} is no longer in the room, so you can't reply",
+        "whisperAttachmentTitle": "Send a whisper attachment?",
+        "whisperAttachmentWarning": "The whisper is ephemeral, but files stay on the upload server according to its retention policy. Recipients can download and keep copies.",
+        "whisperAttachmentRetention": "Upload server retention: {{duration}}. Recipients can download and keep copies.",
         "whisperPlaceholder": "Whisper to {{nick}}...",
         "ignoreUser": "Ignore in this room",
         "stopIgnoring": "Stop ignoring",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "Name has extra spaces at the edges",
         "nickHiddenChars": "Name contains hidden characters",
         "mentionSuggestions": "Mention suggestions",
+        "mentionsCount": "Mentions: {{count}}",
         "unreadMessages": "{{displayCount}} unread message",
         "unreadMessages_other": "{{displayCount}} unread messages"
     },
@@ -491,6 +496,7 @@
         "replyQuoteHiddenEncrypted": "Quote hidden: the original was encrypted",
         "forwardMessage": "Forward message (coming soon)",
         "moreReactions": "More reactions",
+        "reactions": "Reactions",
         "reactionOthers": "{{count}} others",
         "moreOptions": "More options",
         "reactWith": "React with {{emoji}}",
@@ -532,6 +538,7 @@
         "copyLinkChoose": "Copy which link?",
         "openInBrowser": "Open in browser",
         "saveImage": "Save image",
+        "mediaUnavailableOrUnsupported": "This file can't be played here: it may be unavailable or in an unsupported format",
         "videoFormatUnsupported": "This video format can't be played here",
         "videoUnavailable": "Video no longer available",
         "audioFormatUnsupported": "This audio format can't be played here",
@@ -646,6 +653,17 @@
         "yesterday": "Yesterday"
     },
     "settings": {
+    "nativeNotificationTone": "Notification tone",
+    "nativeNotificationToneDescription": "Choose the sound for background notifications. Silent leaves in-app sounds unchanged.",
+    "nativeSoundDescription": "Play sounds in the app and for background notifications.",
+    "notificationTone_default": "System default",
+    "notificationTone_bell": "Bell",
+    "notificationTone_chime": "Chime",
+    "notificationTone_pulse": "Pulse",
+    "notificationTone_silent": "Silent",
+    "oxNotificationPreview": "OpenPGP notification previews",
+    "oxNotificationPreviewDescription": "Allow the notification extension to fetch and decrypt messages for this account. Previews follow iOS settings and may appear on the lock screen when set to Always.",
+    "oxNotificationPreviewFailed": "Could not enable previews. Check that OpenPGP and your saved connection are available.",
         "title": "Settings",
         "categories": {
             "profile": "Profile",
@@ -915,6 +933,7 @@
         "accentThemeDefault": "Theme Default",
         "fontSize": "Font Size",
         "fontSizeDescription": "Adjust the size of text across the app",
+        "fontSizeSystemDescription": "Relative to the text size set in iOS Settings",
         "decreaseFontSize": "Decrease font size",
         "increaseFontSize": "Increase font size",
         "sound": "Play notification sounds",
@@ -1518,5 +1537,12 @@
             "archiveUnsupported": "Server does not support archive search. Try searching within a conversation.",
             "serverFailed": "Server search failed"
         }
+    },
+    "notificationPreview": {
+        "activity": "New activity",
+        "reaction": "{{nickname}} reacted: {{text}}",
+        "edit": "{{nickname}} (edit): {{text}}",
+        "retraction": "{{nickname}} deleted a message",
+        "messages": "{{nickname}}: {{count}} new messages"
     }
 }

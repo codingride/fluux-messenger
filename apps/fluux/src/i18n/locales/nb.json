@@ -339,6 +339,7 @@
         "voiceRequestSent": "Forespørsel om talerett sendt",
         "voiceRequests": "Forespørsler om talerett",
         "grantVoice": "Gi stemme",
+        "voiceApprovalUnanswered": "Rommet ga ikke talerett. Personen kan ha forlatt rommet eller allerede ha talerett.",
         "revokeVoice": "Fjern stemme",
         "grantModerator": "Gi moderator",
         "revokeModerator": "Fjern moderator",
@@ -390,6 +391,9 @@
         "whisperingTo": "Hvisker privat til {{nick}}",
         "whisperThread": "Privat med {{nick}}",
         "whisperCounterpartGone": "{{nick}} er ikke lenger i rommet, du kan ikke svare",
+        "whisperAttachmentTitle": "Sende et privat vedlegg?",
+        "whisperAttachmentWarning": "Den private meldingen er midlertidig, men filer blir på opplastingsserveren i henhold til lagringspolicyen. Mottakere kan laste ned og beholde kopier.",
+        "whisperAttachmentRetention": "Lagring på opplastingsserveren: {{duration}}. Mottakere kan laste ned og beholde kopier.",
         "whisperPlaceholder": "Hvisk til {{nick}}...",
         "ignoreUser": "Ignorer i dette rommet",
         "stopIgnoring": "Slutt å ignorere",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "Navnet har ekstra mellomrom i kantene",
         "nickHiddenChars": "Navnet inneholder skjulte tegn",
         "mentionSuggestions": "Omtaleforslag",
+        "mentionsCount": "Omtaler: {{count}}",
         "unreadMessages": "{{displayCount}} ulest melding",
         "unreadMessages_other": "{{displayCount}} uleste meldinger"
     },
@@ -491,6 +496,7 @@
         "replyQuoteHiddenEncrypted": "Sitat skjult: originalen var kryptert",
         "forwardMessage": "Videresend melding (kommer snart)",
         "moreReactions": "Flere reaksjoner",
+        "reactions": "Reaksjoner",
         "reactionOthers": "{{count}} andre",
         "moreOptions": "Flere alternativer",
         "reactWith": "Reager med {{emoji}}",
@@ -532,6 +538,7 @@
         "copyLinkChoose": "Hvilken lenke vil du kopiere?",
         "openInBrowser": "Åpne i nettleser",
         "saveImage": "Lagre bilde",
+        "mediaUnavailableOrUnsupported": "Denne filen kan ikke spilles av her: den er kanskje utilgjengelig eller har et format som ikke støttes",
         "videoFormatUnsupported": "Dette videoformatet kan ikke spilles av her",
         "videoUnavailable": "Videoen er ikke lenger tilgjengelig",
         "audioFormatUnsupported": "Dette lydformatet kan ikke spilles av her",
@@ -646,6 +653,17 @@
         "yesterday": "I går"
     },
     "settings": {
+    "nativeNotificationTone": "Varsellyd",
+    "nativeNotificationToneDescription": "Velg lyden for varsler i bakgrunnen. Lydløs beholder lydene i appen.",
+    "nativeSoundDescription": "Spill av lyder i appen og ved varsler i bakgrunnen.",
+    "notificationTone_default": "Systemstandard",
+    "notificationTone_bell": "Bjelle",
+    "notificationTone_chime": "Klokkespill",
+    "notificationTone_pulse": "Puls",
+    "notificationTone_silent": "Lydløs",
+    "oxNotificationPreview": "OpenPGP-forhåndsvisninger i varsler",
+    "oxNotificationPreviewDescription": "Tillat varselutvidelsen å hente og dekryptere meldinger for denne kontoen. Forhåndsvisninger følger iOS-innstillingene og kan vises på låseskjermen hvis Alltid er valgt.",
+    "oxNotificationPreviewFailed": "Kunne ikke aktivere forhåndsvisninger. Kontroller at OpenPGP og den lagrede tilkoblingen er tilgjengelige.",
         "title": "Innstillinger",
         "categories": {
             "profile": "Profil",
@@ -725,6 +743,7 @@
         "accentThemeDefault": "Temastandard",
         "fontSize": "Skriftstørrelse",
         "fontSizeDescription": "Juster tekststørrelsen i appen",
+        "fontSizeSystemDescription": "I forhold til tekststørrelsen som er valgt i iOS-innstillinger",
         "decreaseFontSize": "Reduser skriftstørrelse",
         "increaseFontSize": "Øk skriftstørrelse",
         "sound": "Spill av varsellyder",
@@ -1518,5 +1537,12 @@
             "archiveUnsupported": "Serveren støtter ikke arkivsøk. Prøv å søke i en samtale.",
             "serverFailed": "Serversøket mislyktes"
         }
+    },
+    "notificationPreview": {
+        "activity": "Ny aktivitet",
+        "reaction": "{{nickname}} reagerte: {{text}}",
+        "edit": "{{nickname}} (redigert): {{text}}",
+        "retraction": "{{nickname}} slettet en melding",
+        "messages": "{{nickname}}: {{count}} nye meldinger"
     }
 }

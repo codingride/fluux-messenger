@@ -6,6 +6,9 @@ import UIKit
 typealias ShareController = UIViewController
 #endif
 import UniformTypeIdentifiers
+#if os(iOS)
+import Intents
+#endif
 
 /// The extension imports only. XMPP and account selection stay in the main app.
 final class ShareViewController: ShareController {
@@ -16,6 +19,9 @@ final class ShareViewController: ShareController {
     private let status = UILabel()
     #endif
     private var started = false
+    #if os(iOS)
+    private var suggestedDestination: ConversationDestination?
+    #endif
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -59,6 +65,10 @@ final class ShareViewController: ShareController {
               let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else {
             report(false); return
         }
+        #if os(iOS)
+        let intent = extensionContext?.intent as? INSendMessageIntent
+        suggestedDestination = ConversationDestination.decode(intent?.conversationIdentifier)
+        #endif
         let providers = items.flatMap { $0.attachments ?? [] }
         guard providers.count == 1, let provider = providers.first else { report(false); return }
         let root = container.appendingPathComponent("ShareInbox", isDirectory: true)
@@ -136,8 +146,13 @@ final class ShareViewController: ShareController {
                     }
                 }
             }
-            let entry: [String: Any] = ["id": id, "text": text, "name": name.map { String($0.prefix(255)) } as Any? ?? NSNull(),
+            var entry: [String: Any] = ["id": id, "text": text, "name": name.map { String($0.prefix(255)) } as Any? ?? NSNull(),
                                         "mime": mime as Any? ?? NSNull(), "size": size]
+            #if os(iOS)
+            if let destination = suggestedDestination {
+                entry["suggestedDestination"] = ["account": destination.account, "jid": destination.jid, "type": destination.type]
+            }
+            #endif
             try JSONSerialization.data(withJSONObject: entry).write(to: staging.appendingPathComponent("entry.json"), options: .atomic)
             try fm.moveItem(at: staging, to: root.appendingPathComponent(id))
             report(true)
@@ -163,10 +178,37 @@ final class ShareViewController: ShareController {
             }
             #else
             self.status.text = message
+            // The saved-import instructions stay visible if Fluux cannot be opened.
+            if success, let scheme = Bundle.main.object(forInfoDictionaryKey: "FluuxAppScheme") as? String,
+               let url = URL(string: "\(scheme)://share") {
+                self.openContainingApp(url) { opened in
+                    if opened { DispatchQueue.main.async { self.close() } }
+                }
+            }
             #endif
         }
     }
     @objc private func close() { extensionContext?.completeRequest(returningItems: nil) }
+
+    #if !os(macOS)
+    /// iOS gives share extensions no API to open their app, but the extension
+    /// process still has a UIApplication in its responder chain that can.
+    private func openContainingApp(_ url: URL, completion: @escaping (Bool) -> Void) {
+        let selector = NSSelectorFromString("openURL:options:completionHandler:")
+        var responder: UIResponder? = self
+        while let current = responder {
+            if current is UIApplication, current.responds(to: selector) {
+                typealias Open = @convention(c) (AnyObject, Selector, NSURL, NSDictionary, (@convention(block) (Bool) -> Void)?) -> Void
+                let open = unsafeBitCast(current.method(for: selector), to: Open.self)
+                let done: @convention(block) (Bool) -> Void = { completion($0) }
+                open(current, selector, url as NSURL, NSDictionary(), done)
+                return
+            }
+            responder = current.next
+        }
+        completion(false)
+    }
+    #endif
 }
 
 // Finder can vend public.file-url as serialized URL data instead of NSURL.

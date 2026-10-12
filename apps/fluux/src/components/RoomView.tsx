@@ -1,8 +1,11 @@
+import { iosHaptic } from '@/platform/ios/haptics'
 import { getActiveMessageListController } from './conversation/activeMessageListController'
 import { isSpamModerated } from '@/utils/spamModeration'
 import { SpamModerationOption } from './SpamModerationOption'
-import type { MessageRowRef } from '@fluux/sdk'
+import type { GapInterval, MessageRowRef } from '@fluux/sdk'
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useId, useImperativeHandle, useMemo, memo, type RefObject } from 'react'
+import { flushSync } from 'react-dom'
+import { shallow } from 'zustand/shallow'
 import { useTranslation } from 'react-i18next'
 import { detectRenderLoop } from '@/utils/renderLoopDetector'
 import { getRoomModerationId, archiveReference, senderReference, useRoomActive, usePolls, useRoomModeration, useRoomManagement, useRoomEntity, useContactIdentities, getBareJid, generateConsistentColorHexSync, createMessageLookup, useReferencedMessage, useRoomMessageSnapshots, resolveRoomMessageSnapshot, isMessageFromIgnoredUser, isReplyToIgnoredUser, filterIgnoredReactions, canKick, canBan, getAvailableAffiliations, getAvailableRoles, getMyReactions, WhisperCounterpartGoneError, getStorageScopeJid, currentViewportGeneration, reportViewport, type RoomMessage, type Room, type RoomOccupant, type MentionReference, type ChatStateNotification, type ContactIdentity, type FileAttachment, type RoomAffiliation, type RoomRole, type PollData, type ViewportEvidenceKey } from '@fluux/sdk'
@@ -12,8 +15,9 @@ import { useMentionAutocomplete, useFileUpload, useLinkPreview, useTypeToFocus, 
 import { MessageBubble, MessageList, RoomSystemLine, shouldShowAvatar, ownGroupKey as computeOwnGroupKey, whisperThreadPosition, whisperCounterpartPresent, resolveWhisperTarget, decideWhisperSend, decideChatStateRoute, buildReplyContext, canClosePoll, PollBanner, type WhisperThreadPosition, type WhisperTarget } from './conversation'
 import { FindOnPageBar } from './conversation/FindOnPageBar'
 import { useFindOnPage, type FindOnPageHandle } from '@/hooks/useFindOnPage'
-import { selectSelfOccupant, stableNickSet, resolveRoomSender, resolveReplyAvatar, resolveSenderColor, rememberRoomNickIdentities, resolveRoomMentionColors, type RoomNickIdentity } from './conversation/roomSenderResolution'
+import { selectSelfOccupant, stableNickSet, resolveRoomSender, resolveReplyAvatar, resolveRoomAvatar, resolveSenderColor, rememberRoomNickIdentities, resolveRoomMentionColors, type RoomNickIdentity } from './conversation/roomSenderResolution'
 import { selectRoomInitialLoading } from './conversation/roomLoadingState'
+import type { ReactorDetails } from './conversation/MessageReactorsSheet'
 import { format } from 'date-fns'
 import type { CopyMessageMeta } from '@/utils/buildCopyText'
 import { deriveCopyBody } from '@/utils/copyMessageBody'
@@ -58,6 +62,8 @@ import { messageRowId, messageRowRefFromRowId } from './conversation/messageRowI
 import { reactionMentionStore } from '@/stores/reactionMentionStore'
 import { EasterEggMentions } from './conversation/EasterEggMentions'
 import { easterEggMentionStore } from '@/stores/easterEggMentionStore'
+import { donateIOSConversation } from '@/platform/ios/shareSuggestions'
+import { trackSend } from '@/utils/pendingSends'
 
 const roomMentionIdentities = new Map<string, Map<string, RoomNickIdentity>>()
 
@@ -95,6 +101,12 @@ interface RoomViewProps {
   findOnPageRef?: RefObject<FindOnPageHandle | null>
   /** Callback to open search scoped to a room */
   onSearchInConversation?: (conversationId: string) => void
+  /** Covered by another pane (the mobile member list), so out of reach of focus and assistive technology. */
+  covered?: boolean
+  /** Wrap the mobile member panel in the layout-owned navigation pane. */
+  renderMobileOccupants?: (panel: React.ReactNode) => React.ReactNode
+  /** Animated back navigation for the mobile member panel. */
+  onCloseMobileOccupants?: () => void
 }
 
 // Max room size for sending typing indicators (to avoid noise in large rooms)
@@ -105,13 +117,13 @@ const EMPTY_IGNORED_ARRAY: import('@fluux/sdk/stores').IgnoredUser[] = []
 // Stable empty fallback for the composer's NON-reactive occupants read.
 const EMPTY_OCCUPANTS: Map<string, RoomOccupant> = new Map()
 
-export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = false, onShowOccupantsChange, onStartChat, onShowProfile, findOnPageRef, onSearchInConversation }: RoomViewProps) {
-  detectRenderLoop('RoomView')
+export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = false, onShowOccupantsChange, onStartChat, onShowProfile, findOnPageRef, onSearchInConversation, covered = false, renderMobileOccupants, onCloseMobileOccupants }: RoomViewProps) {
   const { t } = useTranslation()
   // Active-room state + messaging/scroll actions. Poll / moderation /
   // management actions come from the focused hooks below (they subscribe to no
   // store, so they add no re-render triggers).
-  const { activeRoom, activeMessages, activeTypingUsers, sendMessage, sendWhisper, sendReaction, sendCorrection, retractMessage, sendChatState, sendWhisperChatState, activeAnimation, sendEasterEgg, clearAnimation, clearFirstNewMessageId, advanceReadPointer, fetchOlderHistory, loadMessagesAround, loadNewer, recenterToLatest, windowAtLiveEdge, continueRoomCatchUp, activeHistoryState, targetMessageId, clearTargetMessageId, firstNewMessageRow, firstNewMessageIsProvisional, firstNewMessageCount, readPointerRow } = useRoomActive()
+  const { activeRoom, activeMessages, activeMessageIngressVersion, activeTypingUsers, sendMessage, sendWhisper, sendReaction, sendCorrection, retractMessage, sendChatState, sendWhisperChatState, activeAnimation, sendEasterEgg, clearAnimation, clearFirstNewMessageId, advanceReadPointer, fetchOlderHistory, loadMessagesAround, loadNewer, recenterToLatest, windowAtLiveEdge, continueRoomCatchUp, activeHistoryState, targetMessageId, clearTargetMessageId, firstNewMessageRow, firstNewMessageIsProvisional, firstNewMessageCount, readPointerRow } = useRoomActive()
+  detectRenderLoop('RoomView', activeMessageIngressVersion)
   const interiorPlacementVersion = useRoomStore((state) => {
     const jid = state.activeRoomJid
     return jid ? state.interiorPlacementVersions.get(jid) ?? 0 : 0
@@ -545,9 +557,11 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
   // (fail-safe). Strangers do not apply to rooms.
   const mediaAutoLoad = computeMediaAutoload(mediaPolicy, activeRoom.isPrivate ? 'room-private' : 'room-public')
 
-  return (
+  const roomContent = (
     <div
       className="flex flex-1 min-h-0 relative"
+      inert={covered || undefined}
+      aria-hidden={covered || undefined}
       {...dragHandlers}
     >
       {/* Drop zone overlay */}
@@ -638,6 +652,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
               messages={displayMessages}
               identityMessages={activeMessages}
               loadedMessageCount={activeMessages.length}
+              messageIngressVersion={activeMessageIngressVersion}
               interiorPlacementVersion={interiorPlacementVersion}
               scrollerRef={scrollRef}
               isAtBottomRef={isAtBottomRef}
@@ -688,7 +703,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
             highlightTerms={find.highlightTerms}
             currentMatchId={find.currentMatchId}
             lastSentMessageId={lastSentMessageId}
-            forwardGapTimestamp={activeHistoryState?.forwardGapTimestamp}
+            gaps={activeHistoryState?.gaps}
             onCatchUpHistory={continueRoomCatchUp}
             isCatchingUp={activeHistoryState?.isLoading}
             />
@@ -754,7 +769,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
         {passwordDialog}
       </div>
 
-      {/* Occupant panel (>=768px; <768 uses the full-screen panel in ChatLayout).
+      {/* Occupant panel (>=768px; mobile uses the layout-owned pane below).
           Below lg it's a right-edge drawer over a dimmed backdrop so it doesn't
           squeeze the chat into a narrow column on tablets; at lg+ there's room
           for it as an in-flow side column. */}
@@ -928,12 +943,38 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
       })()}
     </div>
   )
+
+  return (
+    <>
+      {roomContent}
+      {renderMobileOccupants?.(
+        <OccupantPanel
+          room={activeRoom}
+          contactsByJid={contactsByJid}
+          ownAvatar={ownAvatar}
+          onClose={onCloseMobileOccupants ?? handleCloseOccupants}
+          onStartChat={onStartChat}
+          onShowProfile={onShowProfile}
+          onWhisper={(nick) => {
+            // iOS focus must stay in the click gesture, after the room is no longer inert.
+            flushSync(() => {
+              enterWhisperMode(nick)
+              setShowOccupants(false)
+            })
+            composerHandleRef.current?.focus()
+          }}
+          fullScreen
+        />,
+      )}
+    </>
+  )
 }
 
 export const RoomMessageList = memo(function RoomMessageList({
   messages,
   identityMessages = messages,
   loadedMessageCount = messages.length,
+  messageIngressVersion,
   interiorPlacementVersion = 0,
   scrollerRef,
   isAtBottomRef,
@@ -983,13 +1024,14 @@ export const RoomMessageList = memo(function RoomMessageList({
   highlightTerms,
   currentMatchId,
   lastSentMessageId,
-  forwardGapTimestamp,
+  gaps,
   onCatchUpHistory,
   isCatchingUp,
 }: {
   messages: RoomMessage[]
   identityMessages?: readonly RoomMessage[]
   loadedMessageCount?: number
+  messageIngressVersion?: number
   interiorPlacementVersion?: number
   scrollerRef: React.RefObject<HTMLElement | null>
   isAtBottomRef: React.MutableRefObject<boolean>
@@ -1045,8 +1087,8 @@ export const RoomMessageList = memo(function RoomMessageList({
   highlightTerms?: string[]
   currentMatchId?: string
   lastSentMessageId?: string | null
-  forwardGapTimestamp?: number
-  onCatchUpHistory?: () => void
+  gaps?: readonly GapInterval[]
+  onCatchUpHistory?: (gapStart: number) => void
   isCatchingUp?: boolean
 }) {
   const { t } = useTranslation()
@@ -1198,6 +1240,10 @@ export const RoomMessageList = memo(function RoomMessageList({
 
     const sender = resolveRoomSender(msg, room, contactsByJid, selfOccupant)
     const rowId = messageRowId(msg) ?? msg.id
+    const reactorDetails = Object.fromEntries(Object.values(msg.reactions ?? {}).flat().map((nick) => {
+      const avatar = resolveRoomAvatar({ nick, isOwn: nick === room.nickname }, room, contactsByJid, ownAvatar)
+      return [nick, { name: nick, avatarIdentifier: avatar.avatarIdentifier, avatarUrl: avatar.avatarUrl }]
+    }))
 
     // Resolve the reply-preview avatar to PRIMITIVES (the wrapper builds the
     // replyContext object internally from these — see RoomMessageBubbleWrapper — so
@@ -1251,6 +1297,7 @@ export const RoomMessageList = memo(function RoomMessageList({
         replyAvatarUrl={replyAvatarUrl}
         replyAvatarIdentifier={replyAvatarIdentifier}
         replyBareJid={replyBareJid}
+        reactorDetails={reactorDetails}
         knownNicks={knownNicks}
         contactsByJid={contactsByJid}
         mentionColors={mentionColors}
@@ -1295,6 +1342,7 @@ export const RoomMessageList = memo(function RoomMessageList({
       // between rooms. Restoration survives via scrollStateManager (keyed by room jid).
       key={room.jid}
       messages={messages}
+      messageIngressVersion={messageIngressVersion}
       interiorPlacementVersion={interiorPlacementVersion}
       conversationId={room.jid}
       firstNewMessageRow={firstNewMessageRow}
@@ -1325,7 +1373,7 @@ export const RoomMessageList = memo(function RoomMessageList({
       renderMessage={renderMessage}
       formatMessageForCopy={formatMessageForCopy}
       lastSentMessageId={lastSentMessageId}
-      forwardGapTimestamp={forwardGapTimestamp}
+      gaps={gaps}
       onCatchUpHistory={onCatchUpHistory}
       isCatchingUp={isCatchingUp}
     />
@@ -1366,6 +1414,7 @@ interface RoomMessageBubbleWrapperProps {
   // Reply sender's bare JID, for the contact-color lookup (keeps the quote's
   // color identical to the sender's main-message color).
   replyBareJid: string | undefined
+  reactorDetails: Readonly<Record<string, ReactorDetails>>
   knownNicks: ReadonlySet<string>
   contactsByJid: Map<string, ContactIdentity>
   mentionColors: ReadonlyMap<string, string>
@@ -1438,6 +1487,7 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
   replyAvatarUrl,
   replyAvatarIdentifier,
   replyBareJid,
+  reactorDetails,
   knownNicks,
   contactsByJid,
   mentionColors,
@@ -1544,7 +1594,7 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
       ? myReactions.filter(e => e !== emoji)
       : [...myReactions, emoji]
 
-    sendReaction(roomJid, archiveReference(message), newReactions).catch((e) => {
+    sendReaction(roomJid, archiveReference(message), newReactions).then(() => iosHaptic('selection')).catch((e) => {
       if (e instanceof WhisperCounterpartGoneError) {
         addToast('info', t('rooms.whisperCounterpartGone', { nick: e.nick }))
         return
@@ -1587,11 +1637,8 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
     isDarkMode
   )
 
-  // Get reactor display name (for rooms, nicks are shown as-is)
-  // Note: MAM-loaded reactions may use full MUC JID (room@server/nick), so extract nick
   const getReactorName = (reactorId: string) => {
-    // Extract nick from full MUC JID (room@server/nick) or use as-is if already a nick
-    const nick = reactorId.includes('/') ? reactorId.split('/').pop() || reactorId : reactorId
+    const nick = reactorDetails[reactorId].name
     if (nick === myNick) return t('chat.you')
     return nick
   }
@@ -1697,6 +1744,7 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
         myReactions={myReactions}
         onReaction={supportsReactions ? handleReaction : undefined}
         getReactorName={getReactorName}
+        getReactorDetails={(reactorId) => reactorDetails[reactorId]}
         canModerate={canModerateMsg}
         isIrcGateway={isIrcGateway}
         onReply={() => onReply(message)}
@@ -1824,6 +1872,10 @@ const RoomMessageBubbleWrapper = memo(function RoomMessageBubbleWrapper({
       )}
     </>
   )
+}, (prev, next) => {
+  const { reactorDetails: prevDetails, ...prevProps } = prev
+  const { reactorDetails: nextDetails, ...nextProps } = next
+  return shallow(prevProps, nextProps) && JSON.stringify(prevDetails) === JSON.stringify(nextDetails)
 })
 
 interface RoomMessageInputProps {
@@ -1845,7 +1897,7 @@ interface RoomMessageInputProps {
   uploadState?: { isUploading: boolean; progress: number; error: string | null; clearError: () => void }
   isUploadSupported?: boolean
   onFileSelect?: (file: File) => void
-  uploadFile?: (file: File) => Promise<FileAttachment | null>
+  uploadFile?: (file: File, options?: import('@/hooks/useFileUpload').FileUploadOptions) => Promise<FileAttachment | null>
   pendingAttachment?: PendingAttachment | null
   onRemovePendingAttachment?: () => void
   processLinkPreview?: (messageId: string, body: string, to: string, type: 'chat' | 'groupchat') => Promise<void>
@@ -1853,7 +1905,7 @@ interface RoomMessageInputProps {
   onMessageIdSent?: (messageId: string) => void
   whisperTarget?: WhisperTarget | null
   onClearWhisper?: () => void
-  sendWhisper: (roomJid: string, nick: string, body: string) => Promise<string>
+  sendWhisper: (roomJid: string, nick: string, body: string, options?: { attachment?: FileAttachment }) => Promise<string>
   /** Whether the app is in dark mode -- used to compute the per-person reply-chip color. */
   isDarkMode?: boolean
 }
@@ -1890,7 +1942,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
   ref,
 }: RoomMessageInputProps & { ref?: React.Ref<MessageComposerHandle> }) {
   detectRenderLoop('RoomMessageInput')
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   // Narrow, reference-stable subscriptions: the composer re-renders on entity
   // changes (name/nickname) and occupant COUNT changes (join/leave), but NOT on
   // message churn nor on occupant metadata churn (show/avatar/presence flapping).
@@ -1931,6 +1983,24 @@ export const RoomMessageInput = memo(function RoomMessageInput({
   // the typed draft. Called unconditionally (returns false when target is null).
   const counterpartPresent = useWhisperCounterpartPresent(roomJid, whisperTarget)
   const whisperCounterpartGone = !!whisperTarget && !counterpartPresent
+  const [attachmentWarning, setAttachmentWarning] = useState(false)
+  const warningResolve = useRef<((confirmed: boolean) => void) | null>(null)
+  const whisperSendGeneration = useRef(0)
+  const currentWhisper = useRef(whisperTarget)
+  currentWhisper.current = whisperTarget
+  const currentAttachment = useRef(pendingAttachment)
+  currentAttachment.current = pendingAttachment
+  const currentRoomJid = useRef(roomJid)
+  currentRoomJid.current = roomJid
+  const supportsRetention = useConnectionStore(s => s.httpUploadService?.supportsRetention === true)
+  useEffect(() => {
+    setAttachmentWarning(false)
+    return () => {
+      whisperSendGeneration.current += 1
+      warningResolve.current?.(false)
+      warningResolve.current = null
+    }
+  }, [roomJid, whisperTarget, pendingAttachment])
 
   // Mention state
   const [cursorPosition, setCursorPosition] = useState(0)
@@ -2097,21 +2167,71 @@ export const RoomMessageInput = memo(function RoomMessageInput({
   // Handle send
   const handleSend = async (sendText: string): Promise<boolean> => {
     const sendingAccount = getStorageScopeJid()
-    // Whisper mode (XEP-0045 §7.5): text-only, ephemeral, no reply/attachment.
+    const sendingGeneration = whisperSendGeneration.current
+    // Private sends preserve the room/nick route and skip public link previews.
     if (whisperTarget) {
       // Hard backstop: re-check presence against the LIVE occupant list (not the
       // closed-over prop) so we cover the gap between the counterpart leaving and
-      // React re-rendering the disabled Send button. Never deliver private text
-      // once they've left or the nick has been recycled by someone else.
+      // React re-rendering the disabled Send button. Resolve the captured person
+      // to their current nick so recycling the old nick cannot redirect the send.
       const liveOccupants = roomStore.getState().getRoom(roomJid)?.occupants ?? occupants
-      const decision = decideWhisperSend(whisperTarget, sendText, liveOccupants)
+      const decision = decideWhisperSend(whisperTarget, sendText, liveOccupants, !!pendingAttachment)
       if (!decision.ok) {
         if (decision.reason === 'counterpart-gone') {
           addToast('info', t('rooms.whisperCounterpartGone', { nick: decision.nick }))
         }
         return false
       }
-      const messageId = await sendWhisper(roomJid, decision.nick, decision.body)
+      let attachment: FileAttachment | null | undefined
+      let appliedRetentionSeconds: number | undefined
+      const stillCurrent = () => whisperSendGeneration.current === sendingGeneration
+        && getStorageScopeJid() === sendingAccount
+        && currentRoomJid.current === roomJid && currentWhisper.current === whisperTarget
+        && currentAttachment.current === pendingAttachment
+      if (pendingAttachment) {
+        if (!uploadFile) return false
+        const confirmed = await new Promise<boolean>(resolve => {
+          warningResolve.current = resolve
+          setAttachmentWarning(true)
+        })
+        warningResolve.current = null
+        setAttachmentWarning(false)
+        if (!confirmed || !stillCurrent()) {
+          if (stillCurrent()) setTimeout(() => composerRef.current?.focus(), 0)
+          return false
+        }
+        const beforeUpload = decideWhisperSend(whisperTarget, decision.body,
+          roomStore.getState().getRoom(roomJid)?.occupants ?? EMPTY_OCCUPANTS, true)
+        if (!beforeUpload.ok) return false
+        attachment = await uploadFile(pendingAttachment.file, {
+          suggestedRetentionSeconds: 86400,
+          onRetentionApplied: seconds => { appliedRetentionSeconds = seconds },
+        })
+        if (!attachment || !stillCurrent()) return false
+      }
+      if (!stillCurrent()) return false
+      const finalDecision = decideWhisperSend(whisperTarget, decision.body,
+        roomStore.getState().getRoom(roomJid)?.occupants ?? EMPTY_OCCUPANTS, !!attachment)
+      if (!finalDecision.ok) {
+        if (finalDecision.reason === 'counterpart-gone') {
+          addToast('info', t('rooms.whisperCounterpartGone', { nick: finalDecision.nick }))
+        }
+        return false
+      }
+      const body = sendText.trim() || attachment?.url || decision.body
+      const messageId = attachment
+        ? await sendWhisper(roomJid, finalDecision.nick, body, { attachment })
+        : await sendWhisper(roomJid, finalDecision.nick, body)
+      if (attachment) {
+        const hours = appliedRetentionSeconds !== undefined && appliedRetentionSeconds % 3600 === 0
+        const duration = appliedRetentionSeconds === undefined ? undefined
+          : new Intl.NumberFormat(i18n.resolvedLanguage, { style: 'unit', unit: hours ? 'hour' : 'second', unitDisplay: 'short' })
+            .format(hours ? appliedRetentionSeconds / 3600 : appliedRetentionSeconds)
+        addToast('info', supportsRetention && duration
+          ? t('rooms.whisperAttachmentRetention', { duration })
+          : t('rooms.whisperAttachmentWarning'))
+        onRemovePendingAttachment?.()
+      }
       onMessageIdSent?.(messageId)
       clearDraft(roomJid)
       setTimeout(() => clearFirstNewMessageId(roomJid), 500)
@@ -2146,6 +2266,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
     // The body is the file URL if no text was entered, otherwise the user's text
     const body = sendText || attachment?.url || ''
     const messageId = await sendMessage(roomJid, body, { replyTo, references: references.length > 0 ? references : undefined, attachment: attachment ?? undefined })
+    void donateIOSConversation(sendingAccount, roomJid, 'groupchat')
     setReferences([])
 
     // Notify parent of sent message ID for animation
@@ -2410,7 +2531,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
   return (
     <div
       onKeyDownCapture={(e) => {
-        if (whisperTarget && e.key === 'Escape') {
+        if (whisperTarget && e.key === 'Escape' && !attachmentWarning) {
           e.stopPropagation()
           handleClearWhisper()
         }
@@ -2450,6 +2571,16 @@ export const RoomMessageInput = memo(function RoomMessageInput({
           </button>
         </div>
       )}
+      {attachmentWarning && (
+        <ConfirmDialog
+          title={t('rooms.whisperAttachmentTitle')}
+          message={t('rooms.whisperAttachmentWarning')}
+          confirmLabel={t('rooms.sendPrivateMessage')}
+          variant="warning"
+          onConfirm={() => warningResolve.current?.(true)}
+          onCancel={() => warningResolve.current?.(false)}
+        />
+      )}
       <MessageComposer
         ref={composerRef}
         textareaRef={textareaRef}
@@ -2461,7 +2592,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
         onSendCorrection={handleCorrection}
         onRetractMessage={handleRetract}
         onComposingChange={onComposingChange}
-        onSend={handleSend}
+        onSend={(sendText) => trackSend(handleSend(sendText))}
         onSendEasterEgg={(animation) => sendEasterEgg(roomJid, animation)}
         onCreatePoll={() => setShowPollCreator(true)}
         onSendTypingState={handleTypingState}

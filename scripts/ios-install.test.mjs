@@ -15,9 +15,10 @@ function fixture(t, { bundleId = 'net.processone.fluux', buildFails = false, sin
   const bin = resolve(app, 'node_modules/.bin')
   const applications = resolve(app, 'src-tauri/gen/apple/build/fluux_iOS.xcarchive/Products/Applications')
   mkdirSync(resolve(app, 'scripts'), { recursive: true })
-  mkdirSync(resolve(applications, 'Fluux Messenger iOS Dev.app'), { recursive: true })
+  mkdirSync(resolve(applications, 'Fluux.app'), { recursive: true })
   mkdirSync(bin, { recursive: true })
   cpSync(resolve(repo, 'apps/fluux/scripts/tauri-ios-install.mjs'), resolve(app, 'scripts/tauri-ios-install.mjs'))
+  cpSync(resolve(repo, 'apps/fluux/scripts/ios-generated-files.mjs'), resolve(app, 'scripts/ios-generated-files.mjs'))
   const log = resolve(root, 'commands.log')
   const devices = resolve(root, 'devices.json')
   writeFileSync(devices, JSON.stringify({ result: { devices: [

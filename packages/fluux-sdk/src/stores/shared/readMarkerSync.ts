@@ -76,7 +76,10 @@ export type RemoteDisplayedResolution =
  *   named message's own, which is exactly the guarantee the old comment here
  *   said we lacked.
  * - **Floor (migrated) pointer** — delegate to {@link notifState.onMessageSeen}'s
- *   floor advancement contract when its named row is resident; otherwise stash.
+ *   floor advancement contract when its named row is resident. When the
+ *   cache's answer (`cacheAnswer`) shows the row is not cached at all, the
+ *   floor's timestamp is the only position it has: it is the boundary the count
+ *   uses, so a marker strictly after it is a forward advance. Otherwise stash.
  *
  * `match` is the resolved local row for an inbound XEP-0490 marker, so it
  * carries the archive id we just matched on: `makeReadPointer` mints an
@@ -89,7 +92,8 @@ function resolveAdvance<T extends NotificationMessage & { stanzaId?: string }>(
   messages: T[],
   meta: ReadMarkerMeta,
   currentFirstNewMessageRow: MessageRowRef | undefined,
-  kind: 'chat' | 'room'
+  kind: 'chat' | 'room',
+  cacheAnswer: boolean,
 ): ReadPointer | 'no-advance' | 'undecidable' {
   if (!current) return makeReadPointer(match, kind)
 
@@ -99,7 +103,12 @@ function resolveAdvance<T extends NotificationMessage & { stanzaId?: string }>(
     return ahead ? makeReadPointer(match, kind) : 'no-advance'
   }
 
-  if (findMessageRowIndex(messages, pointerRowRef(current)) === -1) return 'undecidable'
+  if (findMessageRowIndex(messages, pointerRowRef(current)) === -1) {
+    // A marker at or before the floor would move the counted boundary back, so it stays undecided.
+    return cacheAnswer && mayAdvanceTo(exactPosition(match, kind), current.order)
+      ? makeReadPointer(match, kind)
+      : 'undecidable'
+  }
 
   const updated = notifState.onMessageSeen(
     {
@@ -122,7 +131,16 @@ export function resolveRemoteDisplayed<T extends NotificationMessage & { stanzaI
   currentFirstNewMessageRow: MessageRowRef | undefined,
   stanzaId: string,
   kind: 'chat' | 'room',
-  options: { isActive: boolean; roomJid?: string }
+  options: {
+    isActive: boolean
+    roomJid?: string
+    /**
+     * `messages` is the message cache's answer for the marker: the marker's row and, for a floor
+     * pointer, the floor's own row whenever the cache holds it. A floor row missing from it is not
+     * cached at all, not merely off the resident slice.
+     */
+    cacheAnswer?: boolean
+  }
 ): RemoteDisplayedResolution {
   // Re-recording the stanza already stashed changes nothing, and the stores rebuild an entry for
   // every resolution that is not `unchanged`. A duplicate notification, a reconnect seed and a
@@ -136,7 +154,7 @@ export function resolveRemoteDisplayed<T extends NotificationMessage & { stanzaI
     getRoomModerationId({ ...m, roomJid: m.roomJid, from: m.from }) === stanzaId))
   if (!match) return stash()
 
-  const outcome = resolveAdvance(meta.readPointer, match, messages, meta, currentFirstNewMessageRow, kind)
+  const outcome = resolveAdvance(meta.readPointer, match, messages, meta, currentFirstNewMessageRow, kind, options.cacheAnswer ?? false)
   if (outcome === 'undecidable') return stash()
   if (outcome === 'no-advance') {
     if (options.isActive && currentFirstNewMessageRow !== undefined) {
@@ -177,7 +195,7 @@ export function supersededPendingMarker(
 }
 
 /**
- * Order a freshly stashed marker against the message cache.
+ * Order a stashed marker against the message cache.
  *
  * A marker is stashed when no RESIDENT row carries its stanza-id, and a backgrounded entity keeps
  * no resident rows at all. The cache is the same archive without the memory window, so `lookup`
@@ -189,6 +207,8 @@ export function supersededPendingMarker(
  *
  * `isCurrent` must be captured before the read. The stash must still name this marker afterwards:
  * a newer one may have replaced it during the read.
+ *
+ * Resolves to whether the cache holds the marker, applied or not.
  */
 export async function resolveStashedRemoteDisplayed<T>(
   stanzaId: string,
@@ -196,9 +216,11 @@ export async function resolveStashedRemoteDisplayed<T>(
   getPending: () => string | undefined,
   lookup: () => Promise<T[] | null>,
   apply: (rows: T[]) => void
-): Promise<void> {
+): Promise<boolean> {
   const rows = await lookup()
-  if (rows?.length && isCurrent() && getPending() === stanzaId) apply(rows)
+  if (!rows?.length) return false
+  if (isCurrent() && getPending() === stanzaId) apply(rows)
+  return true
 }
 
 // ============================================================================

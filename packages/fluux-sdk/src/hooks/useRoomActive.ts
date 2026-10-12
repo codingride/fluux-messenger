@@ -1,5 +1,6 @@
 import { isSpamModerated } from '../utils/moderation'
 import { rowRefOfPointer } from '../stores/shared/readPointer'
+import { getMessageIngressVersion } from '../stores/shared/messageIngress'
 import type { MessageRowRef } from '../utils/messageIdentity'
 import { useCallback, useMemo } from 'react'
 import { roomStore, roomReadStateGeneration } from '../stores/roomStore'
@@ -8,6 +9,7 @@ import { useRoomStore } from '../react/storeHooks'
 import { useXMPPContext } from '../provider'
 import type { Room, RoomMessage, ChatStateNotification, FileAttachment, HistoryQueryState, RoomFeatures, SendMessageOptions, ReplyTarget } from '../core/types'
 import { createFetchOlderHistory, createContinueCatchUp, pickOldestArchiveId } from './shared'
+import { getGapList } from '../stores/shared/mamGap'
 import { usePolls } from './usePolls'
 import { useRoomModeration } from './useRoomModeration'
 import { useRoomManagement } from './useRoomManagement'
@@ -51,8 +53,7 @@ export function useRoomActive() {
   const { client } = useXMPPContext()
 
   // Slice actions sourced from the focused hooks (each subscribes to no store,
-  // so they add no re-render triggers). Only the actions this hook already
-  // exposed are destructured — the public surface is unchanged.
+  // so they add no re-render triggers).
   const { sendPoll, votePoll, closePoll } = usePolls()
   const { moderateMessage, setAffiliation, setRole } = useRoomModeration()
   const {
@@ -68,6 +69,7 @@ export function useRoomActive() {
   // --- Active room state (focused selectors) ---
 
   const activeRoomJid = useRoomStore((s) => s.activeRoomJid)
+  const activeMessageIngressVersion = useRoomStore((s) => getMessageIngressVersion('room', s.activeRoomJid))
 
   // Use focused selectors from separated entity/meta/runtime maps to avoid
   // re-renders when unrelated rooms change. Each Map.get() returns the same
@@ -171,11 +173,11 @@ export function useRoomActive() {
     if (!s.activeRoomJid) return null
     return s.mamQueryStates.get(s.activeRoomJid)?.error ?? null
   })
-  // Source the gap marker from the PERSISTED roomGaps (survives reload), not the
-  // ephemeral mamQueryStates.forwardGapTimestamp which is lost on reload.
-  const mamForwardGapTimestamp = useRoomStore((s) => {
+  // Gap markers come from the PERSISTED roomGaps (survives reload). The selector
+  // returns the stored list itself, so its reference is stable between changes.
+  const activeRoomGaps = useRoomStore((s) => {
     if (!s.activeRoomJid) return undefined
-    return s.roomGaps.get(s.activeRoomJid)?.start
+    return s.roomGaps.get(s.activeRoomJid)
   })
 
   // Memoize the MAM state object to maintain stable reference
@@ -187,10 +189,11 @@ export function useRoomActive() {
       isHistoryComplete: mamIsHistoryComplete,
       isCaughtUpToLive: mamIsCaughtUpToLive,
       oldestFetchedId: mamOldestFetchedId,
-      forwardGapTimestamp: mamForwardGapTimestamp,
+      forwardGapTimestamp: activeRoomGaps?.at(-1)?.start,
+      gaps: activeRoomGaps,
       error: mamError,
     }
-  }, [activeRoomJid, mamIsLoading, mamIsHistoryComplete, mamIsCaughtUpToLive, mamOldestFetchedId, mamForwardGapTimestamp, mamError])
+  }, [activeRoomJid, mamIsLoading, mamIsHistoryComplete, mamIsCaughtUpToLive, mamOldestFetchedId, activeRoomGaps, mamError])
 
   // Get typing users for the active room as an array
   const activeTypingUsers = useMemo(() => {
@@ -255,8 +258,8 @@ export function useRoomActive() {
   )
 
   const sendWhisper = useCallback(
-    async (roomJid: string, nick: string, body: string): Promise<string> => {
-      return await client.rooms.sendWhisper(roomJid, nick, body)
+    async (roomJid: string, nick: string, body: string, options?: { attachment?: FileAttachment }): Promise<string> => {
+      return options ? await client.rooms.sendWhisper(roomJid, nick, body, options) : await client.rooms.sendWhisper(roomJid, nick, body)
     },
     [client]
   )
@@ -367,7 +370,7 @@ export function useRoomActive() {
         loadFromCache: (id, limit) => roomStore.getState().loadMessagesFromCache(id, { limit }),
         getMessages: (id) => roomStore.getState().messages.get(id) ?? [],
         isAtLiveEdge: (id) => roomStore.getState().windowAtLiveEdge.get(id) !== false,
-        getGap: (id) => roomStore.getState().roomGaps.get(id),
+        getGaps: (id) => getGapList(roomStore.getState().roomGaps, id),
         queryMAM: async (id, options) => {
           await client.messages.queryRoomMAM({ roomJid: id, ...options })
         },
@@ -501,6 +504,7 @@ export function useRoomActive() {
       activeRoomJid,
       activeRoom,
       activeMessages,
+      activeMessageIngressVersion,
       activeTypingUsers,
       activeAnimation,
       targetMessageId,
@@ -518,6 +522,7 @@ export function useRoomActive() {
       activeRoomJid,
       activeRoom,
       activeMessages,
+      activeMessageIngressVersion,
       activeTypingUsers,
       activeAnimation,
       targetMessageId,

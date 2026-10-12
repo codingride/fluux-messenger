@@ -1,4 +1,5 @@
 import { rowRefOfPointer } from '../stores/shared/readPointer'
+import { getMessageIngressVersion } from '../stores/shared/messageIngress'
 import type { MessageRowRef } from '../utils/messageIdentity'
 import { useCallback, useMemo } from 'react'
 import { useShallow } from 'zustand/react/shallow'
@@ -10,6 +11,7 @@ import type { Conversation, HistoryQueryState, Message } from '../core'
 import { NS_MAM } from '../core/namespaces'
 import { useChatActions } from './useChatActions'
 import { createContinueCatchUp } from './shared'
+import { getGapList } from '../stores/shared/mamGap'
 
 /**
  * Stable empty array references to prevent infinite re-renders.
@@ -45,9 +47,8 @@ export function useChatActive() {
   const { client } = useXMPPContext()
 
   // Shared actions sourced from useChatActions (which subscribes to no store,
-  // so it adds no re-render triggers). Only the actions this hook already
-  // exposed are destructured — the public surface is unchanged. The
-  // active-specific actions (retryMessage, scroll-window helpers, catch-up)
+  // so it adds no re-render triggers). The active-specific actions
+  // (retryMessage, scroll-window helpers, catch-up)
   // stay defined below.
   const {
     sendMessage,
@@ -77,6 +78,7 @@ export function useChatActive() {
   // --- Active conversation state (focused selectors) ---
 
   const activeConversationId = useChatStore((s) => s.activeConversationId)
+  const activeMessageIngressVersion = useChatStore((s) => getMessageIngressVersion('chat', s.activeConversationId))
 
   // Use focused selectors from separated entity/meta maps to avoid re-renders
   // when unrelated conversations change. Entity fields (id, name, type) are stable;
@@ -194,10 +196,11 @@ export function useChatActive() {
     if (!s.activeConversationId) return null
     return s.mamQueryStates.get(s.activeConversationId)?.error ?? null
   })
-  // Gap marker sourced from the PERSISTED conversationGaps (survives reload), parity with rooms.
-  const mamForwardGapTimestamp = useChatStore((s) => {
+  // Gap markers come from the PERSISTED conversationGaps (survives reload), parity
+  // with rooms. The selector returns the stored list itself, a stable reference.
+  const activeConversationGaps = useChatStore((s) => {
     if (!s.activeConversationId) return undefined
-    return s.conversationGaps.get(s.activeConversationId)?.start
+    return s.conversationGaps.get(s.activeConversationId)
   })
 
   const activeHistoryState = useMemo((): HistoryQueryState | null => {
@@ -208,10 +211,11 @@ export function useChatActive() {
       isHistoryComplete: mamIsHistoryComplete,
       isCaughtUpToLive: mamIsCaughtUpToLive,
       oldestFetchedId: mamOldestFetchedId,
-      forwardGapTimestamp: mamForwardGapTimestamp,
+      forwardGapTimestamp: activeConversationGaps?.at(-1)?.start,
+      gaps: activeConversationGaps,
       error: mamError,
     }
-  }, [activeConversationId, mamIsLoading, mamHasQueried, mamIsHistoryComplete, mamIsCaughtUpToLive, mamOldestFetchedId, mamForwardGapTimestamp, mamError])
+  }, [activeConversationId, mamIsLoading, mamHasQueried, mamIsHistoryComplete, mamIsCaughtUpToLive, mamOldestFetchedId, activeConversationGaps, mamError])
 
   // --- Active-specific actions (not in useChatActions) ---
 
@@ -244,7 +248,7 @@ export function useChatActive() {
         loadFromCache: (id, limit) => chatStore.getState().loadMessagesFromCache(id, { limit }),
         getMessages: (id) => chatStore.getState().messages.get(id) || [],
         isAtLiveEdge: (id) => chatStore.getState().windowAtLiveEdge.get(id) !== false,
-        getGap: (id) => chatStore.getState().conversationGaps.get(id),
+        getGaps: (id) => getGapList(chatStore.getState().conversationGaps, id),
         queryMAM: async (id, options) => {
           await client.messages.queryMAM({ with: id, ...options })
         },
@@ -338,6 +342,7 @@ export function useChatActive() {
       firstNewMessageCount: activeFirstNewMessageCount,
       readPointerRow: activeReadPointerRow,
       activeMessages,
+      activeMessageIngressVersion,
       activeTypingUsers,
       activeAnimation,
       targetMessageId,
@@ -348,7 +353,7 @@ export function useChatActive() {
     }),
     [
       activeConversationId, activeConversation, activeFirstNewMessageRow, activeFirstNewMessageIsProvisional,
-      activeFirstNewMessageCount, activeReadPointerRow, activeMessages,
+      activeFirstNewMessageCount, activeReadPointerRow, activeMessages, activeMessageIngressVersion,
       activeTypingUsers, activeAnimation, targetMessageId, supportsMAM, activeHistoryState,
       activeWindowAtLiveEdge, actions,
     ]

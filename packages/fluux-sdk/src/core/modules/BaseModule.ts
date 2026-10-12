@@ -1,3 +1,5 @@
+import { AvatarStateOwner } from '../../utils/avatarState'
+import { getBareJid } from '../jid'
 import type { DeferredDecryptEngine } from '../e2ee/deferredDecrypt'
 import { captureStorageScope } from '../../utils/storageScope'
 import type { Client, Element } from '@xmpp/client'
@@ -15,7 +17,10 @@ import type { FastTokenStorageAdapter } from '../fastTokenStorage'
  * @internal
  */
 export interface ModuleDependencies {
+  avatarState?: AvatarStateOwner
   stores: StoreBindings | null
+  flushRoomOccupants?: (roomJid?: string) => void
+  waitForRoomOccupants?: (roomJid: string) => Promise<void>
   /**
    * Read surface for presence-machine state. Presence is machine state, not
    * connection-store state, so modules consult it here rather than through the
@@ -31,7 +36,7 @@ export interface ModuleDependencies {
   ) => void
   /**
    * Emit SDK events for store bindings.
-   * These events are subscribed to by XMPPProvider to update Zustand stores.
+   * See createStoreBindings for the event-to-store mapping and update timing.
    */
   emitSDK: <K extends keyof SDKEvents>(event: K, payload: SDKEvents[K]) => void
   /** The underlying xmpp.js client, or null when no session is live. */
@@ -114,6 +119,12 @@ export interface ModuleDependencies {
  */
 export abstract class BaseModule {
   protected deps: ModuleDependencies
+  protected readonly avatarState: AvatarStateOwner
+
+  protected getRoomWithOccupants(roomJid: string) {
+    this.deps.flushRoomOccupants?.(roomJid)
+    return this.deps.stores?.room.getRoom(roomJid)
+  }
 
   protected captureQuery() {
     const scope = captureStorageScope()
@@ -133,5 +144,9 @@ export abstract class BaseModule {
 
   constructor(deps: ModuleDependencies) {
     this.deps = deps
+    this.avatarState = deps.avatarState ??= new AvatarStateOwner(() => {
+      const jid = deps.getCurrentJid?.()
+      return jid ? getBareJid(jid) : null
+    })
   }
 }

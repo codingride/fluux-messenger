@@ -160,6 +160,7 @@ vi.mock('@fluux/sdk', () => ({
     renameContact: vi.fn(),
     fetchContactNickname: vi.fn(),
   }),
+  useContactIdentities: () => new Map(),
   useRosterActions: () => ({
     removeContact: vi.fn(),
     renameContact: vi.fn(),
@@ -226,6 +227,7 @@ vi.mock('@fluux/sdk', () => ({
   useConnection: () => ({
     status: 'online',
   }),
+  useConnectionStatus: () => ({ jid: 'me@example.com', isConnected: true }),
   useConsole: () => ({
     toggle: vi.fn(),
     isOpen: false,
@@ -566,11 +568,19 @@ vi.mock('./ChatView', () => ({
 }))
 
 vi.mock('./RoomView', () => ({
-  RoomView: ({ onBack }: { onBack: () => void }) => (
-    <div data-testid="room-view">
-      <span>Room: {getMockState().activeRoomJid}</span>
-      <button type="button" data-testid="room-back" onClick={onBack}>Back</button>
-    </div>
+  RoomView: ({ onBack, onShowOccupantsChange, covered, renderMobileOccupants, onCloseMobileOccupants }: { onBack: () => void; onShowOccupantsChange?: (show: boolean) => void; covered?: boolean; renderMobileOccupants?: (panel: React.ReactNode) => React.ReactNode; onCloseMobileOccupants?: () => void }) => (
+    <>
+      <div data-testid="room-view" data-covered={covered ? 'true' : 'false'}>
+        <span>Room: {getMockState().activeRoomJid}</span>
+        <button type="button" data-testid="room-back" onClick={onBack}>Back</button>
+        <button type="button" data-testid="room-members" onClick={() => onShowOccupantsChange?.(true)}>Members</button>
+      </div>
+      {renderMobileOccupants?.(
+        <div data-testid="occupant-panel">
+          <button type="button" data-testid="occupant-close" onClick={onCloseMobileOccupants}>Close</button>
+        </div>,
+      )}
+    </>
   ),
 }))
 
@@ -702,6 +712,51 @@ describe('ChatLayout - Tab Memory', () => {
 
       await waitFor(() => expect(screen.getByTestId('probe-path').textContent).toBe('/rooms'))
       expect(mockActivateRoom).toHaveBeenCalledWith(null)
+    })
+
+    it('returns from the member list to the room on a left-edge swipe', async () => {
+      setMockState({ activeRoomJid: 'lobby@conference.example.com', rooms: new Map([['lobby@conference.example.com', { jid: 'lobby@conference.example.com', joined: true }]]) })
+      render(<ChatLayoutWithProbe initialRoute="/rooms/lobby@conference.example.com" />)
+
+      fireEvent.click(screen.getByTestId('room-members'))
+      const panel = await screen.findByTestId('occupant-panel')
+      // The list slides in over the room, then the room stays mounted under it, out of reach.
+      expect(screen.getByTestId('room-view')).toHaveAttribute('data-covered', 'false')
+      await waitFor(() => expect(screen.getByTestId('room-view')).toHaveAttribute('data-covered', 'true'))
+
+      fireEvent.touchStart(panel, { touches: [{ identifier: 1, clientX: 12, clientY: 300 }] })
+      fireEvent.touchMove(panel, { touches: [{ identifier: 1, clientX: 125, clientY: 310 }] })
+      fireEvent.touchEnd(panel, { changedTouches: [{ identifier: 1, clientX: 125, clientY: 310 }] })
+
+      await waitFor(() => expect(screen.queryByTestId('occupant-panel')).not.toBeInTheDocument())
+      expect(screen.getByTestId('room-view')).toHaveAttribute('data-covered', 'false')
+      expect(screen.getByTestId('probe-path').textContent).toBe('/rooms/lobby@conference.example.com')
+      expect(mockActivateRoom).not.toHaveBeenCalledWith(null)
+    })
+
+    it('slides the member list out before closing it', async () => {
+      setMockState({ activeRoomJid: 'lobby@conference.example.com', rooms: new Map([['lobby@conference.example.com', { jid: 'lobby@conference.example.com', joined: true }]]) })
+      render(<ChatLayoutWithProbe initialRoute="/rooms/lobby@conference.example.com" />)
+
+      fireEvent.click(screen.getByTestId('room-members'))
+      await waitFor(() => expect(screen.getByTestId('room-view')).toHaveAttribute('data-covered', 'true'))
+
+      fireEvent.click(screen.getByTestId('occupant-close'))
+      expect(screen.getByTestId('occupant-panel')).toBeInTheDocument()
+      expect(screen.getByTestId('room-view')).toHaveAttribute('data-covered', 'false')
+      await waitFor(() => expect(screen.queryByTestId('occupant-panel')).not.toBeInTheDocument())
+      expect(screen.getByTestId('probe-path').textContent).toBe('/rooms/lobby@conference.example.com')
+    })
+
+    it('returns from a settings screen to the settings list on a left-edge swipe', async () => {
+      render(<ChatLayoutWithProbe initialRoute="/settings/appearance" />)
+
+      const view = await screen.findByTestId('settings-view')
+      fireEvent.touchStart(view, { touches: [{ identifier: 1, clientX: 12, clientY: 300 }] })
+      fireEvent.touchMove(view, { touches: [{ identifier: 1, clientX: 125, clientY: 310 }] })
+      fireEvent.touchEnd(view, { changedTouches: [{ identifier: 1, clientX: 125, clientY: 310 }] })
+
+      await waitFor(() => expect(screen.getByTestId('probe-path').textContent).toBe('/settings'))
     })
 
     it('keeps the conversation open during a vertical scroll from the edge', () => {

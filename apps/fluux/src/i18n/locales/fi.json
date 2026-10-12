@@ -339,6 +339,7 @@
         "voiceRequestSent": "Puheoikeuspyyntö lähetetty",
         "voiceRequests": "Puheoikeuspyynnöt",
         "grantVoice": "Anna ääni",
+        "voiceApprovalUnanswered": "Huone ei myöntänyt puheoikeutta. Henkilö on ehkä poistunut huoneesta tai hänellä on jo puheoikeus.",
         "revokeVoice": "Poista ääni",
         "grantModerator": "Anna moderaattori",
         "revokeModerator": "Poista moderaattori",
@@ -390,6 +391,9 @@
         "whisperingTo": "Kuiskaat yksityisesti {{nick}}:lle",
         "whisperThread": "Yksityinen {{nick}}:n kanssa",
         "whisperCounterpartGone": "{{nick}} ei ole enää huoneessa, et voi vastata",
+        "whisperAttachmentTitle": "Lähetetäänkö yksityinen liite?",
+        "whisperAttachmentWarning": "Yksityisviesti on väliaikainen, mutta tiedostot jäävät latauspalvelimelle sen säilytyskäytännön mukaisesti. Vastaanottajat voivat ladata ja säilyttää kopioita.",
+        "whisperAttachmentRetention": "Säilytysaika latauspalvelimella: {{duration}}. Vastaanottajat voivat ladata ja säilyttää kopioita.",
         "whisperPlaceholder": "Kuiskaa {{nick}}:lle...",
         "ignoreUser": "Ohita tässä huoneessa",
         "stopIgnoring": "Lopeta ohittaminen",
@@ -457,6 +461,7 @@
         "nickEdgeWhitespace": "Nimessä on ylimääräisiä välilyöntejä reunoilla",
         "nickHiddenChars": "Nimi sisältää piilotettuja merkkejä",
         "mentionSuggestions": "Mainintaehdotukset",
+        "mentionsCount": "Maininnat: {{count}}",
         "unreadMessages": "{{displayCount}} lukematon viesti",
         "unreadMessages_other": "{{displayCount}} lukematonta viestiä"
     },
@@ -491,6 +496,7 @@
         "replyQuoteHiddenEncrypted": "Lainaus piilotettu: alkuperäinen oli salattu",
         "forwardMessage": "Välitä viesti (tulossa pian)",
         "moreReactions": "Lisää reaktioita",
+        "reactions": "Reaktiot",
         "reactionOthers": "{{count}} muuta",
         "moreOptions": "Lisää vaihtoehtoja",
         "reactWith": "Reagoi {{emoji}}",
@@ -532,6 +538,7 @@
         "copyLinkChoose": "Mikä linkki kopioidaan?",
         "openInBrowser": "Avaa selaimessa",
         "saveImage": "Tallenna kuva",
+        "mediaUnavailableOrUnsupported": "Tätä tiedostoa ei voi toistaa täällä: se ei ehkä ole saatavilla tai sen muotoa ei tueta",
         "videoFormatUnsupported": "Tätä videomuotoa ei voi toistaa tässä",
         "videoUnavailable": "Video ei ole enää saatavilla",
         "audioFormatUnsupported": "Tätä äänimuotoa ei voi toistaa tässä",
@@ -646,6 +653,17 @@
         "yesterday": "Eilen"
     },
     "settings": {
+    "nativeNotificationTone": "Ilmoitusääni",
+    "nativeNotificationToneDescription": "Valitse taustailmoitusten ääni. Äänetön säilyttää sovelluksen sisäiset äänet.",
+    "nativeSoundDescription": "Toista ääniä sovelluksessa ja taustailmoituksissa.",
+    "notificationTone_default": "Järjestelmän oletus",
+    "notificationTone_bell": "Kello",
+    "notificationTone_chime": "Kellopeli",
+    "notificationTone_pulse": "Pulssi",
+    "notificationTone_silent": "Äänetön",
+    "oxNotificationPreview": "OpenPGP-esikatselut ilmoituksissa",
+    "oxNotificationPreviewDescription": "Salli ilmoituslaajennuksen hakea ja purkaa tämän tilin viestejä. Esikatselut noudattavat iOS-asetuksia ja voivat näkyä lukitusnäytössä, jos valittuna on Aina.",
+    "oxNotificationPreviewFailed": "Esikatseluja ei voitu ottaa käyttöön. Tarkista, että OpenPGP ja tallennettu yhteys ovat käytettävissä.",
         "title": "Asetukset",
         "categories": {
             "profile": "Profiili",
@@ -725,6 +743,7 @@
         "accentThemeDefault": "Teeman oletus",
         "fontSize": "Fonttikoko",
         "fontSizeDescription": "Säädä tekstin kokoa sovelluksessa",
+        "fontSizeSystemDescription": "Suhteessa iOS-asetuksissa valittuun tekstikokoon",
         "decreaseFontSize": "Pienennä kirjasinkokoa",
         "increaseFontSize": "Suurenna kirjasinkokoa",
         "sound": "Toista ilmoitusäänet",
@@ -1518,5 +1537,12 @@
             "archiveUnsupported": "Palvelin ei tue arkistohakua. Kokeile hakea keskustelun sisältä.",
             "serverFailed": "Palvelinhaku epäonnistui"
         }
+    },
+    "notificationPreview": {
+        "activity": "Uutta toimintaa",
+        "reaction": "{{nickname}} reagoi: {{text}}",
+        "edit": "{{nickname}} (muokattu): {{text}}",
+        "retraction": "{{nickname}} poisti viestin",
+        "messages": "{{nickname}}: {{count}} uutta viestiä"
     }
 }
