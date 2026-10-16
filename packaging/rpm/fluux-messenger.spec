@@ -1,5 +1,5 @@
 Name:           fluux-messenger
-Version:        0.17.4
+Version:        0.18.0
 Release:        1%{?dist}
 Summary:        Modern XMPP desktop client
 

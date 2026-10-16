@@ -70,7 +70,7 @@
 - **Polls** - Create polls in rooms with emoji voting, deadlines, single or multi-vote modes, and live result tallies
 
 ### Group Chat & Collaboration
-- **Multi-user Chat** - Complete MUC support with roles, affiliations, custom hats (role badges), @mentions, and bookmarks
+- **Multi-user Chat** - Complete MUC support with roles, affiliations, custom hats (role badges), @mentions, and bookmarks. When the server provides affiliation lists, the participants panel separates affiliated accounts who are absent from the room under **Offline members**, with each account's affiliation shown. This section starts collapsed when it contains more than 10 offline members; select its heading to expand or collapse it.
 - **Room Unread Badges** - Joined rooms show their total unread count over the avatar, like direct chats. The badge is grey for ordinary unread activity and uses the attention colour for mentions or notify-all rooms; muted rooms keep a grey unread badge. The separate `@N` marker shows mentions. Room tooltips show room status, or occupants and your nickname, without repeating unread counts.
 - **Nickname Mentions** - Room mentions such as `@James` and `james:` match the person's name color even when typed in another letter case; mentions of you use your own-name color. Matching uses identities learned from occupants and loaded messages while viewing that room, remembered for the current app session after people leave or you switch rooms. An author not yet seen in that view may use a JID or nickname color until their messages load. If someone else takes a nickname, mentions follow its current holder.
 - **Permission to Speak** - In moderated rooms, visitors choose **Request voice** in place of the public message composer. Room moderators review **Voice requests** and choose **Grant voice** or **Dismiss**. Visitors can request voice again after an unanswered request or an error; the button is disabled while offline or sending. Public messaging becomes available only when the server grants permission. Dismissing a request only removes it locally; whisper permissions remain governed by the room's existing private-message policy.
@@ -91,6 +91,7 @@
 - **Smart Filters** - Type filter pills, `in:` prefix autocomplete, quoted exact-phrase matching, and keyboard-navigable results with context preview
 
 ### Theming & Personalization
+- **Reading Width** - Chats and rooms use the full available width by default. Enable **Limit conversation width** in Settings > Appearance for a centered message column, initially 760 px wide and adjustable from 560 to 1120 px. The column fits narrower windows; the width and toggle are saved locally on this device.
 - **14 Built-in Themes** - Catppuccin, Nord, Dracula, Gruvbox, Tokyo Night, Rosé Pine, Solarized and more, in light and dark mode
 - **Custom Themes** - Import/export themes as JSON, pick a custom accent color, or write CSS overrides in the built-in editor
 - **Synced Across Devices** - Theme, accent, and font size preferences are stored server-side and follow you everywhere
@@ -258,6 +259,8 @@ The web version downloads each encrypted attachment and decrypts it in the brows
 #### Does Fluux Messenger support end-to-end encryption?
 
 Yes. **OpenPGP (OX-IM, XEP-0373/0374)** is implemented for one-to-one chats. Messages in 1:1 conversations are encrypted and signed using each participant's published OpenPGP key. Features include automatic key discovery, peer verification with cross-device sync, secret key backup, and MAM history decryption. Group-chat (MUC) encryption is not yet supported. **OMEMO** may follow: beyond the implementation work it raises licensing questions we want to address properly. We're also watching **MLS** as an option for large-scale group chats.
+
+While Fluux is running in the background, app-generated notifications wait for encrypted messages to become readable before showing a preview. A message read before decryption completes does not produce a late notification. Unsupported encryption methods such as OMEMO still produce an unsupported-method notice. Remote iOS push previews have a separate [per-account opt-in](docs/IOS_DEVELOPMENT.md#openpgp-notification-previews). See the [notification content contract](docs/NOTIFICATION_CONTENT.md) for remote push fallback text and platform differences.
 
 #### When will voice and video calls be available?
 

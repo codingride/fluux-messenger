@@ -181,3 +181,72 @@ describe('settingsStore', () => {
     })
   })
 })
+
+describe('reading width persistence', () => {
+  beforeEach(() => {
+    vi.mocked(localStorage.getItem).mockReset().mockReturnValue(null)
+    vi.mocked(localStorage.setItem).mockReset()
+    vi.resetModules()
+  })
+
+  it('uses full width for untouched settings without persisting the default', async () => {
+    const { useSettingsStore: store } = await import('./settingsStore')
+    expect(store.getState().readingWidthEnabled).toBe(false)
+    expect(store.getState().readingWidth).toBe(760)
+    expect(localStorage.setItem).not.toHaveBeenCalled()
+  })
+
+  it('keeps full width when storage is unavailable', async () => {
+    vi.mocked(localStorage.getItem).mockImplementation(() => { throw new Error('unavailable') })
+    const { useSettingsStore: store } = await import('./settingsStore')
+    expect(store.getState().readingWidthEnabled).toBe(false)
+    expect(store.getState().readingWidth).toBe(760)
+  })
+
+  it('reloads an explicit opt-in with the default slider width', async () => {
+    const saved = new Map<string, string>()
+    vi.mocked(localStorage.getItem).mockImplementation(key => saved.get(key) ?? null)
+    vi.mocked(localStorage.setItem).mockImplementation((key, value) => { saved.set(key, value) })
+    const { useSettingsStore: store } = await import('./settingsStore')
+    store.getState().setReadingWidthEnabled(true)
+    vi.resetModules()
+    const { useSettingsStore: restored } = await import('./settingsStore')
+    expect(restored.getState().readingWidthEnabled).toBe(true)
+    expect(restored.getState().readingWidth).toBe(760)
+  })
+
+  it('reloads both the opt-out and preferred width', async () => {
+    const saved = new Map<string, string>()
+    vi.mocked(localStorage.getItem).mockImplementation(key => saved.get(key) ?? null)
+    vi.mocked(localStorage.setItem).mockImplementation((key, value) => { saved.set(key, value) })
+    const { useSettingsStore: store } = await import('./settingsStore')
+    store.getState().setReadingWidth(920)
+    store.getState().setReadingWidthEnabled(false)
+    vi.resetModules()
+    const { useSettingsStore: restored } = await import('./settingsStore')
+    expect(restored.getState().readingWidthEnabled).toBe(false)
+    expect(restored.getState().readingWidth).toBe(920)
+  })
+
+  it.each(['', 'NaN', 'Infinity', 'garbage', '0', '559', '1121'])(
+    'falls back safely for an invalid stored width: %s', async value => {
+      vi.mocked(localStorage.getItem).mockImplementation(key => key === 'fluux-reading-width' ? value : null)
+      const { useSettingsStore: store } = await import('./settingsStore')
+      expect(store.getState().readingWidth).toBe(760)
+    },
+  )
+
+  it('bounds widths and ignores non-finite updates even without storage', async () => {
+    const { useSettingsStore: store } = await import('./settingsStore')
+    vi.mocked(localStorage.setItem).mockImplementation(() => { throw new Error('unavailable') })
+    store.getState().setReadingWidth(100)
+    expect(store.getState().readingWidth).toBe(560)
+    store.getState().setReadingWidth(2000)
+    expect(store.getState().readingWidth).toBe(1120)
+    store.getState().setReadingWidth(NaN)
+    store.getState().setReadingWidth(Infinity)
+    expect(store.getState().readingWidth).toBe(1120)
+    store.getState().setReadingWidthEnabled(false)
+    expect(store.getState().readingWidthEnabled).toBe(false)
+  })
+})

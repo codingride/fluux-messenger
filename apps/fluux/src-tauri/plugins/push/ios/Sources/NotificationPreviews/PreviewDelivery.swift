@@ -15,6 +15,7 @@ final class PreviewDelivery {
     private let lock = NSLock()
     private var handler: ((UNNotificationContent) -> Void)?
     private var fallback: UNNotificationContent?
+    private var pushed: UNNotificationContent?
     private var cancel: (() -> Void)?
     private var ended = false
     private var timer: DispatchWorkItem?
@@ -22,7 +23,7 @@ final class PreviewDelivery {
     func begin(_ content: UNNotificationContent, completion: @escaping (UNNotificationContent) -> Void) {
         lock.lock()
         guard !ended else { lock.unlock(); return }
-        handler = completion; fallback = content
+        handler = completion; fallback = content; pushed = content
         let deadline = DispatchWorkItem { [weak self] in self?.finish() }
         timer = deadline
         lock.unlock()
@@ -31,6 +32,13 @@ final class PreviewDelivery {
     func updateFallback(_ content: UNNotificationContent) {
         lock.lock(); defer { lock.unlock() }
         if !ended { fallback = content }
+    }
+    /// Whether an opted-in snapshot lets the engine look for `sender`'s messages.
+    static func covers(_ sender: String, snapshot: Data) -> Bool {
+        guard let input = (try? JSONSerialization.jsonObject(with: snapshot)) as? [String: Any],
+              input["opt_in"] as? Bool == true,
+              let peers = input["peers"] as? [String: Any] else { return false }
+        return peers[sender] != nil
     }
     func start(_ content: UNNotificationContent, snapshot: Data?, sender: String?, allowed: Bool,
                isCurrent: @escaping (Data) -> Bool, engine: Engine,
@@ -42,10 +50,8 @@ final class PreviewDelivery {
         let needsBegin = handler == nil
         lock.unlock()
         if needsBegin { begin(content, completion: completion) }
-        guard allowed, let snapshot = snapshot, let sender = sender,
-              var input = (try? JSONSerialization.jsonObject(with: snapshot)) as? [String: Any],
-              input["opt_in"] as? Bool == true,
-              let peers = input["peers"] as? [String: Any], peers[sender] != nil else { finish(); return }
+        guard allowed, let snapshot = snapshot, let sender = sender, Self.covers(sender, snapshot: snapshot),
+              var input = (try? JSONSerialization.jsonObject(with: snapshot)) as? [String: Any] else { finish(); return }
         guard isCurrent(snapshot) else { finish(); return }
         guard prepare(&input) else { finish(); return }
         input["sender"] = sender
@@ -64,13 +70,19 @@ final class PreviewDelivery {
         lock.lock()
         let completion = handler
         let content = fallback
+        let original = pushed
         let cancellation = cancel
         ended = true
-        handler = nil; fallback = nil; cancel = nil
+        handler = nil; fallback = nil; pushed = nil; cancel = nil
         timer?.cancel(); timer = nil
         lock.unlock()
         cancellation?()
         guard let completion = completion, let content = content else { return }
+        // Without an archive, keep the transport-safe push content.
+        if result?.archiveUnavailable == true, isCurrent(), let original = original {
+            completion(original)
+            return
+        }
         let selected = result.flatMap { isCurrent() ? select($0) : nil }
         if let selected = selected, isCurrent(), !selected.removeRequests.isEmpty {
             // Notification-center XPC can block; it must not delay content handoff.

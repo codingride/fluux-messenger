@@ -89,6 +89,52 @@ import UniformTypeIdentifiers
         }
     }
 
+    /// An opted-in snapshot that does not cover the sender leaves the server's body alone.
+    static func uncoveredBody() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session: [String: Any] = ["account": "me@example.com", "epoch": "fixture", "revision": "", "activated": 0]
+        let snapshot = try JSONSerialization.data(withJSONObject: [
+            "account": "me@example.com", "opt_in": true, "peers": ["bob@example.com": []], "ledger": session])
+        let content = UNMutableNotificationContent()
+        content.body = "Plain message"
+        content.userInfo = ["from": "alice@example.com/phone", "to": "me@example.com"]
+        let service = NotificationService()
+        service.loadNames = { SharedNames(account: "me@example.com") }
+        service.readSnapshot = { snapshot }
+        service.ledgerRoot = { root }
+        var delivered = false
+        service.didReceive(UNNotificationRequest(identifier: "uncovered", content: content, trigger: nil)) { result in
+            precondition(result.body == "Plain message", "Got '\(result.body)'")
+            delivered = true
+        }
+        precondition(delivered)
+    }
+
+    /// A push the server marks as unencrypted keeps its body without an archive fetch.
+    static func serverPlaintext() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session: [String: Any] = ["account": "me@example.com", "epoch": "fixture", "revision": "", "activated": 0]
+        let snapshot = try JSONSerialization.data(withJSONObject: [
+            "account": "me@example.com", "opt_in": true, "peers": ["alice@example.com": []], "ledger": session])
+        let content = UNMutableNotificationContent()
+        content.body = "Plain message"
+        content.userInfo = ["from": "alice@example.com/phone", "to": "me@example.com", "encrypted": false]
+        let service = NotificationService()
+        service.loadNames = { SharedNames(account: "me@example.com") }
+        service.readSnapshot = { snapshot }
+        service.ledgerRoot = { root }
+        var delivered = false
+        service.didReceive(UNNotificationRequest(identifier: "server-plaintext", content: content, trigger: nil)) { result in
+            precondition(result.body == "Plain message", "Got '\(result.body)'")
+            delivered = true
+        }
+        precondition(delivered)
+    }
+
     static func fixtureImage() -> Data {
         let context = CGContext(data: nil, width: 640, height: 480, bitsPerComponent: 8, bytesPerRow: 0,
                                 space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
@@ -177,6 +223,15 @@ import UniformTypeIdentifiers
         precondition(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Avatars").path))
     }
 
+    static func conversations() {
+        precondition(NotificationPresentation.conversation(of: ["__EXTRA__": ["navTarget": "Alice@Example.com"]]) == "alice@example.com")
+        precondition(NotificationPresentation.conversation(of: ["from": "Alice@Example.com/phone"]) == "alice@example.com")
+        precondition(NotificationPresentation.conversation(of: ["from": "team@conference.example.com/Bob"]) == "team@conference.example.com")
+        for userInfo: [AnyHashable: Any] in [[:], ["from": "example.com"], ["from": ""], ["from": 42], ["to": "me@example.com"]] {
+            precondition(NotificationPresentation.conversation(of: userInfo) == nil, "\(userInfo)")
+        }
+    }
+
     static func intents() {
         let names = SharedNames(contacts: ["alice@example.com": "Alice"], rooms: ["team@muc.example.com": "Team"], account: "me@example.com")
         let direct = NotificationPresentation.intent(from: "alice@example.com/phone", body: "Fixture", names: names)!
@@ -218,10 +273,16 @@ import UniformTypeIdentifiers
                 delivered = true
             }
             precondition(delivered)
+        case "server-plaintext":
+            try! serverPlaintext()
+        case "uncovered-body":
+            try! uncoveredBody()
         case "mirror":
             try! mirror()
         case "intents":
             intents()
+        case "conversations":
+            conversations()
         case "direct":
             check(from: "alice@example.com/phone", expected: "alice@example.com")
             check(from: "alice@example.com", expected: "alice@example.com")

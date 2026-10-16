@@ -80,6 +80,17 @@ enum NotificationPresentation {
         return content
     }
 
+    /// The conversation a delivered notification belongs to: the `navTarget` the app
+    /// gives its own notifications (the notification plugin keeps `extra` under
+    /// `__EXTRA__`), or the bare JID a push comes from. A push whose `from` is not a
+    /// JID with a local part belongs to none.
+    static func conversation(of userInfo: [AnyHashable: Any]) -> String? {
+        if let extra = userInfo["__EXTRA__"] as? [String: Any], let target = extra["navTarget"] as? String {
+            return target.lowercased()
+        }
+        return (userInfo["from"] as? String).flatMap(bareJid)?.lowercased()
+    }
+
     static func bareJid(_ from: String) -> String? {
         let bare = String(from.prefix { $0 != "/" })
         let parts = bare.split(separator: "@", omittingEmptySubsequences: false)
@@ -116,8 +127,10 @@ enum NotificationPresentation {
     }
 
     static func content(for original: UNNotificationContent, names: SharedNames = SharedNames.load()) -> UNNotificationContent {
-        guard let content = original.mutableCopy() as? UNMutableNotificationContent,
-              let from = content.userInfo["from"] as? String else { return original }
+        guard let content = original.mutableCopy() as? UNMutableNotificationContent else { return original }
+        content.body = NotificationContent.transportBody(content.body, encrypted: content.userInfo["encrypted"] as? Bool,
+                                                        activity: PreviewWords.localized.activity)
+        guard let from = content.userInfo["from"] as? String else { return content }
         if content.threadIdentifier.isEmpty, let bare = bareJid(from) { content.threadIdentifier = bare }
         if let settings = NotificationSoundSettings.load(root: NotificationMirror.root), settings.account != nil, settings.account == names.account {
             let sound = settings.soundName(originalHasSound: content.sound != nil, owner: names.account)

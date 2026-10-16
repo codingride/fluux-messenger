@@ -13,6 +13,8 @@ struct PreviewEvent: Codable {
 struct PreviewResult: Codable {
     let events: [PreviewEvent]
     let complete: Bool
+    /// The server refused the archive query: it has no archive to read the pushed message from.
+    var archiveUnavailable: Bool? = nil
 }
 struct PreviewSelection {
     var body: String?
@@ -33,5 +35,14 @@ struct PreviewWords: Codable {
         template.replacingOccurrences(of: "{{nickname}}", with: nickname)
             .replacingOccurrences(of: "{{text}}", with: text)
             .replacingOccurrences(of: "{{count}}", with: String(count))
+    }
+}
+
+/// Transport-only policy from docs/NOTIFICATION_CONTENT.md, before any opted-in archive preview.
+enum NotificationContent {
+    static func transportBody(_ body: String, encrypted: Bool?, activity: String) -> String {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let placeholder = ["This message is encrypted", "[OpenPGP-encrypted message]", "[Encrypted message: could not decrypt]"].contains(trimmed)
+        return encrypted == true || trimmed.isEmpty || (encrypted != false && placeholder) ? activity : body
     }
 }

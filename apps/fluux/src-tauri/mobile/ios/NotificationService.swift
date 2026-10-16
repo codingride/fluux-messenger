@@ -4,6 +4,8 @@ import UserNotifications
 final class NotificationService: UNNotificationServiceExtension {
     private var delivery: PreviewDelivery?
     var loadNames: () -> SharedNames = { SharedNames.load() }
+    var readSnapshot: () -> Data? = { PreviewKeychain.read() }
+    var ledgerRoot: () -> URL? = { NotificationMirror.root }
     override func didReceive(_ request: UNNotificationRequest,
                              withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         delivery?.finish()
@@ -22,13 +24,16 @@ final class NotificationService: UNNotificationServiceExtension {
         let content = NotificationPresentation.content(for: request.content, names: names)
         delivery.begin(content, completion: finish)
         let sender = (content.userInfo["from"] as? String).flatMap(NotificationPresentation.bareJid)
-        let snapshot = PreviewKeychain.read()
-        guard let sender = sender, names.rooms[sender] == nil, let snapshot = snapshot,
+        let snapshot = readSnapshot()
+        // Only covered direct pushes can replace their transport-safe body with an archive preview.
+        guard content.userInfo["encrypted"] as? Bool != false,
+              let sender = sender, names.rooms[sender] == nil, let snapshot = snapshot,
+              PreviewDelivery.covers(sender, snapshot: snapshot),
               let values = (try? JSONSerialization.jsonObject(with: snapshot)) as? [String: Any],
               values["account"] as? String == names.account,
               let sessionData = try? JSONSerialization.data(withJSONObject: values["ledger"] as Any),
               let session = try? JSONDecoder().decode(PreviewLedger.Session.self, from: sessionData),
-              let root = NotificationMirror.root, let ledger = try? PreviewLedger(root: root) else { delivery.finish(); return }
+              let root = ledgerRoot(), let ledger = try? PreviewLedger(root: root) else { delivery.finish(); return }
         let words = (try? JSONSerialization.data(withJSONObject: values["words"] as Any))
             .flatMap { try? JSONDecoder().decode(PreviewWords.self, from: $0) } ?? PreviewWords.localized
         let fallback = content.mutableCopy() as? UNMutableNotificationContent

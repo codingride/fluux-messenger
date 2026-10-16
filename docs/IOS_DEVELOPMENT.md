@@ -273,7 +273,7 @@ What runs natively:
 - **Keychain.** The password, the FAST token and the secret that unlocks the
   OpenPGP key are kept in the iOS keychain under the service
   `net.processone.fluux`, accessible after first unlock and never synced to
-  other devices. A FAST token found in browser storage is moved to the keychain.
+  other devices. FAST tokens left in browser storage are ignored.
 - **Local settings and state.** WKWebView may evict the app's web storage, so
   localStorage keys are kept in `local-storage.json` in the app data
   directory: login, device identity, encryption trust, settings and drafts
@@ -287,7 +287,8 @@ What runs natively:
   APNs and XEP-0357 (see [Remote push notifications](#remote-push-notifications)).
   Tapping a notification attributed to the signed-in account opens its conversation. The app icon badge counts
   unread conversations, and a conversation's notifications are removed once
-  it is read.
+  it is read. Pushes whose `from` names no conversation (neutral alerts, or a
+  sender the server withheld) are removed when the app becomes active.
 - **Files and media.** Uploads, downloads and the media cache run in Rust, as
   on the desktop. Received files are saved or shared through the system share
   sheet, which offers Photos and Files.
@@ -328,9 +329,9 @@ read localStorage when their modules are imported.
 - `isWebviewOnlyKey` lists the keys that stay in the webview: the chat store
   blob, room gaps and coverage, cache markers, sync timestamps and message
   heights.
-- A native key found in the webview at launch (first launch, or a launch where
-  native storage failed) wins over the native copy and is moved, then removed
-  from the webview once stored.
+- Native storage is the only source for those keys: a copy left in the
+  webview is never read. When native storage cannot load, the app keeps working
+  on webview storage for that launch, and what it writes there stays there.
 
 The file is a stable contract, whatever the app uses to reach it:
 
@@ -449,11 +450,17 @@ foreground.
 ### From the XMPP server to the device
 
 After login, the app registers its APNs token with the push app server through the XEP-0050 command
-`register-push-apns`: `pushgatedev.process-one.net` for the `development` environment, `pushgate.process-one.net` for
+`register-push-apns`: `pushdev.fluux.io` for the `development` environment, `push.fluux.io` for
 `production`. It then enables push on the user's server (XEP-0357) on every fresh session. The user's server must
-advertise `urn:xmpp:push:0`.
+advertise `urn:xmpp:push:0`. The gateways are reached by the user's XMPP server over S2S (port 5269), not by a
+separate client connection.
 
-For push opt-out and session cleanup, see the
+Development builds use `pushdev.fluux.io`, APNs sandbox, and topic `net.processone.fluux`. Release builds use
+`push.fluux.io`, APNs production, and the same topic `net.processone.fluux`. Signing determines the APNs environment;
+gateway selection does not change the bundle identifier, signing, or entitlements. The development gateway must use
+topic `net.processone.fluux` to match the development build's actual bundle identifier.
+
+For legacy gateway migration, push opt-out and session cleanup, see the
 [gateway unregistration contract](PUSH_GATEWAY_UNREGISTER.md).
 
 ### Notification recipient ownership
@@ -538,9 +545,17 @@ extension reads an account-owned App Group mirror. It preserves pushes that
 already have no sound and leaves notification-preview preferences unchanged.
 The bundled tones are short linear PCM WAV files copied to the app and extension.
 
-A native opaque cover hides chat contents in app-switcher snapshots. Scene
-deactivation covers only that scene’s windows, leaving other active scenes
-visible; application deactivation covers all visible app windows. Activation
+A native blurred cover, with the app icon at its centre, hides chat contents in
+app-switcher snapshots. The thin material blurs text past reading; with Reduce
+Transparency, iOS renders it opaque. It follows the app's light or dark theme,
+which the web layer sends through `set_appearance`, and the system's when the app
+follows the system. Scene
+deactivation covers only visible windows belonging to that application-connected
+scene, leaving other active scenes visible; application deactivation covers all
+visible windows in application-connected scenes. UIKit-owned scenes outside that
+set, including the remote keyboard scene, are excluded from coverage. A scene or
+app returning to the foreground is uncovered before its windows reappear;
+activation after a deactivation without backgrounding, such as Control Center,
 removes covers only from active windows. The cover does not require or provide
 an app lock and does not protect screenshots, screen recordings, or notification
 previews. Accepted long presses and successful reaction
@@ -570,9 +585,12 @@ The extension builds the separate `nse-openpgp` Rust crate through `project.yml`
 both device and simulator. It opens a short TLS/SASL session without presence or read
 markers and pages the sender's personal archive within a fixed recent window. Each incoming
 OX event must have a valid signature from a known current key, the account recipient binding
-and the expected payload namespaces. Missing settings, keys or credentials keep the original
-fallback; opted-in unknown, duplicate-only, saturated or incomplete results show localized
-activity text. The fetch-and-decrypt budget is seven
+and the expected payload namespaces. An archived message without OX, OMEMO, legacy OpenPGP,
+EME, correction, retraction, moderation, fastening or reaction elements is plaintext: its body is a
+preview candidate, but it never resolves a signed edit or retraction. Fallback text and
+archive-preview eligibility follow the [notification content contract](NOTIFICATION_CONTENT.md#transport-fallback-and-privacy);
+the [push payload reference](PUSH_PAYLOAD.md) defines the server metadata.
+The fetch-and-decrypt budget is seven
 seconds and the delivery fallback deadline is eight seconds. Previews follow iOS
 **Show Previews**: **Never** skips decryption, **When Unlocked** leaves visibility to
 iOS, and **Always** can show decrypted text on the lock screen after the first unlock.
