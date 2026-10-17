@@ -23,11 +23,16 @@ vi.mock('./SequoiaPgpPlugin', () => ({
   }),
 }))
 
-function makeClient(register: () => Promise<void>): XMPPClient {
+type Logger = ReturnType<NonNullable<XMPPClient['e2ee']>['getDiagnosticLogger']>
+
+function makeClient(register: () => Promise<void>, logger: Logger = {
+  info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: message => console.error(message),
+}): XMPPClient {
   return {
     e2ee: {
       getPlugin: () => null,
       register,
+      getDiagnosticLogger: () => logger,
       getAccountJid: () => 'me@example.com',
       setForcedPlaintext: vi.fn(),
     },
@@ -94,6 +99,30 @@ describe('registerE2EEPlugins failure surfacing', () => {
     expect(state.registrationError).toBeNull()
     expect(state.pluginRegisteredAt).toBe(1)
   })
+
+  it('logs a diagnostic when called before the manager is ready', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await registerE2EEPlugins({ e2ee: null } as unknown as XMPPClient)
+      expect(warn).toHaveBeenCalledExactlyOnceWith('[Fluux] Cannot register OpenPGP: E2EE manager is not ready')
+      expect(useEncryptionSettingsStore.getState().pluginRegisteredAt).toBe(0)
+      expect(useEncryptionSettingsStore.getState().registrationError).toBeNull()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('shares a pending registration for the same manager', async () => {
+    let release!: () => void
+    const register = vi.fn(() => new Promise<void>(resolve => { release = resolve }))
+    const client = makeClient(register)
+    const first = registerE2EEPlugins(client)
+    const second = registerE2EEPlugins(client)
+    await vi.waitFor(() => expect(register).toHaveBeenCalledTimes(1))
+    release()
+    await Promise.all([first, second])
+    expect(useEncryptionSettingsStore.getState().pluginRegisteredAt).toBe(1)
+  })
 })
 
 describe('registerE2EEPlugins engine', () => {
@@ -111,5 +140,38 @@ describe('registerE2EEPlugins engine', () => {
 
     expect(SequoiaPgpPlugin).toHaveBeenCalledTimes(1)
     expect(register).toHaveBeenCalledTimes(1)
+  })
+})
+
+
+describe('OpenPGP registration diagnostics', () => {
+  const logger = { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() }
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useEncryptionSettingsStore.setState({ openpgpEnabled: true, pluginRegisteredAt: 0, registrationError: null })
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  it('names initialization while it is pending, then records completion and duration', async () => {
+    let finish!: () => void
+    let now = 1000
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const register = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+    const operation = registerE2EEPlugins(makeClient(register, logger))
+    await vi.waitFor(() => expect(register).toHaveBeenCalled())
+    expect(logger.info).toHaveBeenCalledWith('OpenPGP registration: state=started phase=initialize-native elapsedMs=0')
+    expect(logger.info.mock.calls.some(([line]) => line.includes('state=ready'))).toBe(false)
+    now = 1250; finish(); await operation
+    expect(logger.info).toHaveBeenCalledWith('OpenPGP registration: state=ready phase=complete elapsedMs=250')
+    expect(useEncryptionSettingsStore.getState().pluginRegisteredAt).toBe(1)
+  })
+
+  it('records a typed terminal failure without the exception payload', async () => {
+    const privateDetail = 'synthetic secret payload must stay out of diagnostics'
+    const client = makeClient(async () => { throw new E2EEPluginError('transient', 'timeout', privateDetail) }, logger)
+    await registerE2EEPlugins(client)
+    expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/^OpenPGP registration: state=failed phase=initialize-native elapsedMs=\d+ kind=transient code=timeout$/))
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(privateDetail)
+    expect(useEncryptionSettingsStore.getState().registrationError).toEqual({ kind: 'transient', code: 'timeout' })
   })
 })

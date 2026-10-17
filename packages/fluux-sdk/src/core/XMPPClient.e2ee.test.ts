@@ -20,6 +20,10 @@ Object.defineProperty(globalThis, 'localStorage', {
 
 // Prevent IndexedDB operations triggered by chatStore.addMessage / updateMessage
 vi.mock('../utils/messageCache', () => ({
+  getArchiveSignal: vi.fn().mockResolvedValue(undefined),
+  rememberArchiveSignal: vi.fn().mockResolvedValue(undefined),
+  rememberArchiveSignalForRecovery: vi.fn().mockResolvedValue(true),
+  scrubChatArchiveSignals: vi.fn().mockResolvedValue(undefined),
   saveMessageWithResult: vi.fn().mockResolvedValue(true),
   saveMessage: vi.fn().mockResolvedValue(undefined),
   saveMessages: vi.fn().mockResolvedValue(undefined),
@@ -50,6 +54,7 @@ vi.mock('../utils/messageCache', () => ({
   findRoomMessageCopies: vi.fn().mockResolvedValue([]),
   areRetractedInCache: vi.fn().mockResolvedValue([]),
   deleteMessage: vi.fn().mockResolvedValue(undefined),
+  deleteMessageForRecovery: vi.fn().mockResolvedValue(true),
   deleteConversationMessages: vi.fn().mockResolvedValue(undefined),
   clearAllMessages: vi.fn().mockResolvedValue(undefined),
   isMessageCacheAvailable: vi.fn().mockReturnValue(false),

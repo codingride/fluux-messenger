@@ -134,7 +134,7 @@ import { NS_MAM } from './namespaces'
 import { createDefaultStoreBindings } from './defaultStoreBindings'
 import { createPresenceReader, type PresenceReader } from './presenceReader'
 import { initSearchIndex, backfillFromMessageCache, updateMessage as updateSearchIndex } from '../utils/searchIndex'
-import { getMessagesWithEncryptedPayload, updateMessage as cacheUpdateMessage, deleteMessage as cacheDeleteMessage } from '../utils/messageCache'
+import { getMessagesWithEncryptedPayload, updateMessage as cacheUpdateMessage, deleteMessage as cacheDeleteMessage, deleteMessageForRecovery } from '../utils/messageCache'
 import { queryPepNodeSymbol } from './rawXmppAccess'
 
 /**
@@ -277,9 +277,10 @@ export class XMPPClient {
    * the session-lifecycle engine) when the JID becomes known. Torn down on
    * explicit disconnect.
    *
-   * Apps register {@link E2EEPlugin} implementations here after the client
-   * is `online`; the Chat module consults the manager when sending and
-   * receiving messages. No plugins are registered by default — messages
+   * Apps register {@link E2EEPlugin} implementations on `e2ee:manager-ready`,
+   * or immediately if the manager already exists when subscribing. The Chat
+   * module consults the manager when sending and receiving messages.
+   * No plugins are registered by default — messages
    * flow in cleartext until the app opts in by calling `e2ee.register()`.
    */
   public e2ee: E2EEManager | null = null
@@ -690,6 +691,7 @@ export class XMPPClient {
         getMessagesWithEncryptedPayload,
         updateMessage: cacheUpdateMessage,
         deleteMessage: cacheDeleteMessage,
+        deleteMessageForRecovery,
       },
     })
 
@@ -1890,6 +1892,8 @@ export class XMPPClient {
     this.e2ee.onKeyUnlocked(() => {
       this.notifyE2EEKeyUnlocked()
     })
+    e2eeLogger.info('E2EE manager ready')
+    this.emitSDK('e2ee:manager-ready', { accountJid: bareJid })
   }
 
   /**
