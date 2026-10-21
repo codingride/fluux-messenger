@@ -5,12 +5,6 @@ All notable changes to Fluux Messenger are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Security
-
-- Native TLS: reject the compromised eMudhra intermediate keys, including AAA cross-signed certificates, by updating WebPKI and bundled roots in both the application and iOS notification engine. Existing installations need a rebuilt application; browser and Apple trust policies remain separate.
-
 ## [0.18.0] - 2026-10-20
 
 ### Added
@@ -24,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - macOS: share links, documents and images to Fluux from any app through the system Share menu. Fluux opens so you can pick the conversation and send the content
 - Notifications for room invitations and voice requests now join contact-request alerts on desktop and the web; contact-request alerts also work in Android Chrome
 - On touch screens, you can now see who reacted to a message
+- iOS: photos shared from other apps now open in Fluux ready to send
+- iOS: large photos are reduced before sharing, with a choice to send the original when it fits the server limit
 
 ### Changed
 
@@ -40,10 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When a WebSocket sign-in fails, the error and connection log now explain which server address was tried and why discovery failed
 - Privacy settings now show your server's message archiving setting (everything, contacts only or nothing) and let you override it. Until you do, Fluux leaves your server's default alone
 - Fluux saves a password only after the server has accepted it, so a quick reconnection can no longer replace your saved password with an unverified one. Spaces around the account address are ignored at sign-in
+- When you reopen Fluux, your conversations stay on screen while the app reconnects instead of briefly showing the login form
 
 ### Fixed
 
-- iOS: room notifications include group participants so the system can display the room avatar
 - Encrypted (OpenPGP) conversations interoperate better with other clients: using Fluux and Gajim on the same account no longer stops Gajim from encrypting to Fluux, and edits, replies, receipts and read markers sent by Gajim inside an encrypted message now show up correctly instead of as new messages or not at all
 - Search: "Go to message" now lands on, and highlights, results buried far back in a conversation's history, in rooms and in direct chats
 - Cmd-K finds the conversation you already have open when you search for its contact name or JID, instead of only showing another conversation whose latest message matches
@@ -51,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A sign-in on a fresh install, a cleared browser or a new machine no longer shows contacts as bare names with missing recent messages, or an empty conversation list
 - The last message stays visible above the typing indicator and composer, keyboard scrolling no longer snaps back after a cancelled jump, and selecting a message with the keyboard no longer reflows its text or its quotes
 - Messages no longer show a thin gap after a link preview when the same sender follows up, including at larger text sizes
+- Native apps now reject connections using compromised eMudhra certificates
 - macOS: Fluux no longer crashes when it wakes from sleep while running in the background
 - Desktop: attaching or opening files whose names contain non-Latin characters (Cyrillic, for example) works again
 - Linux: closing the window keeps Fluux running in the tray under i3 and other desktops that use XEmbed trays
