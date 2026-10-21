@@ -1126,6 +1126,9 @@
         "copyVersionInfo": "Cóipeáil faisnéis leagain"
     },
     "profile": {
+        "authentication": "Fíordheimhniú",
+        "deviceDetails": "Sonraí gléasanna",
+        "sessionId": "Aitheantas seisiúin",
         "changeAvatar": "Athraigh avatar",
         "removeAvatar": "Bain avatar",
         "removingAvatar": "Ag baint...",

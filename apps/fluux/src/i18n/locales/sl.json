@@ -1126,6 +1126,9 @@
         "copyVersionInfo": "Kopiraj informacije o različici"
     },
     "profile": {
+        "authentication": "Preverjanje pristnosti",
+        "deviceDetails": "Podrobnosti naprav",
+        "sessionId": "ID seje",
         "changeAvatar": "Spremeni avatar",
         "removeAvatar": "Odstrani avatar",
         "removingAvatar": "Odstranjevanje...",

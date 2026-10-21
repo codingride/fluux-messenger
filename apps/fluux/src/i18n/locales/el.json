@@ -1121,6 +1121,9 @@
         "copyVersionInfo": "Αντιγραφή πληροφοριών έκδοσης"
     },
     "profile": {
+        "authentication": "Ταυτοποίηση",
+        "deviceDetails": "Λεπτομέρειες συσκευών",
+        "sessionId": "Αναγνωριστικό συνεδρίας",
         "changeAvatar": "Αλλαγή εικόνας προφίλ",
         "removeAvatar": "Αφαίρεση εικόνας προφίλ",
         "removingAvatar": "Αφαίρεση...",

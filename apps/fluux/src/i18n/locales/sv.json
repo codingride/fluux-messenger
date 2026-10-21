@@ -1120,6 +1120,9 @@
         "copyVersionInfo": "Kopiera versionsinformation"
     },
     "profile": {
+        "authentication": "Autentisering",
+        "deviceDetails": "Enhetsinformation",
+        "sessionId": "Sessions-ID",
         "changeAvatar": "Ändra avatar",
         "removeAvatar": "Ta bort avatar",
         "removingAvatar": "Tar bort...",

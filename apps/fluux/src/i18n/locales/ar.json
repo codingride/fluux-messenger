@@ -1128,6 +1128,9 @@
         "copyVersionInfo": "نسخ معلومات الإصدار"
     },
     "profile": {
+        "authentication": "المصادقة",
+        "deviceDetails": "تفاصيل الأجهزة",
+        "sessionId": "معرّف الجلسة",
         "changeAvatar": "تغيير الصورة الرمزية",
         "removeAvatar": "إزالة الصورة الرمزية",
         "removingAvatar": "جارٍ الإزالة...",

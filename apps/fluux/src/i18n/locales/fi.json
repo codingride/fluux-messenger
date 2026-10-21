@@ -1120,6 +1120,9 @@
         "copyVersionInfo": "Kopioi versiotiedot"
     },
     "profile": {
+        "authentication": "Todennus",
+        "deviceDetails": "Laitteiden tiedot",
+        "sessionId": "Istunnon tunniste",
         "changeAvatar": "Vaihda avatar",
         "removeAvatar": "Poista avatar",
         "removingAvatar": "Poistetaan...",
