@@ -2,6 +2,7 @@
 
 ### Added
 
+- iOS: export a local, content-free notification diagnostic from Notifications settings using the iPhone share sheet. The log keeps up to 200 decisions for 48 hours and clears on logout
 - Experimental native iOS support lets Fluux run on iPhone and iPad, with push notifications, system sharing, native file transfers and OpenPGP encryption
 - iOS: notifications show contact and room avatars and the text of unencrypted messages, can optionally preview OpenPGP-encrypted messages on the device, and offer a choice of notification tones. Recent conversations appear as suggestions in the Share sheet, long presses and reactions give haptic feedback, and the app switcher shows a blurred cover in the app's theme instead of your conversations. Signing out turns off push for the device and hides that account's content from notifications, and opening the app clears notifications that do not belong to a specific conversation
 - iOS: use Siri or Shortcuts to open an existing conversation or room, or check the unread count shown on the app icon without opening Fluux. Requires iOS 16 or later
@@ -33,6 +34,7 @@
 
 ### Fixed
 
+- Contact requests disappear when accepted on another device, without needing to accept them again on desktop
 - Encrypted (OpenPGP) conversations interoperate better with other clients: using Fluux and Gajim on the same account no longer stops Gajim from encrypting to Fluux, and edits, replies, receipts and read markers sent by Gajim inside an encrypted message now show up correctly instead of as new messages or not at all
 - Search: "Go to message" now lands on, and highlights, results buried far back in a conversation's history, in rooms and in direct chats
 - Cmd-K finds the conversation you already have open when you search for its contact name or JID, instead of only showing another conversation whose latest message matches
