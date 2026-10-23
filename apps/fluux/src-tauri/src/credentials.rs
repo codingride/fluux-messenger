@@ -1,8 +1,8 @@
-//! XMPP credentials and session secrets kept in the iOS keychain.
+//! XMPP credentials and iOS session secrets, over a logical secret store.
 //!
-//! The credentials layout matches the desktop keychain: the credentials of an
-//! account are a JSON item under its JID, and `last_user` names the account to
-//! load. A session secret is an item under `<kind>:<bare JID>`.
+//! Credentials use a logical JSON entry under the JID and a `last_user` pointer.
+//! macOS packs these entries into one item; iOS keeps separate keychain items.
+//! An iOS session secret is an item under `<kind>:<bare JID>`.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +22,22 @@ pub trait SecretStore {
     fn set(&self, account: &str, secret: &str) -> Result<(), String>;
     /// Succeeds when the item does not exist.
     fn delete(&self, account: &str) -> Result<(), String>;
+    /// Explicit erase may retry a startup denial once; ordinary logout must not.
+    #[cfg(any(target_os = "macos", test))]
+    fn retry_denied_access(&self) -> Result<(), String> { Ok(()) }
+    /// Optional old-layout read for a caller that validates a recovery candidate.
+    #[cfg(any(target_os = "macos", test))]
+    fn legacy_candidate(&self, _account: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    /// Recovery values already loaded with the combined item; never an OS read.
+    #[cfg(any(target_os = "macos", test))]
+    fn recovery_candidates(&self, _account: &str) -> Result<Vec<String>, String> { Ok(Vec::new()) }
+    /// Preserve any replaced value before adopting an already-validated candidate.
+    #[cfg(any(target_os = "macos", test))]
+    fn adopt_legacy(&self, _account: &str, _secret: &str) -> Result<(), String> {
+        Err("Legacy adoption is unavailable for this store".into())
+    }
 }
 
 pub fn save(store: &impl SecretStore, credentials: &StoredCredentials) -> Result<(), String> {
@@ -45,6 +61,7 @@ pub fn load(store: &impl SecretStore) -> Result<Option<StoredCredentials>, Strin
 
 /// Deletes the last user's credentials, then `last_user` itself, so a failure
 /// leaves a pointer that a later delete can follow.
+#[cfg(any(target_os = "ios", test))]
 pub fn delete(store: &impl SecretStore) -> Result<(), String> {
     if let Some(jid) = store.get(LAST_USER)? {
         store.delete(&jid)?;
@@ -52,7 +69,37 @@ pub fn delete(store: &impl SecretStore) -> Result<(), String> {
     store.delete(LAST_USER)
 }
 
+/// macOS has already removed the bundled credential when only old-copy cleanup
+/// fails. Finish clearing its pointer, then report that cleanup failure. iOS
+/// retains `delete`'s existing stop-on-failure ordering.
+#[cfg(any(target_os = "macos", test))]
+pub fn delete_macos(store: &impl SecretStore) -> Result<(), String> {
+    let mut cleanup_error = None;
+    if let Some(jid) = store.get(LAST_USER)? {
+        if let Err(error) = store.delete(&jid) {
+            if !matches!(store.get(&jid), Ok(None)) {
+                return Err(error);
+            }
+            cleanup_error = Some(error);
+        }
+    }
+    let pointer = store.delete(LAST_USER);
+    if let Some(error) = cleanup_error {
+        Err(error)
+    } else {
+        pointer
+    }
+}
+
+/// Full wipe is an explicit erase, unlike keep-data logout.
+#[cfg(any(target_os = "macos", test))]
+pub fn delete_macos_explicit(store: &impl SecretStore) -> Result<(), String> {
+    store.retry_denied_access()?;
+    delete_macos(store)
+}
+
 /// The secrets, other than credentials, that the app keeps per account.
+#[cfg(any(target_os = "ios", test))]
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SecretKind {
@@ -63,6 +110,7 @@ pub enum SecretKind {
 /// The keychain account of an account's secret. The JID comes from the
 /// webview, so anything but a bare JID is refused rather than allowed to
 /// name another item.
+#[cfg(any(target_os = "ios", test))]
 pub fn secret_account(kind: SecretKind, jid: &str) -> Result<String, String> {
     let valid = !jid.is_empty()
         && jid.len() <= 3071
@@ -254,6 +302,42 @@ mod tests {
         assert_eq!(
             store.items.borrow().get("last_user").map(String::as_str),
             Some("alice@example.com")
+        );
+    }
+    // FLM-79 S1: macOS finishes pointer cleanup after bundled credential erasure.
+    #[test]
+    fn macos_finishes_pointer_cleanup_before_reporting_old_copy_error() {
+        struct ErasedThenRefused(FakeStore);
+        impl SecretStore for ErasedThenRefused {
+            fn get(&self, a: &str) -> Result<Option<String>, String> {
+                self.0.get(a)
+            }
+            fn set(&self, a: &str, v: &str) -> Result<(), String> {
+                self.0.set(a, v)
+            }
+            fn delete(&self, a: &str) -> Result<(), String> {
+                self.0.delete(a)?;
+                if a == "alice@example.com" {
+                    Err("old copy refused".into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let store = ErasedThenRefused(FakeStore::default());
+        save(&store, &alice()).unwrap();
+        assert_eq!(delete_macos(&store).unwrap_err(), "old copy refused");
+        assert!(store.get(LAST_USER).unwrap().is_none());
+        assert!(store.get("alice@example.com").unwrap().is_none());
+        let store = FakeStore {
+            failing_delete: Some("alice@example.com"),
+            ..FakeStore::default()
+        };
+        save(&store, &alice()).unwrap();
+        assert!(delete_macos(&store).is_err());
+        assert!(
+            store.get(LAST_USER).unwrap().is_some(),
+            "keep the pointer when bundled erasure itself failed"
         );
     }
 }

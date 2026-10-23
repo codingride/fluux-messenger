@@ -289,16 +289,117 @@ platform keys the app's directories by identifier, including the webview's Index
 - `.identity-migrated` in the app data directory records overall completion; a failed transfer leaves it absent
   and only unfinished transfers are retried.
 
-The keychain service name stays `com.processone.fluux`. On macOS each keychain item is bound to the code signature
-that created it, which includes the bundle identifier, so the first launch shows one system prompt per stored item.
-Once approved, the app re-creates the items under its own signature and writes `.keychain-reowned`. Windows
-Credential Manager and the Linux Secret Service do not bind items to the application.
+The keychain service name stays `com.processone.fluux`. On macOS, `macos_secrets.rs` packs
+remembered credentials, `last_user`, OpenPGP passphrases (including inactive accounts), and the MCP token
+into one versioned `secrets-v1` item. Startup, credential commands, OpenPGP and MCP share its
+mutex-protected cache. A normal migrated launch decrypts one item, so a changed identity needs at most
+one keychain access approval. Only a user denial/cancel (`-25293`, `-128`), carried as a numeric
+typed backend error, is cached as a failure; transient errors retry on the next call. Normal reads,
+saves and keep-data logout require a restart after denial. Explicit full wipe (`force: true`, including
+`--clear-storage`) and OpenPGP forget clear only the cached startup denial and retry once, allowing a
+new authorization. A second denial remains cached and is returned rather than retried in a loop.
+
+The first launch reads every legacy service entry and recovery copy, writes the combined item, then
+reads it back to verify it. **This release does not delete or rewrite any originals during migration.**
+Keep them for at least one release so a Dev build cannot break the installed 0.18.0 release's
+remembered login, MCP token or OpenPGP passphrase. Automatic cleanup is deferred and is not scheduled
+by a marker. Any `pending_cleanup` field from an earlier development build is ignored: an existing
+bundle is the normal source and startup does not read its originals or attempt bulk cleanup,
+except for the validated recovery path described below.
+
+When an original differs from an `identity-migration-backup:*` copy, the live original wins; both
+copies remain in the old layout and are preserved in the combined item. A recovery copy supplies a
+missing original. A failed combined write or verification serves the already-read legacy snapshot for
+that launch and retries migration on the next launch; explicit changes then use the legacy layout.
+An unverified replacement is discarded before such a legacy mutation, with stale-writer checks.
+Failure never authorizes deleting an original. Load/write errors are logged centrally; OpenPGP returns
+the full backend error, including restart instructions, rather than hiding it behind a generic error.
+
+Retained originals are a compatibility snapshot, not a synchronization mechanism. Once `secrets-v1`
+exists, ordinary startup does not import later changes made by 0.18.0; the validated OpenPGP recovery
+path below is an explicit exception. New-version saves and token resets update the combined item only.
+Explicit logout removes the
+matching JID and `last_user` from the combined item, the old layout, and their migration backups;
+OpenPGP forget does the same for its passphrase. Forget runs its locks, disk work and keychain
+authorization on the blocking pool, so the command does not freeze the window. Unrelated accounts
+remain intact. Current bundled secrets are erased before attempting old-item cleanup, so an old-item authorization failure cannot
+leave the current password/passphrase in the bundle. Cleanup errors reach the caller and Rust log,
+and the matching old item plus its backups are all attempted. macOS continues to clear `last_user`
+when credential erasure succeeded but old-copy cleanup failed, then reports the cleanup error; iOS
+retains its existing stop-on-failure ordering. Automatic bulk cleanup is deferred
+for at least one release and tracked by FLM-81.
+
+A light scratch-keychain probe showed prompt-free deletion for the owner and an already-trusted Dev
+identity. An untrusted Dev identity was refused with `-25244` while dialogs were disabled. Therefore,
+cross-identity cleanup is not unconditionally prompt-free: it may need authorization, and refused
+old copies can remain if authorization is refused. The captain chose to prompt if needed so explicit
+logout/forget can erase every matching copy immediately. On untrusted identities, logout may ask once
+per old item, including backups. Only explicit macOS keep-data logout allows two minutes for
+credential authorization, without a competing shorter deadline. Login with Remember me unchecked,
+full wipes, `--clear-storage`, and other platforms retain their previous 2.5-second bounded wait.
+The session is cleared before waiting, so the UI can leave ChatLayout. Only macOS OpenPGP forget uses
+the two-minute key-material deadline; forget on other platforms retains its routine deadline.
+Actual authorization dialogs have not been exercised.
+
+When a key file exists but the combined passphrase is missing or fails real decryption, OpenPGP
+requests the same-named old item on demand. A completed read or denial is cached per account for the
+launch; transient failures may retry. Only a candidate that decrypts that key is adopted into the
+bundle. Adoption preserves a different replaced value under a unique, account-scoped
+`keychain-recovery:` name, without overwriting an older recovery copy. The normal layout writes this
+copy and the new slot together in one atomic combined-item update and one revision bump. Legacy
+fallback still persists the separate recovery item before replacing the live slot. Explicit forget
+also removes these matching copies. Unlock tries these already-loaded, account-scoped recovery copies
+before reading an old item or reporting key-unrecoverable. A matching copy is validated by decrypting the key and adopted safely;
+the other identity can therefore unlock without another keychain read or prompt. Invalid copies are
+skipped, and failed lookup preserves the original unlock error. A valid current passphrase never
+reads recovery copies or the old item. If recovery fails (including a denied read or
+invalid legacy base64), it is logged, but the original missing/decrypt failure is returned so the UI
+still recognizes `key-unrecoverable`. If persisting the adoption fails, the
+valid recovered key remains usable using its old protected backing, and the write failure is logged.
+This exceptional recovery may request access to that older item once. Stale passwords and MCP tokens
+are not guessed from differing strings: detecting which value is valid requires authentication
+outside this storage layer. The encrypted key files and browser/IndexedDB data are untouched; the native app has no OMEMO keychain backend, and
+unrecognized entries under the service are preserved too.
+
+Already-trusted legacy items need no migration approvals. Otherwise, expect one per old item:
+normally three, four with MCP, plus inactive-account secrets or recovery copies. Use Always Allow;
+Allow permits only that operation. A launch interrupted before the combined write can ask again for
+old items; once the combined item exists, ordinary startup never re-reads them unless key recovery
+is needed. A trusted migrated identity
+needs no approval; an untrusted changed identity needs at most one. The previous `.keychain-reowned`
+marker is unused. Windows, Linux and iOS retain their layouts.
+
+Release and Dev still share the service and combined item; neither re-creates the other's entries.
+A separate file lock and a single, atomically replaced revision value refuse stale writes from another
+running cache, without a second keychain decrypt. Identical saves skip writes; deleting an absent
+bundle entry still cleans matching old copies but does not rewrite the bundle.
+A missing, unreadable or invalid revision file never blocks reading secrets: only writes are refused
+when the cache cannot establish a revision. Restart the stale app before saving again. Ad-hoc rebuilds
+may require one new access approval. This remains the file-based keychain, with no new provisioning
+profile or protected-data entitlement.
+
+Run the focused native regression only with disposable keychains:
+
+```bash
+FLUUX_KEYCHAIN_RESULTS=/absolute/path/outside/project bash scripts/native-tests/macos-keychain/run.sh
+```
+
+The launcher builds the Rust test host, copies it into old-release and Dev ad-hoc identities, and uses
+explicit keychains under a scratch `HOME` with `FM3000_LOCAL_CODESIGN_DIR`. It tests migration without
+cleanup, one denial, simulated Always Allow (equivalent items trusting both identities), Dev
+consolidation followed by the old identity reading its unchanged originals, a pending-cleanup bundle
+with a changed original, failed-write fallback/retry, no-op writes, atomic revisions, unavailable
+revision tracking, token rotation and logout. It runs the focused secrets, credentials, OpenPGP storage
+and asynchronous forget Rust tests under the same scratch HOME, including the reviewed migration
+states, transient retries, denial caching, explicit erase retry and error propagation/logging. Dialogs
+are disabled; the transcript shows native access results, not real signed-app dialogs. No default/search-list change or secret
+output is involved. Real signed-app dialogs remain unqualified.
 
 A Flatpak bundle with a new app-id installs next to the previous one rather than replacing it. Its metainfo lists
 `com.processone.fluux` under `<replaces>`. On Flathub, the `--filesystem` permission on another app's
 `~/.var/app` directory needs a linter exception; an `end-of-life-rebase` of the old ID migrates that data instead.
 
-To replay the migration, quit the app, delete `.identity-migrated`, `.keychain-reowned` and the
+To replay the migration, quit the app, delete `.identity-migrated` and the
 `net.processone.fluux*` directories (including their per-copy completion files), and
 restore the `com.processone.fluux*` ones.
 

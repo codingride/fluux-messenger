@@ -14,6 +14,16 @@ export interface ChangelogEntry {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: '0.18.1',
+    date: 'Unreleased',
+    sections: [{
+      type: 'fixed',
+      items: [
+        'macOS: saved sign-in, encryption keys and local integrations share one keychain approval after a one-time migration. Existing secrets remain available to the previous release',
+      ],
+    }],
+  },
+  {
     version: '0.18.0',
     date: '2026-10-20',
     sections: [

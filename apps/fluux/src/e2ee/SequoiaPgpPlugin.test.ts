@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { setPlatformForTesting } from '@/platform'
 import type { InvokeFn } from './SequoiaPgpPlugin'
 import { SequoiaPgpPlugin } from './SequoiaPgpPlugin'
 import { OPENPGP_DESCRIPTOR } from './OpenPGPPluginBase'
@@ -3272,6 +3273,45 @@ describe('SequoiaPgpPlugin', () => {
 
       const decrypted = await bob.decrypt(bobHandle, bob.tryClaimInbound(payload.stanzaElement)!)
       expect(decodeBodyFromPayload(decrypted.plaintext!)).toBe('after resume')
+    })
+
+    // FLM-79 S2: forget has the same authorization window as other key-material operations.
+    it('does not abandon forget at the routine-command deadline', async () => {
+      const gate = makeHangingInvoke()
+      const plugin = new SequoiaPgpPlugin({ invoke: gate.invoke, timeouts: SHORT })
+      await plugin.init(makeContext('me@example.com').ctx)
+      const restore = setPlatformForTesting({ shell: 'desktop', os: 'macos' })
+      vi.useFakeTimers()
+      try {
+        gate.hung.add('openpgp_forget_account')
+        let completed = false
+        const deletion = plugin.deleteIdentity().then(() => { completed = true })
+        await vi.advanceTimersByTimeAsync(SHORT.routineMs + 1)
+        expect(completed).toBe(false)
+        gate.hung.clear()
+        gate.releaseAll()
+        await deletion
+        expect(completed).toBe(true)
+      } finally { vi.useRealTimers(); restore() }
+    })
+
+    it.each([
+      ['desktop', 'windows'], ['desktop', 'linux'], ['mobile', 'ios'],
+    ] as const)('keeps the routine forget bound on %s/%s', async (shell, os) => {
+      const gate = makeHangingInvoke()
+      const plugin = new SequoiaPgpPlugin({ invoke: gate.invoke, timeouts: SHORT })
+      await plugin.init(makeContext('me@example.com').ctx)
+      const restore = setPlatformForTesting({ shell, os })
+      vi.useFakeTimers()
+      try {
+        gate.hung.add('openpgp_forget_account')
+        let completed = false
+        const deletion = plugin.deleteIdentity().then(() => { completed = true })
+        await vi.advanceTimersByTimeAsync(SHORT.routineMs)
+        await deletion
+        expect(completed).toBe(true)
+        gate.hung.clear(); gate.releaseAll()
+      } finally { vi.useRealTimers(); restore() }
     })
 
     it('fails init with a transient timeout when key loading never settles', async () => {

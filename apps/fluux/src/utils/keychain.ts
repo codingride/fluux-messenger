@@ -17,13 +17,17 @@ export interface DeleteCredentialsOptions {
   /**
    * Force a keychain deletion attempt even when the local "has credentials" flag
    * is missing. Useful for full data wipes where localStorage may be cleared first.
+   * On macOS, explicit erase also retries a cached startup denial once.
    */
   force?: boolean
+  /** Only explicit macOS logout gets time to answer old-item authorization. */
+  purpose?: 'logout'
 }
 
 // Flag to track if credentials exist without triggering keychain prompt
 const STORAGE_KEY_HAS_CREDENTIALS = 'xmpp-has-saved-credentials'
 const KEYCHAIN_DELETE_TIMEOUT_MS = 2500
+const MACOS_LOGOUT_AUTHORIZATION_TIMEOUT_MS = 120_000
 
 /**
  * Check if credentials might be saved (without triggering keychain prompt)
@@ -89,13 +93,17 @@ export async function getCredentials(): Promise<StoredCredentials | null> {
  * avoiding unnecessary macOS auth dialogs.
  */
 export async function deleteCredentials(options: DeleteCredentialsOptions = {}): Promise<void> {
-  const { force = false } = options
+  const { force = false, purpose } = options
+  const host = platform()
+  const timeoutMs = purpose === 'logout' && host.shell === 'desktop' && host.os === 'macos'
+    ? MACOS_LOGOUT_AUTHORIZATION_TIMEOUT_MS
+    : KEYCHAIN_DELETE_TIMEOUT_MS
   // If no credentials were saved, skip the keychain call to avoid unnecessary
   // macOS auth dialogs. Clear the local flag in this skip path to recover from
   // stale local state.
   const hadCredentials = localStorage.getItem(STORAGE_KEY_HAS_CREDENTIALS) === 'true'
 
-  if (!platform().nativeKeychain || (!hadCredentials && !force)) {
+  if (!host.nativeKeychain || (!hadCredentials && !force)) {
     localStorage.removeItem(STORAGE_KEY_HAS_CREDENTIALS)
     console.log('[Fluux] Keychain: delete skipped (no credentials flag, not Tauri, or not forced)')
     return
@@ -105,7 +113,8 @@ export async function deleteCredentials(options: DeleteCredentialsOptions = {}):
     console.log('[Fluux] Keychain: deleting credentials')
     const { invoke } = await import('@tauri-apps/api/core')
 
-    const deleteOp = invoke('delete_credentials').then(
+    const erase = force ? invoke('delete_credentials', { force: true }) : invoke('delete_credentials')
+    const deleteOp = erase.then(
       () => ({ ok: true as const }),
       (error) => ({ ok: false as const, error })
     )
@@ -114,12 +123,12 @@ export async function deleteCredentials(options: DeleteCredentialsOptions = {}):
     const result = await Promise.race([
       deleteOp,
       new Promise<typeof timeoutSentinel>((resolve) => {
-        setTimeout(() => resolve(timeoutSentinel), KEYCHAIN_DELETE_TIMEOUT_MS)
+        setTimeout(() => resolve(timeoutSentinel), timeoutMs)
       }),
     ])
 
     if (result === timeoutSentinel) {
-      throw new Error(`delete_credentials timed out after ${KEYCHAIN_DELETE_TIMEOUT_MS}ms`)
+      throw new Error(`delete_credentials timed out after ${timeoutMs}ms`)
     }
 
     if (!result.ok) {
