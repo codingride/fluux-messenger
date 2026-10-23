@@ -117,7 +117,14 @@ export function createPlan(changes, cwd = root) {
     npm('test:ios-generated-files', reason)
     npm('test:ios-extensions', reason, { requires: 'mac' })
   }
+  const communication = reason => {
+    nodeTest('scripts/macos-communication.test.mjs', reason)
+    npm('check:tls-build', reason)
+    add('cargo:communication-prototype', 'cargo', ['test', '--locked', '--manifest-path', mainManifest,
+      '--features', 'macos-communication-prototype'], reason, { requires: 'mac' })
+  }
   const nativeConfig = reason => {
+    communication(reason)
     fullJs(reason); platform(reason)
     cargo(mainManifest, reason)
     cargo(mainManifest, reason, undefined, true)
@@ -140,6 +147,11 @@ export function createPlan(changes, cwd = root) {
 
   for (const { path, status } of changes) {
     const reason = `${status} ${path}`
+    if (/macos\/CommunicationNotification\.[mh]$|scripts\/(macos-communication\.test\.mjs|native-tests\/MacCommunicationTests\.m)$/.test(path)) {
+      communication(reason)
+      platform(reason)
+      continue
+    }
     const removed = status === 'D' || status === 'R'
     // Only known documentation roots are exempt, never generated permission references.
     if (/^(docs\/.*\.(md|png|jpg|svg)|README\.md|CONTRIBUTING\.md|CHANGELOG\.md|RELEASE_NOTES\.md|LICENSE)$/.test(path)) {
@@ -156,6 +168,11 @@ export function createPlan(changes, cwd = root) {
       nodeTest('scripts/test-local-related.test.mjs', reason)
       if (/^(package|patches\/)/.test(path)) { packageContract(reason); nativeConfig(reason) }
       if (path.startsWith('.cargo/')) nativeConfig(reason)
+      continue
+    }
+    if (path === `${app}/scripts/tauri-macos-share.mjs`) {
+      share(reason)
+      npm('check:tls-build', reason)
       continue
     }
     if (path === 'tests/platform/matrix.json' || path.startsWith('tests/platform/')) {
@@ -201,6 +218,7 @@ export function createPlan(changes, cwd = root) {
       if (plugin === 'push') notification(reason)
       // Consumers are deliberately retained: the selector cannot infer an IPC signature change.
       cargo(mainManifest, reason)
+      if (['macos.rs', 'mod.rs', 'backend.rs'].some(name => path === `${native}/src/notifications/${name}`)) communication(reason)
       platform(reason)
       if (/build\.rs$/.test(path)) nativeConfig(reason)
       if (/tls|xmpp_proxy/.test(path)) { cargo(mainManifest, reason, undefined, true); npm('check:tls-build', reason) }

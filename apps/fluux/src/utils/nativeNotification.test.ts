@@ -36,3 +36,52 @@ describe('postNativeDesktopNotification', () => {
     expect(mockInvoke).toHaveBeenCalledWith('post_notification', { ...NOTIFICATION, silent: false })
   })
 })
+
+// Source intent: #1386 requires eligibility checks after asynchronous native donation,
+// and a single scheduling decision without an accidental legacy resend.
+describe('communication prototype prepare/commit boundary', () => {
+  const payload = { ...NOTIFICATION, communication: { senderId: 'sender@example.com', senderName: 'Sender' } }
+  beforeEach(() => { mockInvoke.mockReset().mockResolvedValue(null) })
+
+  // Captain's F1 choice: a null preparation must not add an eligibility check to normal builds.
+  it.each([true, false])('keeps legacy eligibility when preparation returns null (callback would return %s)', async (allowed) => {
+    const eligible = vi.fn().mockResolvedValue(allowed)
+    await postNativeDesktopNotification(payload, eligible)
+    expect(eligible).not.toHaveBeenCalled()
+    expect(mockInvoke.mock.calls.at(-1)?.[1]).not.toHaveProperty('communication')
+    expect(mockInvoke.mock.calls.map(([command]) => command)).toEqual(['prepare_communication_notification', 'post_notification'])
+  })
+
+  it.each([true, false])('commits only the prepared token when current eligibility is %s', async (allowed) => {
+    mockInvoke.mockResolvedValueOnce('prepared-token')
+    const eligible = vi.fn().mockResolvedValue(allowed)
+    await postNativeDesktopNotification(payload, eligible)
+    expect(mockInvoke.mock.calls.map(([command]) => command)).toEqual(['prepare_communication_notification', 'finish_communication_notification'])
+    expect(mockInvoke).toHaveBeenLastCalledWith('finish_communication_notification', { token: 'prepared-token', commit: allowed })
+  })
+
+  it('does not resend a suppressed duplicate', async () => {
+    mockInvoke.mockResolvedValueOnce('')
+    await postNativeDesktopNotification(payload)
+    expect(mockInvoke).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels the token if revalidation fails unexpectedly', async () => {
+    mockInvoke.mockResolvedValueOnce('prepared-token')
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await postNativeDesktopNotification(payload, async () => { throw new Error('state unavailable') })
+      expect(mockInvoke).toHaveBeenLastCalledWith('finish_communication_notification', { token: 'prepared-token', commit: false })
+      expect(mockInvoke.mock.calls.some(([command]) => command === 'post_notification')).toBe(false)
+    } finally { log.mockRestore() }
+  })
+
+  it('does not retry an ambiguous commit failure', async () => {
+    mockInvoke.mockResolvedValueOnce('prepared-token').mockRejectedValueOnce(new Error('response lost'))
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await postNativeDesktopNotification(payload)
+      expect(mockInvoke.mock.calls.map(([command]) => command)).toEqual(['prepare_communication_notification', 'finish_communication_notification'])
+    } finally { log.mockRestore() }
+  })
+})

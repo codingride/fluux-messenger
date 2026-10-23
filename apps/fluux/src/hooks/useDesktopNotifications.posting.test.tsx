@@ -1,7 +1,7 @@
 import { chatNotificationFixture, roomNotificationFixture, resetNotificationFixtures } from './notification.testHelpers'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useArrivalJumpStore } from '@/stores/arrivalJumpStore'
-import { renderHook } from '@testing-library/react'
+import { renderHook, waitFor } from '@testing-library/react'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { setPlatformForTesting } from '@/platform'
 import { postActionableEventNotification } from '@/utils/actionableEventNotification'
@@ -115,6 +115,10 @@ describe('useDesktopNotifications posting + guard', () => {
         from: 'alice@example.com',
       },
     )
+    // N3: metadata belongs to preparation, not the legacy posting payload.
+    expect(invoke).toHaveBeenCalledWith('prepare_communication_notification', { payload: expect.objectContaining({
+      communication: { senderId: 'alice@example.com', senderName: 'Alice' },
+    }) })
     expect(invoke).toHaveBeenCalledWith('post_notification', {
       title: 'Alice',
       body: 'body text',
@@ -180,6 +184,46 @@ describe('useDesktopNotifications posting + guard', () => {
       invoke.mockResolvedValue(null)
     }
   })
+  // Source intent: #1386 requires a second eligibility check after native preparation.
+  it.each(['read', 'permission', 'dnd', 'unmount'])('cancels native preparation after %s changes', async (change) => {
+    let prepared!: (token: string) => void
+    invoke.mockImplementation((command: string) => command === 'prepare_communication_notification'
+      ? new Promise<string>(resolve => { prepared = resolve }) : Promise.resolve(null))
+    try {
+      const { rerender, unmount } = renderHook(() => useDesktopNotifications())
+      const posting = handlers.onConversationMessage?.({ id: 'alice@example.com', name: 'Alice' },
+        { id: 'prepared-message', from: 'alice@example.com' })
+      await waitFor(() => expect(prepared).toBeTypeOf('function'))
+      if (change === 'read') chatStore.getState().markAsRead('alice@example.com')
+      if (change === 'permission') getNotificationPermissionGranted.mockReturnValue(false)
+      if (change === 'unmount') unmount()
+      if (change === 'dnd') {
+        mockPresenceStatus = 'dnd'
+        rerender()
+      }
+      prepared('native-prepared-token')
+      await posting
+      expect(invoke).toHaveBeenCalledWith('finish_communication_notification', {
+        token: 'native-prepared-token', commit: false,
+      })
+      expect(invoke.mock.calls.some(([command]) => command === 'post_notification')).toBe(false)
+    } finally { invoke.mockResolvedValue(null) }
+  })
+
+  it('passes stable occupant IDs separately from room names and sender nicks for #1386', async () => {
+    renderHook(() => useDesktopNotifications())
+    await handlers.onRoomMessage?.({ jid: 'team@conf.example.com', name: 'Team', nickname: 'me',
+      occupants: new Map([
+        ['bob', { nick: 'bob', occupantId: 'stable-bob', affiliation: 'member', role: 'participant' }],
+        ['me', { nick: 'me', occupantId: 'stable-me', affiliation: 'member', role: 'participant' }],
+      ]),
+    }, { id: 'room-stable-sender', nick: 'bob', occupantId: 'stable-bob' })
+    expect(invoke).toHaveBeenCalledWith('prepare_communication_notification', { payload: expect.objectContaining({
+      communication: { senderId: 'stable-bob', senderName: 'bob', senderNick: 'bob', roomName: 'Team', ownNick: 'me',
+        participantIds: { bob: 'stable-bob', me: 'stable-me' }, participants: ['bob', 'me'] },
+    }) })
+  })
+
   it('posts a room via the native desktop command', async () => {
     renderHook(() => useDesktopNotifications())
     await handlers.onRoomMessage?.(
