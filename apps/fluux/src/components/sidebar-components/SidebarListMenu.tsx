@@ -20,6 +20,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react'
+import { SidebarMenuPortal } from './SidebarMenuPortal'
 import { useClickOutside, useMenuViewportClamp } from '@/hooks'
 import { getFloatingViewport } from '@/hooks/floatingViewport'
 
@@ -207,7 +208,7 @@ interface SidebarListMenuPortalProps {
 }
 
 /**
- * Renders the menu content at the correct position.
+ * Renders the menu at document level so scrolling list ancestors cannot clip it.
  * Place this at the end of your list, inside the provider.
  */
 export function SidebarListMenuPortal({ children }: SidebarListMenuPortalProps) {
@@ -216,13 +217,9 @@ export function SidebarListMenuPortal({ children }: SidebarListMenuPortalProps) 
   if (!isOpen) return null
 
   return (
-    <div
-      ref={menuRef}
-      className="fixed fluux-popover rounded-lg py-1 z-50 min-w-40"
-      style={{ left: position.x, top: position.y }}
-    >
+    <SidebarMenuPortal menuRef={menuRef} position={position}>
       {children}
-    </div>
+    </SidebarMenuPortal>
   )
 }
 
