@@ -45,8 +45,52 @@ static FluuxCommunicationNotifications *fixture(NSMutableArray *requests) {
 int main(int argc, const char **argv) {
     @autoreleasepool {
         if (@available(macOS 12.0, *)) {
+            // Accepted standard-profile mode: runtime identity + generated flag, never ordinary Dev.
+            NSDictionary *standardConfig = [NSJSONSerialization JSONObjectWithData:
+                [NSData dataWithContentsOfFile:@"apps/fluux/src-tauri/tauri.conf.json"] options:0 error:nil];
+            NSDictionary *devConfig = [NSJSONSerialization JSONObjectWithData:
+                [NSData dataWithContentsOfFile:@"apps/fluux/src-tauri/tauri.dev.conf.json"] options:0 error:nil];
+            CHECK(standardConfig && devConfig);
+            CHECK([FluuxCommunicationNotifications enabledForIdentifier:standardConfig[@"identifier"] info:@{@"FluuxCommunicationTest":@YES}]);
+            CHECK(![FluuxCommunicationNotifications enabledForIdentifier:standardConfig[@"identifier"] info:@{}]);
+            CHECK(![FluuxCommunicationNotifications enabledForIdentifier:devConfig[@"identifier"] info:@{@"FluuxCommunicationTest":@YES}]);
             NSMutableArray *requests = [NSMutableArray array];
             FluuxCommunicationNotifications *engine = fixture(requests);
+            // Captain's F5 choice: retransform current names after the existing donation, schedule once, preserve content/identity.
+            for (NSNumber *isRoom in @[@NO, @YES]) {
+                NSMutableArray *renamedRequests = [NSMutableArray array];
+                FluuxCommunicationNotifications *renaming = fixture(renamedRequests);
+                NSMutableArray<INInteraction *> *donations = [NSMutableArray array];
+                NSMutableArray<INSendMessageIntent *> *providers = [NSMutableArray array];
+                renaming.donate = ^(INInteraction *i, void (^done)(NSError *)) { [donations addObject:i]; done(nil); };
+                renaming.transform = ^UNNotificationContent *(UNNotificationContent *c, INSendMessageIntent *i, NSError **e) {
+                    [providers addObject:i]; return c.copy;
+                };
+                NSMutableDictionary *arrival = message(isRoom.boolValue, @"rename-current");
+                NSString *token = [renaming prepare:arrival];
+                NSDictionary *names = isRoom.boolValue ? @{@"title":@"Alice @ Projects", @"senderName":@"Alice", @"roomName":@"Projects"}
+                    : @{@"title":@"Alicia", @"senderName":@"Alicia"};
+                [renaming finish:token commit:YES names:names];
+                [renaming finish:token commit:YES names:names];
+                CHECK(renamedRequests.count == 1);
+                CHECK(donations.count == 1 && providers.count == 2);
+                CHECK([providers.lastObject.sender.displayName isEqual:names[@"senderName"]]);
+                if (isRoom.boolValue) CHECK([providers.lastObject.speakableGroupName.spokenPhrase isEqual:@"Projects"]);
+                UNNotificationRequest *shown = renamedRequests.firstObject;
+                CHECK([shown.content.title isEqual:names[@"title"]]);
+                CHECK([shown.content.body isEqual:arrival[@"body"]]);
+                CHECK([shown.identifier isEqual:arrival[@"identifier"]]);
+                CHECK([shown.content.userInfo isEqual:arrival[@"target"]]);
+                // Read/account cleanup can still cancel during the refreshed transformation.
+                NSMutableArray *cancelled = [NSMutableArray array];
+                FluuxCommunicationNotifications *cancelling = fixture(cancelled);
+                NSString *cancelToken = [cancelling prepare:arrival];
+                cancelling.transform = ^UNNotificationContent *(UNNotificationContent *c, INSendMessageIntent *i, NSError **e) {
+                    [cancelling cancelTarget:arrival]; return c.copy;
+                };
+                [cancelling finish:cancelToken commit:YES names:names];
+                CHECK(cancelled.count == 0);
+            }
             NSMutableDictionary *direct = message(NO, @"direct-1");
             INSendMessageIntent *intent = [engine intent:direct];
             CHECK(intent.content == nil);
@@ -212,7 +256,8 @@ int main(int argc, const char **argv) {
             engine = fixture(requests);
             engine.storage = storage;
             __block NSUInteger deletes = 0;
-            engine.deleteGroup = ^(NSString *g) { deletes++; CHECK([g hasPrefix:@"fluux-prototype-"]); };
+            NSString *expectedGroup = [engine intent:direct].conversationIdentifier;
+            engine.deleteGroup = ^(NSString *g) { deletes++; CHECK([g isEqual:expectedGroup]); };
             [engine cancelTarget:@{@"accountId":@"other@example.com"}];
             CHECK(deletes == 0);
             [engine cancelTarget:@{@"accountId":@"tester@example.com"}];

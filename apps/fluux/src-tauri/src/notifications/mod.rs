@@ -162,29 +162,54 @@ pub async fn dismiss_notifications(
 pub async fn prepare_communication_notification(
     payload: serde_json::Value,
 ) -> Result<Option<String>, String> {
-    #[cfg(all(target_os = "macos", feature = "macos-communication-prototype"))]
+    #[cfg(all(target_os = "macos", feature = "macos-communication-test"))]
     return tauri::async_runtime::spawn_blocking(move || macos::prepare_communication(payload))
         .await
         .map_err(|_| "notification preparation failed".to_string())?;
-    #[cfg(not(all(target_os = "macos", feature = "macos-communication-prototype")))]
+    #[cfg(not(all(target_os = "macos", feature = "macos-communication-test")))]
     {
         let _ = payload;
         Ok(None)
     }
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NotificationNames {
+    title: String,
+    sender_name: String,
+    room_name: Option<String>,
+}
+
 #[tauri::command]
-pub fn finish_communication_notification(token: String, commit: bool) {
-    #[cfg(all(target_os = "macos", feature = "macos-communication-prototype"))]
-    macos::finish_communication(&token, commit);
-    #[cfg(not(all(target_os = "macos", feature = "macos-communication-prototype")))]
-    let _ = (token, commit);
+pub async fn finish_communication_notification(
+    token: String,
+    commit: bool,
+    names: Option<NotificationNames>,
+) -> Result<(), String> {
+    #[cfg(all(target_os = "macos", feature = "macos-communication-test"))]
+    {
+        let names = names
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|_| "invalid notification names")?;
+        tauri::async_runtime::spawn_blocking(move || {
+            macos::finish_communication(&token, commit, names)
+        })
+        .await
+        .map_err(|_| "notification finalization failed".to_string())
+    }
+    #[cfg(not(all(target_os = "macos", feature = "macos-communication-test")))]
+    {
+        let _ = (token, commit, names);
+        Ok(())
+    }
 }
 
 #[tauri::command]
 pub fn clear_communication_account(account_id: String) {
-    #[cfg(all(target_os = "macos", feature = "macos-communication-prototype"))]
+    #[cfg(all(target_os = "macos", feature = "macos-communication-test"))]
     macos::cancel_communication(serde_json::json!({ "accountId": account_id }));
-    #[cfg(not(all(target_os = "macos", feature = "macos-communication-prototype")))]
+    #[cfg(not(all(target_os = "macos", feature = "macos-communication-test")))]
     let _ = account_id;
 }

@@ -285,11 +285,20 @@ export function useDesktopNotifications(): void {
           communication }, async () => {
           const latest = await resolveTarget(original)
           if (!latest || isDnd() || currentAccountId() !== accountId || accountGenerationRef.current !== generation || !getNotificationPermissionGranted()) return false
-          const current = buildLocalMessageNotification(latest, t, i18n?.language ?? 'en', false)
+          // Keep the prepared count: unread growth remains eligible, not a content edit.
+          const current = buildLocalMessageNotification(latest, t, i18n?.language ?? 'en', false, count)
           const latestCommunication = communicationMetadata(latest)
-          // Compare presentation names, not the unread-count suffix: a second arrival is not an edit.
-          return current?.body === body && latestCommunication.senderName === communication.senderName &&
-            latestCommunication.roomName === communication.roomName
+          if (!current || !communication || !latestCommunication || current.body !== body ||
+            current.navType !== navType || current.navTarget !== navTarget || current.messageId !== messageId) return false
+          // F5/R2: names can refresh and recipients stay as donated; message/sender identity must still match.
+          const identity = (metadata: NonNullable<typeof communication>) => Object.fromEntries(
+            Object.entries(metadata).filter(([key]) => !['senderName', 'roomName', 'participants', 'participantIds'].includes(key)))
+          if (JSON.stringify(identity(latestCommunication)) !== JSON.stringify(identity(communication))) return false
+          if (latestCommunication.senderName !== communication.senderName || latestCommunication.roomName !== communication.roomName) {
+            return { title: current.title, senderName: latestCommunication.senderName,
+              ...(latestCommunication.roomName !== undefined ? { roomName: latestCommunication.roomName } : {}) }
+          }
+          return true
         })
       } else {
         await postPluginNotification({ title, body,

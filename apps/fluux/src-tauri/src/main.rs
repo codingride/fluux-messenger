@@ -1265,6 +1265,15 @@ fn print_startup_diagnostics() {
     eprintln!("---");
 }
 
+// An explicit standard-identity communication test must not update over itself.
+fn communication_test_for_build(identifier: &str, enabled: bool) -> bool {
+    cfg!(target_os = "macos") && enabled && identifier == "net.processone.fluux"
+}
+
+fn communication_test_available(identifier: &str) -> bool {
+    communication_test_for_build(identifier, cfg!(feature = "macos-communication-test"))
+}
+
 fn main() {
     tls::init_crypto_provider();
 
@@ -1496,8 +1505,15 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+    let app = if communication_test_available(&identifier) {
+        // One immutable startup marker drives both communication and updater capabilities.
+        // The updater plugin is absent too, so direct calls cannot check or install.
+        app.append_invoke_initialization_script(include_str!("communication-test-init.js"))
+    } else {
+        app.plugin(tauri_plugin_updater::Builder::new().build())
+    };
+    let app = app
         .manage(window_behavior::WindowBehavior::default())
         .manage(LogDirectory(log_dir.clone()))
         // On macOS, decorum's on_window_ready hook repositions the traffic
@@ -2348,6 +2364,45 @@ mod tests {
     use super::*;
 
     const LOOPBACK: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+    #[test]
+    fn standard_identity_test_mode_preserves_ordinary_and_dev_builds() {
+        // Accepted standard-profile test: only net.processone.fluux + explicit mode on macOS.
+        let standard: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let dev: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.dev.conf.json")).unwrap();
+        for enabled in [false, true] {
+            let standard_id = standard["identifier"].as_str().unwrap();
+            let dev_id = dev["identifier"].as_str().unwrap();
+            assert_eq!(
+                communication_test_for_build(standard_id, enabled),
+                cfg!(target_os = "macos") && enabled
+            );
+            assert!(!communication_test_for_build(dev_id, enabled));
+            assert!(!communication_test_for_build(
+                "net.processone.other",
+                enabled
+            ));
+        }
+        assert_eq!(
+            communication_test_available(standard["identifier"].as_str().unwrap()),
+            cfg!(all(
+                target_os = "macos",
+                feature = "macos-communication-test"
+            ))
+        );
+        assert!(!standard["build"]["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "macos-communication-test"));
+        assert!(!dev["build"]["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "macos-communication-test"));
+    }
 
     #[test]
     fn test_merge_no_proxy_empty_adds_all_loopback() {

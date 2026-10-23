@@ -15,13 +15,15 @@ API_AVAILABLE(macos(12.0))
 @property(copy) void (^deleteGroup)(NSString *);
 @property(copy) void (^deleteInteraction)(NSString *);
 @property(nonatomic) NSUserDefaults *storage;
++ (BOOL)enabledForIdentifier:(NSString *)identifier info:(NSDictionary *)info;
 - (NSString *)prepare:(NSDictionary *)payload;
 - (void)finish:(NSString *)token commit:(BOOL)commit;
+- (void)finish:(NSString *)token commit:(BOOL)commit names:(NSDictionary *)names;
 - (void)cancelTarget:(NSDictionary *)target;
 - (INSendMessageIntent *)intent:(NSDictionary *)payload;
 @end
 
 // NSString results follow the +1 ownership convention across the Rust boundary.
 void *fluux_communication_prepare(const char *json);
-void fluux_communication_finish(const char *token, bool commit);
+void fluux_communication_finish(const char *token, bool commit, const char *names);
 void fluux_communication_cancel(const char *json);
