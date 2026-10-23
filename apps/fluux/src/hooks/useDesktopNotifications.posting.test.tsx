@@ -6,6 +6,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { setPlatformForTesting } from '@/platform'
 import { postActionableEventNotification } from '@/utils/actionableEventNotification'
 import { showWebNotification } from '@/utils/webNotification'
+import type { ActionPerformed, ActiveNotification } from '@tauri-apps/plugin-notification'
 
 // vi.mock factories are hoisted to top of file, so mocks that reference vi.fn()
 // vars must be declared with vi.hoisted() to be available before hoisting.
@@ -27,7 +28,7 @@ const {
     .mockResolvedValue({ unregister: vi.fn() }),
   sendNotification: vi.fn(),
   createChannel: vi.fn().mockResolvedValue(undefined),
-  onAction: vi.fn<(callback: (notification: unknown) => void) => Promise<{ unregister: () => void }>>()
+  onAction: vi.fn<(callback: (event: ActionPerformed) => void) => Promise<{ unregister: () => void }>>()
     .mockResolvedValue({ unregister: vi.fn() }),
   listen: vi.fn(() => Promise.resolve(() => {})),
   isMobileTauri: vi.fn().mockResolvedValue(false),
@@ -390,16 +391,34 @@ describe('useDesktopNotifications posting + guard', () => {
     expect(invoke).toHaveBeenCalledWith('set_notification_listener_ready', { ready: false })
   })
 
-  it.each(['android', 'ios'] as const)('routes %s activation and unregisters without desktop commands', async (os) => {
+  it('routes Android activation and unregisters without desktop commands', async () => {
     restorePlatform()
-    restorePlatform = setPlatformForTesting({ shell: 'mobile', os })
+    restorePlatform = setPlatformForTesting({ shell: 'mobile', os: 'android' })
     const listener = { unregister: vi.fn() }
     onAction.mockResolvedValueOnce(listener)
     const { unmount } = renderHook(() => useDesktopNotifications())
     await onAction.mock.results[0].value
+    // PR #1727 refreshes the Android plugin to its ActionPerformed envelope.
+    // iOS actions omit extra; local notification tap routing belongs to FLM-95.
+    // Preserve message navigation and the account guard through the Android payload.
     const callback = onAction.mock.calls[0][0]
-    callback({ extra: { navType: 'room', navTarget: 'team@conf.example.com', accountId: 'me@example.com' } })
-    expect(navigateToRoom).toHaveBeenCalledWith('team@conf.example.com', undefined)
+    const notification: ActiveNotification = {
+      id: 1, groupSummary: false, data: {}, attachments: [],
+      extra: {
+        navType: 'room', navTarget: 'team@conf.example.com',
+        accountId: 'me@example.com', messageId: 'room-message-1',
+      },
+    }
+    callback({ actionId: 'tap', inputValue: null, notification })
+    expect(navigateToRoom).toHaveBeenCalledExactlyOnceWith('team@conf.example.com', 'room-message-1')
+    navigateToRoom.mockClear()
+    callback({ actionId: 'tap', inputValue: null, notification: null })
+    callback({
+      actionId: 'tap', inputValue: null,
+      notification: { ...notification, extra: { ...notification.extra, accountId: 'other@example.com' } },
+    })
+    expect(navigateToRoom).not.toHaveBeenCalled()
+    expect(navigateToConversation).not.toHaveBeenCalled()
     unmount()
     expect(listener.unregister).toHaveBeenCalledTimes(1)
     expect(listener.unregister.mock.contexts[0]).toBe(listener)
