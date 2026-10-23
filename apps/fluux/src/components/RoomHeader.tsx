@@ -12,6 +12,7 @@ import type { Room } from '@fluux/sdk'
 import { getUniqueOccupantCount } from '@fluux/sdk'
 import { RoomAvatar } from './RoomAvatar'
 import { Tooltip } from './Tooltip'
+import { ConnectionStepSlot } from './ConnectionStep'
 import { useWindowDrag } from '@/hooks'
 import { renderTextWithLinks } from '@/utils/messageStyles'
 import { AvatarCropModal } from './AvatarCropModal'
@@ -139,7 +140,9 @@ export function RoomHeader({
         >
           <span className="block font-semibold text-fluux-text truncate leading-tight">{room.name}</span>
           <p className="text-xs text-fluux-muted truncate">
-            {room.subject?.trim() ? renderTextWithLinks(room.subject) : room.jid}
+            <ConnectionStepSlot>
+              {room.subject?.trim() ? renderTextWithLinks(room.subject) : room.jid}
+            </ConnectionStepSlot>
           </p>
         </button>
       </Tooltip>

@@ -12,6 +12,7 @@ import { Avatar } from './Avatar'
 import { useWindowDrag, useAnchoredMenu } from '@/hooks'
 import { getTranslatedStatusText } from '@/utils/statusText'
 import { Tooltip } from './Tooltip'
+import { ConnectionStepSlot } from './ConnectionStep'
 import { Archive, ArchiveRestore, ArrowLeft, Clock, Hash, Loader2, Lock, Search, Shield, ShieldAlert, ShieldCheck, ShieldOff, ShieldX, User } from 'lucide-react'
 import type { ConversationEncryptionState } from '@/hooks/useConversationEncryptionState'
 import { useWebUnlockDialogStore } from '@/stores/webUnlockDialogStore'
@@ -125,6 +126,7 @@ export function ChatHeader({
       {/* Name and status — the name is intentionally not clickable; "View Profile" lives in the kebab menu */}
       <div className="flex-1 min-w-0">
         <h2 className="font-semibold text-fluux-text truncate leading-tight">{name}</h2>
+        <ConnectionStepSlot>
         {!isGroupChat && (
           <div className="flex items-center gap-1.5">
             <p className="text-xs text-fluux-muted truncate">
@@ -139,6 +141,7 @@ export function ChatHeader({
             )}
           </div>
         )}
+        </ConnectionStepSlot>
       </div>
 
       {/* Trailing action cluster — grouped tightly on mobile (gap-1) so the
