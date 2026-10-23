@@ -1,6 +1,6 @@
 # Room composer caret drift — follow-up plan (contenteditable / Lexical)
 
-**Status:** Deferred until **after 0.16.0 stable**. Do not implement before then.
+**Status:** Implemented (Option A, Lexical with a `MentionNode`) — see the decision log.
 **Created:** 2026-06-08
 **Context:** Bug investigation 2026-06-08 — the room/MUC message composer's text
 caret is misaligned from where characters appear, starting at the second
@@ -205,3 +205,29 @@ engines that originally reproduced the bug (Android Blink, macOS WebKit).
   the single-element contenteditable editor, **evaluating Lexical first** because
   the mobile IME hardening is the entire risk. Plain-textarea fallback documented
   as a stopgap.
+- **2026-10-23:** Implemented Option A. The room composer is a single Lexical
+  contenteditable (`components/composer/RoomComposerEditor.tsx`); `@mention`s are
+  token `MentionNode`s (`roomEditorModel.ts`), so they are coloured in the same
+  element that holds the caret and are removed by one Backspace. The mirror div,
+  its scrollbar latch, the trailing-newline sentinel and the manual atomic-delete
+  code are gone, and so is the interim `writingsuggestions="false"` opt-out:
+  macOS inline predictions are drawn by the engine in the same layout as the text,
+  so rooms keep them. The editor exposes `value`, `selectionStart`, `selectionEnd`
+  and `setSelectionRange` on its root element, so `MessageComposer` and the
+  draft, mention and emoji code are unchanged. A 1:1 chat keeps its plain textarea.
+  Acceptance matrix: caret tracking and inline predictions were exercised on macOS
+  WebKit (a native WKWebView harness injecting a real inline completion) and in
+  Playwright WebKit and Chromium. **The iOS Safari and Android Brave/Chrome cells
+  are pending the maintainer's own device pass before merge.** Checklist, per phone,
+  in a room:
+  1. Type a message that wraps onto three lines; the caret stays at the end of the
+     text, on the last line, also after tapping into the middle of earlier lines.
+  2. Type `@`, pick a person: the mention is coloured; one Backspace removes all of it.
+  3. Autocorrect and swipe typing: accept a correction and a swiped word; no text is
+     duplicated or lost, the caret ends after the word.
+  4. IME or dictation, if you use one: composing text commits correctly.
+  5. Paste text (and a copied image with its link): text lands once; an image is staged.
+  6. Insert an emoji from the picker at the caret in the middle of the text.
+  7. Edit your last message (prefill), then cancel; leave the room and come back to see
+     the draft restored, mentions still coloured.
+  8. Enter inserts a newline on the phone keyboard; the send button sends.
