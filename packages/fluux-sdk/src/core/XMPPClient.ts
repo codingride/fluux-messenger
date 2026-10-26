@@ -1,5 +1,5 @@
 import { AvatarStateOwner, captureOccupantAvatar, registerAvatarStateOwner } from '../utils/avatarState'
-import { Client, Element } from '@xmpp/client'
+import { Client, Element, xml } from '@xmpp/client'
 import { createActor, type Subscription, type Snapshot } from 'xstate'
 import type { EventHook } from './EventHook'
 import type { XMPPClientConfig } from './clientConfig'
@@ -131,7 +131,7 @@ import {
   publishDiagnostic,
   type ApplicationStanzaOutDiagnostic,
 } from '../diagnostics/channel'
-import { NS_MAM } from './namespaces'
+import { NS_MAM, NS_PING } from './namespaces'
 import { createDefaultStoreBindings } from './defaultStoreBindings'
 import { createPresenceReader, type PresenceReader } from './presenceReader'
 import { initSearchIndex, backfillFromMessageCache, updateMessage as updateSearchIndex } from '../utils/searchIndex'
@@ -156,6 +156,12 @@ interface InternalSurface {
   conversationSync: ConversationSync
   /** Fetches and merges the conversation list outside a fresh session's setup. */
   refreshConversationList(): Promise<void>
+  /**
+   * Resolves once the server has answered a ping sent now and the encrypted
+   * messages received before that answer are decrypted, or after the timeout.
+   * Never rejects.
+   */
+  waitForReplayIngested(timeoutMs: number): Promise<void>
   entityTime: EntityTime
   lastActivity: LastActivity
   pubsub: PubSub
@@ -748,6 +754,7 @@ export class XMPPClient {
       on: (event, handler) => this.subscribeToBus(event, handler as ClientEvents[typeof event]),
       mam, mds, conversationSync, entityTime, lastActivity, pubsub,
       refreshConversationList: () => this.sessionLifecycle.refreshConversationList(),
+      waitForReplayIngested: (timeoutMs) => this.waitForReplayIngested(timeoutMs),
     }
     internalSurfaces.set(this, this.#internal)
 
@@ -2006,6 +2013,29 @@ export class XMPPClient {
     } catch (err) {
       this.repairAndRethrowSendError(err)
     }
+  }
+
+  private async waitForReplayIngested(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    // Next macrotask: the resume handler that calls this runs before the
+    // connection restores its Stream Management counters.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    try {
+      // No 'to': the server answers for the account (RFC 6120 §8.1.1.1).
+      await this.sendIQ(xml('iq', { type: 'get' }, xml('ping', { xmlns: NS_PING })), timeoutMs)
+    } catch {
+      // An error reply is still an answer; a timeout or a lost socket ends the wait.
+    }
+    // Encrypted replayed messages reach the store only once decrypted, which
+    // can end after the answer.
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([
+      this.messages.whenLiveDecryptsSettled(),
+      new Promise((resolve) => { timer = setTimeout(resolve, remaining) }),
+    ])
+    clearTimeout(timer)
   }
 
   protected async sendIQ(iq: Element, timeoutMs?: number): Promise<Element> {
