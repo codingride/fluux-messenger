@@ -10,6 +10,7 @@ import type {
   DecryptResult,
   E2EEPlugin,
   E2EEProtocolDescriptor,
+  E2EEReconnectInfo,
   EncryptedPayload,
   InboundDecryptContext,
   Logger,
@@ -34,6 +35,13 @@ export interface E2EEManagerOptions {
   account: AccountInfo
   logger?: Logger
   capabilityCache?: CapabilityCacheOptions
+  /**
+   * Ids of the plugins the app will register on this manager. An encrypted
+   * message whose protocol none of them handles is tagged unsupported on
+   * arrival instead of waiting for registration to finish. Omit it to treat
+   * every unclaimed message as not ready until the first plugin registers.
+   */
+  expectedPlugins?: readonly string[]
 }
 
 /** Listener for plugin-driven security-context upgrades. See {@link E2EEManager.onSecurityContextUpdated}. */
@@ -82,11 +90,15 @@ export class E2EEManager {
   private readonly plugins = new Map<string, E2EEPlugin>()
   private readonly pins = new Map<string, PinnedStrategy>()
   private readonly capabilityCache: CapabilityCache
+  // Advanced on every new session: a probe started before it must not
+  // refill the capability cache the new session just emptied.
+  private capabilitySession = 0
   private storage: StorageBackend
   private readonly xmpp: XMPPPrimitives
   private readonly account: AccountInfo
   private readonly logger: Logger
   private sendPolicy: E2EESendPolicy = 'opportunistic'
+  private readonly expectedPlugins: ReadonlySet<string> | null
   private readonly securityContextListeners = new Set<SecurityContextUpdateListener>()
   private readonly forcedPlaintextConversations = new Set<string>()
   private pluginRegisteredCallback: ((pluginId: string) => void) | null = null
@@ -108,6 +120,7 @@ export class E2EEManager {
     this.account = options.account
     this.logger = options.logger ?? silentLogger
     this.capabilityCache = new CapabilityCache(options.capabilityCache)
+    this.expectedPlugins = options.expectedPlugins ? new Set(options.expectedPlugins) : null
   }
 
   /**
@@ -223,6 +236,20 @@ export class E2EEManager {
   /** True when at least one plugin is registered. */
   hasPlugins(): boolean {
     return this.plugins.size > 0
+  }
+
+  /**
+   * Whether the app declared the plugins it will register
+   * ({@link E2EEManagerOptions.expectedPlugins}). When true, the protocols
+   * this manager can ever handle are known before any plugin registers.
+   */
+  hasDeclaredPlugins(): boolean {
+    return this.expectedPlugins !== null
+  }
+
+  /** Whether `id` is registered, or declared and still expected to register. */
+  expectsPlugin(id: string): boolean {
+    return this.plugins.has(id) || (this.expectedPlugins?.has(id) ?? false)
   }
 
   /** Set a callback invoked whenever a plugin is registered. */
@@ -425,8 +452,9 @@ export class E2EEManager {
         continue
       }
       try {
+        const session = this.capabilitySession
         const support = await plugin.probePeer(peer)
-        this.capabilityCache.put(plugin.descriptor.id, peer, support)
+        if (session === this.capabilitySession) this.capabilityCache.put(plugin.descriptor.id, peer, support)
         if (!support.supported) return false
       } catch (err) {
         this.logger.warn(`Capability probe failed: ${plugin.descriptor.id} ${getDomain(peer)}`, err)
@@ -434,6 +462,29 @@ export class E2EEManager {
       }
     }
     return true
+  }
+
+  /**
+   * The account is online again with this manager's plugins still
+   * registered (the host keeps them through a network loss). On a new
+   * session, which missed the PEP notifications sent while offline, forget
+   * every cached probe result: each rests on key lists that may have
+   * changed. Then tell each plugin (see {@link E2EEPlugin.onReconnected}).
+   * The host calls this before the connection reports online.
+   */
+  notifyReconnected(info: E2EEReconnectInfo): void {
+    if (!info.resumed) {
+      this.capabilitySession++
+      this.capabilityCache.clear()
+    }
+    this.logger.info(`E2EE plugins kept across a reconnect (${info.resumed ? 'session resumed' : 'new session'})`)
+    for (const [id, plugin] of this.plugins) {
+      try {
+        plugin.onReconnected?.(info)
+      } catch (err) {
+        this.logger.warn(`E2EE plugin ${id} onReconnected threw`, err)
+      }
+    }
   }
 
   /** Forget any cached probe result for a peer (use on PEP change notices). */

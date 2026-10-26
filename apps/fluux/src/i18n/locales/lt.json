@@ -114,6 +114,7 @@
         "reconnectingStep": "Prisijungiama iš naujo po {{seconds}}s",
         "connecting": "Jungiamasi...",
         "verifying": "Tikrinamas ryšys...",
+        "updating": "Atnaujinama...",
         "connectionError": "Ryšio klaida",
         "disconnected": "Atsijungta",
         "cancelReconnection": "Atšaukti pakartotinį prisijungimą"
@@ -834,6 +835,9 @@
             "offline": "Pasiekiama prisijungus"
         },
         "soundsSection": "Garsai",
+        "inAppSection": "Kol Fluux atidarytas",
+        "inAppBanner": "Rodyti reklamjuostę",
+        "inAppBannerDescription": "Naujoms žinutėms kituose pokalbiuose",
         "soundInApp": "Leisti garsus programoje",
         "soundInAppDescription": "Kai Fluux atidaryta, gavus naujų žinučių ir kontaktų užklausų",
         "updates": "Atnaujinimai",

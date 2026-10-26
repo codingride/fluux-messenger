@@ -1,4 +1,4 @@
-import { chatNotificationFixture, resetNotificationFixtures } from './notification.testHelpers'
+import { chatNotificationFixture, roomNotificationFixture, resetNotificationFixtures } from './notification.testHelpers'
 /**
  * @vitest-environment jsdom
  */
@@ -11,17 +11,21 @@ let capturedOnConversationMessage:
   | undefined
 
 // Drive connection status from the test.
+let capturedOnRoomMessage: ((room: unknown, message: unknown) => void) | undefined
 let currentStatus = 'connecting'
 const setStatus = (s: string) => {
   currentStatus = s
 }
 
 const showWebNotification = vi.fn()
+const held = new Map<string, Promise<unknown>>()
 
 vi.mock('./useNotificationEvents', () => ({
   useNotificationEvents: (handlers: {
     onConversationMessage?: (conv: unknown, message: unknown) => void
+    onRoomMessage?: (room: unknown, message: unknown) => void
   }) => {
+    capturedOnRoomMessage = (room, message) => handlers.onRoomMessage?.(...roomNotificationFixture(room, message))
     capturedOnConversationMessage = (conv, message) => handlers.onConversationMessage?.(...chatNotificationFixture(conv, message))
   },
 }))
@@ -68,6 +72,7 @@ vi.mock('@fluux/sdk', async (importOriginal) => {
   return {
     ...actual,
     rosterStore: { getState: () => ({ getContact: () => undefined }) },
+    resolveNotificationMessage: (m: { id: string }) => held.get(m.id) ?? actual.resolveNotificationMessage(m as never),
     usePresence: () => ({ presenceStatus: 'online' }),
     useConnectionStatus: () => ({ status: currentStatus }),
   }
@@ -75,6 +80,7 @@ vi.mock('@fluux/sdk', async (importOriginal) => {
 
 import { useDesktopNotifications } from './useDesktopNotifications'
 import { chatStore, connectionStore, type Message } from '@fluux/sdk'
+import { useToastStore } from '@/stores/toastStore'
 import { newMessagesText } from '@/utils/swMessages'
 
 const conv = (id: string) => ({
@@ -248,4 +254,57 @@ describe('useDesktopNotifications catch-up window', () => {
     expect(showWebNotification).not.toHaveBeenCalled()
   })
 
+
+  // FLM-145 review R1: in front, a reconnect burst of chats and rooms gives one banner.
+  it('shows one in-app banner for a reconnect burst of chats and rooms', async () => {
+    useToastStore.setState({ toasts: [] })
+    connectionStore.setState({ windowVisible: true })
+    const { rerender } = renderHook(() => useDesktopNotifications())
+    act(() => { setStatus('online'); rerender() })
+    act(() => {
+      capturedOnConversationMessage?.(conv('alice'), { ...msg('a1', 'from alice'), timestamp: new Date(Date.now() - 3000) })
+      capturedOnRoomMessage?.({ jid: 'team@conf.example.com', name: 'Team' }, { id: 'r1', body: 'from room', timestamp: new Date(Date.now() - 1000) })
+      capturedOnConversationMessage?.(conv('bob'), { ...msg('b1', 'from bob'), timestamp: new Date(Date.now() - 2000) })
+    })
+    expect(useToastStore.getState().toasts).toEqual([])
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(useToastStore.getState().toasts.map(toast => toast.message)).toEqual(['bob @ Team: from room'])
+    expect(showWebNotification).not.toHaveBeenCalled()
+  })
+
+  // Review R9: an ineligible newest arrival does not cost the burst its banner.
+  it('falls back to the next newest arrival when the newest is no longer eligible', async () => {
+    useToastStore.setState({ toasts: [] })
+    connectionStore.setState({ windowVisible: true })
+    const { rerender } = renderHook(() => useDesktopNotifications())
+    act(() => { setStatus('online'); rerender() })
+    act(() => {
+      capturedOnConversationMessage?.(conv('alice'), { ...msg('a1', 'from alice'), timestamp: new Date(Date.now() - 3000) })
+      capturedOnConversationMessage?.(conv('bob'), { ...msg('b1', ''), timestamp: new Date(Date.now() - 1000) })
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(useToastStore.getState().toasts.map(toast => toast.message)).toEqual(['alice: from alice'])
+  })
+
+  // FLM-152 R11: a fallback attempt keeps its original arrival order, so a live banner shown
+  // while the newest candidate was still being checked is not overwritten by an older one.
+  it('does not let an older fallback overwrite a live banner', async () => {
+    useToastStore.setState({ toasts: [] })
+    connectionStore.setState({ windowVisible: true })
+    const { rerender } = renderHook(() => useDesktopNotifications())
+    act(() => { setStatus('online'); rerender() })
+    let release!: (m: unknown) => void
+    const bobMessage = { ...msg('b1', ''), timestamp: new Date(Date.now() - 1000) }
+    held.set('b1', new Promise(resolve => { release = resolve }))
+    act(() => {
+      capturedOnConversationMessage?.(conv('alice'), { ...msg('a1', 'from alice'), timestamp: new Date(Date.now() - 3000) })
+      capturedOnConversationMessage?.(conv('bob'), bobMessage)
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    await act(async () => { capturedOnConversationMessage?.(conv('carol'), msg('c1', 'from carol')) })
+    expect(useToastStore.getState().toasts.map(toast => toast.message)).toEqual(['carol: from carol'])
+    await act(async () => { release(bobMessage); await vi.advanceTimersByTimeAsync(10) })
+    held.clear()
+    expect(useToastStore.getState().toasts.map(toast => toast.message)).toEqual(['carol: from carol'])
+  })
 })

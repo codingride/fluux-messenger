@@ -116,6 +116,7 @@
         "reconnectingStep": "Reconectando en {{seconds}}s",
         "connecting": "Conectando...",
         "verifying": "Verificando conexión...",
+        "updating": "Actualizando...",
         "connectionError": "Error de conexión",
         "disconnected": "Desconectado",
         "cancelReconnection": "Cancelar reconexion"
@@ -834,6 +835,9 @@
             "offline": "Disponible al conectarse"
         },
         "soundsSection": "Sonidos",
+        "inAppSection": "Mientras Fluux está abierto",
+        "inAppBanner": "Mostrar banner",
+        "inAppBannerDescription": "Para mensajes nuevos en otras conversaciones",
         "soundInApp": "Reproducir sonidos en la app",
         "soundInAppDescription": "Con Fluux abierto, para mensajes nuevos y solicitudes de contacto",
         "updates": "Actualizaciones",

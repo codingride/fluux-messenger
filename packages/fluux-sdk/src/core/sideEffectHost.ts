@@ -134,5 +134,13 @@ export interface SideEffectHost extends SDKEventSource {
      * `conversationListReady` when the server answers.
      */
     readonly refreshConversationList: () => Promise<void>
+    /**
+     * Resolves once the server has answered a request sent now and the
+     * encrypted messages received before the answer are decrypted, or after
+     * `timeoutMs`. On a resumed stream the server replays its queued stanzas
+     * before it reads anything new, so the answer comes after the replay.
+     * Never rejects.
+     */
+    readonly waitForReplayIngested: (timeoutMs: number) => Promise<void>
   }
 }

@@ -115,6 +115,7 @@
         "reconnectingStep": "Znovu sa pripojí za {{seconds}}s",
         "connecting": "Pripája sa...",
         "verifying": "Overuje sa pripojenie...",
+        "updating": "Aktualizácia...",
         "connectionError": "Chyba pripojenia",
         "disconnected": "Odpojený",
         "cancelReconnection": "Zrušiť opätovné pripojenie"
@@ -835,6 +836,9 @@
             "offline": "Dostupné po pripojení"
         },
         "soundsSection": "Zvuky",
+        "inAppSection": "Keď je Fluux otvorený",
+        "inAppBanner": "Zobraziť banner",
+        "inAppBannerDescription": "Pre nové správy v iných konverzáciách",
         "soundInApp": "Prehrávať zvuky v aplikácii",
         "soundInAppDescription": "Keď je Fluux otvorený, pri nových správach a žiadostiach o kontakt",
         "updates": "Aktualizácie",

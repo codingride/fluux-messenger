@@ -116,6 +116,7 @@
         "reconnectingStep": "Reconnectant en {{seconds}}s",
         "connecting": "Connectant...",
         "verifying": "Verificant connexió...",
+        "updating": "Actualitzant...",
         "connectionError": "Error de connexió",
         "disconnected": "Desconnectat",
         "cancelReconnection": "Cancel·la la reconnexió"
@@ -834,6 +835,9 @@
             "offline": "Disponible un cop connectat"
         },
         "soundsSection": "Sons",
+        "inAppSection": "Mentre Fluux és obert",
+        "inAppBanner": "Mostra el bàner",
+        "inAppBannerDescription": "Per als missatges nous d'altres converses",
         "soundInApp": "Reprodueix sons a l'app",
         "soundInAppDescription": "Amb Fluux obert, per a missatges nous i sol·licituds de contacte",
         "updates": "Actualitzacions",

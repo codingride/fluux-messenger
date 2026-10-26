@@ -45,7 +45,7 @@ vi.mock('../utils/messageCache', () => ({
   getRoomMessageCount: vi.fn().mockResolvedValue(0),
 }))
 
-import { setupBackgroundSyncSideEffects } from './backgroundSync'
+import { setupBackgroundSyncSideEffects, RESUME_REPLAY_LIMIT_MS } from './backgroundSync'
 import { setupRoomSideEffects } from './roomSideEffects'
 import { connectionStore } from '../stores/connectionStore'
 import { chatStore } from '../stores/chatStore'
@@ -54,6 +54,7 @@ import { NS_MAM } from './namespaces'
 import { createMockClient, simulateFreshSession, simulateSmResumption } from './sideEffects.testHelpers'
 import { _resetStorageScopeForTesting } from '../utils/storageScope'
 import type { RoomMessage } from './types'
+import { MAM_ROOM_CATCHUP_DELAY_MS } from '../utils/mamCatchUpUtils'
 
 describe('setupBackgroundSyncSideEffects', () => {
   const ARCHIVED_CHECK_KEY = 'fluux:lastArchivedPreviewCheck'
@@ -2320,5 +2321,348 @@ describe('deferred E2EE decryption triggers', () => {
     mockClient._emit('resumed')
 
     expect(mockClient.retryPendingDecrypts).toHaveBeenCalledTimes(1)
+  })
+})
+
+// FLM-120: the conversation header shows "Updating..." until every catch-up of
+// the messages missed during an outage has ended. isCatchingUp is true while
+// any owner runs, from the moment the connection is online (no gap during
+// session preparation), and is cleared when the connection drops.
+describe('catch-up owners (Updating step)', () => {
+  const ROOM_A = 'a@conference.example.com'
+  let mockClient: ReturnType<typeof createMockClient>
+  let cleanup: (() => void) | undefined
+  const caughtUp = () => connectionStore.getState().isCatchingUp
+  // Only a reconnection holds the step: connect once, then drop.
+  const connectedThenDropped = () => {
+    connectionStore.getState().setStatus('online')
+    connectionStore.getState().setStatus('reconnecting')
+  }
+  const deferred = () => {
+    let resolve!: () => void
+    const promise = new Promise<void>((r) => { resolve = r })
+    return { promise, resolve }
+  }
+  const withMam = () =>
+    connectionStore.getState().setServerInfo({ identities: [], domain: 'example.com', features: [NS_MAM] })
+  const addRoom = (jid: string) =>
+    roomStore.getState().addRoom({
+      jid, name: jid, nickname: 'me', joined: true, isBookmarked: true, supportsMAM: true,
+      occupants: new Map(), unreadCount: 0, mentionsCount: 0, typingUsers: new Set(),
+    })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    _resetStorageScopeForTesting()
+    localStorageMock.clear()
+    connectionStore.getState().reset()
+    roomStore.getState().reset()
+    mockClient = createMockClient()
+  })
+  afterEach(() => {
+    cleanup?.()
+    cleanup = undefined
+    vi.useRealTimers()
+    roomStore.getState().reset()
+  })
+
+  it('is true as soon as the connection is online, before the sync inputs are ready', () => {
+    withMam()
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    connectedThenDropped()
+    expect(caughtUp()).toBe(false)
+    connectionStore.getState().setStatus('online')
+    expect(caughtUp()).toBe(true)
+  })
+
+  it('holds the step when a new client restores a saved session (connecting, then online)', () => {
+    withMam()
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    connectionStore.getState().setStatus('connecting')
+    connectionStore.getState().setStatus('online')
+    expect(caughtUp()).toBe(true)
+  })
+
+  it('holds the step when a cache-cleared resume is upgraded by a synthetic online', async () => {
+    withMam()
+    connectionStore.getState().setStatus('reconnecting')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    simulateSmResumption(mockClient) // nothing to resume-seed: releases its owners
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caughtUp()).toBe(false)
+    mockClient._emit('online') // cache integrity forces full setup; status stays online
+    expect(caughtUp()).toBe(true)
+    // The fresh sync takes over without a gap, then ends.
+    mockClient._emit('conversationListReady', [])
+    mockClient._emit('freshSessionInputsReady')
+    await vi.advanceTimersByTimeAsync(MAM_ROOM_CATCHUP_DELAY_MS)
+    expect(caughtUp()).toBe(false)
+  })
+
+  it('does not hold the step for a demo-style jump straight from disconnected to online', () => {
+    withMam()
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    connectionStore.getState().setStatus('online')
+    expect(caughtUp()).toBe(false)
+  })
+
+  it('releases preparation when server info arrives late without MAM', async () => {
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    connectedThenDropped()
+    simulateFreshSession(mockClient) // inputs ready, server info not discovered yet
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caughtUp()).toBe(true)
+    connectionStore.getState().setServerInfo({ identities: [], domain: 'example.com', features: [] })
+    expect(caughtUp()).toBe(false)
+  })
+
+  it('releases the delayed room pass owner when the connection drops before its timer', async () => {
+    withMam()
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    simulateFreshSession(mockClient)
+    await vi.advanceTimersByTimeAsync(1_000) // pipeline done, room timer pending
+    expect(caughtUp()).toBe(true)
+    connectionStore.getState().setStatus('reconnecting')
+    expect(caughtUp()).toBe(false)
+    expect(connectionStore.getState().catchUpStartedAt).toBeNull()
+    // The cancelled timer never fires, and a later session starts a fresh clock.
+    await vi.advanceTimersByTimeAsync(MAM_ROOM_CATCHUP_DELAY_MS)
+    expect(mockClient.internal.mam.catchUpRoomHistory).not.toHaveBeenCalled()
+    expect(caughtUp()).toBe(false)
+  })
+
+  it('releases every owner when the side effects are torn down mid-sync', async () => {
+    withMam()
+    connectionStore.getState().setStatus('disconnected')
+    const stop = setupBackgroundSyncSideEffects(mockClient)
+    connectedThenDropped()
+    simulateFreshSession(mockClient)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(caughtUp()).toBe(true)
+    stop()
+    expect(caughtUp()).toBe(false)
+    expect(connectionStore.getState().catchUpStartedAt).toBeNull()
+  })
+
+  it('never drops between session preparation, conversation catch-up and the delayed room pass', async () => {
+    withMam()
+    addRoom(ROOM_A)
+    const conv = deferred()
+    const room = deferred()
+    mockClient.internal.mam.catchUpAllConversations.mockReturnValue(conv.promise)
+    mockClient.internal.mam.catchUpRoomHistory.mockReturnValue(room.promise)
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    connectedThenDropped()
+    const seen: boolean[] = []
+    const unsub = connectionStore.subscribe((s) => s.isCatchingUp, (v) => seen.push(v))
+
+    simulateFreshSession(mockClient)
+    mockClient._emitSDK('room:joined', { roomJid: ROOM_A, joined: true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mockClient.internal.mam.catchUpAllConversations).toHaveBeenCalled()
+    expect(caughtUp()).toBe(true)
+
+    // Conversation pipeline done, the room pass is still waiting on its delay.
+    conv.resolve()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(caughtUp()).toBe(true)
+
+    // Delay elapsed: the room fetch is the last owner.
+    await vi.advanceTimersByTimeAsync(MAM_ROOM_CATCHUP_DELAY_MS)
+    expect(mockClient.internal.mam.catchUpRoomHistory).toHaveBeenCalled()
+    expect(caughtUp()).toBe(true)
+    room.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caughtUp()).toBe(false)
+    unsub()
+    // true once (reconnected), false once (everything ended): no flicker in between.
+    expect(seen).toEqual([true, false])
+  })
+
+  it('holds the step through roster discovery after the conversations are caught up', async () => {
+    withMam()
+    const discovery = deferred()
+    mockClient.internal.mam.discoverNewConversationsFromRoster.mockReturnValue(discovery.promise.then(() => true))
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    simulateFreshSession(mockClient)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mockClient.internal.mam.discoverNewConversationsFromRoster).toHaveBeenCalled()
+    expect(caughtUp()).toBe(true)
+    discovery.resolve()
+    await vi.advanceTimersByTimeAsync(MAM_ROOM_CATCHUP_DELAY_MS)
+    expect(caughtUp()).toBe(false)
+  })
+
+  it('holds the step for a late-MAM room catch-up after the initial pass', async () => {
+    withMam()
+    addRoom(ROOM_A)
+    roomStore.getState().updateRoom(ROOM_A, { supportsMAM: false })
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    simulateFreshSession(mockClient)
+    mockClient._emitSDK('room:joined', { roomJid: ROOM_A, joined: true })
+    await vi.advanceTimersByTimeAsync(MAM_ROOM_CATCHUP_DELAY_MS + 1_000)
+    expect(caughtUp()).toBe(false)
+
+    const late = deferred()
+    mockClient.internal.mam.catchUpRoomHistory.mockReturnValue(late.promise)
+    roomStore.getState().updateRoom(ROOM_A, { supportsMAM: true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mockClient.internal.mam.catchUpRoomHistory).toHaveBeenCalled()
+    expect(caughtUp()).toBe(true)
+    late.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caughtUp()).toBe(false)
+  })
+
+  it('holds the step across the whole SM-resumption room pass', async () => {
+    addRoom(ROOM_A)
+    addRoom('b@conference.example.com')
+    const first = deferred()
+    mockClient.internal.mam.catchUpRoom
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(undefined)
+    connectionStore.getState().setStatus('reconnecting')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    const seen: boolean[] = []
+    const unsub = connectionStore.subscribe((s) => s.isCatchingUp, (v) => seen.push(v))
+    simulateSmResumption(mockClient)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caughtUp()).toBe(true)
+    first.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mockClient.internal.mam.catchUpRoom).toHaveBeenCalledTimes(2)
+    expect(caughtUp()).toBe(false)
+    unsub()
+    expect(seen).toEqual([true, false])
+  })
+
+  // R6: with only direct chats (or caught-up rooms) a resume has no fetch of its
+  // own; the missed messages arrive as the server's replay, which ends before
+  // the server answers a request sent after the resume.
+  it('holds a resumed session with nothing to fetch until the server answers after its replay', async () => {
+    const answer = deferred()
+    mockClient.internal.waitForReplayIngested.mockReturnValue(answer.promise)
+    connectionStore.getState().setStatus('reconnecting')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    const seen: boolean[] = []
+    const unsub = connectionStore.subscribe((s) => s.isCatchingUp, (v) => seen.push(v))
+    simulateSmResumption(mockClient)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(mockClient.internal.waitForReplayIngested).toHaveBeenCalledExactlyOnceWith(RESUME_REPLAY_LIMIT_MS)
+    expect(mockClient.internal.mam.catchUpRoom).not.toHaveBeenCalled()
+    expect(caughtUp()).toBe(true)
+    answer.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caughtUp()).toBe(false)
+    unsub()
+    expect(seen).toEqual([true, false])
+  })
+
+  it('releases a resumed session at the replay time limit when the server never answers', async () => {
+    mockClient.internal.waitForReplayIngested.mockReturnValue(new Promise(() => {}))
+    connectionStore.getState().setStatus('reconnecting')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    simulateSmResumption(mockClient)
+    await vi.advanceTimersByTimeAsync(RESUME_REPLAY_LIMIT_MS - 1)
+    expect(caughtUp()).toBe(true)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(caughtUp()).toBe(false)
+  })
+
+  it('drops the replay owner with the connection, and its late answer cannot clear the next session', async () => {
+    const late = deferred()
+    mockClient.internal.waitForReplayIngested.mockReturnValueOnce(late.promise)
+    connectionStore.getState().setStatus('reconnecting')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    simulateSmResumption(mockClient)
+    expect(caughtUp()).toBe(true)
+    connectionStore.getState().setStatus('reconnecting')
+    expect(caughtUp()).toBe(false)
+    expect(vi.getTimerCount()).toBe(0) // the limit timer went with it
+
+    // The next resume waits on its own answer; the old one arriving late changes nothing.
+    const next = deferred()
+    mockClient.internal.waitForReplayIngested.mockReturnValueOnce(next.promise)
+    simulateSmResumption(mockClient)
+    late.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caughtUp()).toBe(true)
+    next.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caughtUp()).toBe(false)
+  })
+
+  it('releases the replay owner when the side effects are torn down', () => {
+    mockClient.internal.waitForReplayIngested.mockReturnValue(new Promise(() => {}))
+    connectionStore.getState().setStatus('reconnecting')
+    const stop = setupBackgroundSyncSideEffects(mockClient)
+    simulateSmResumption(mockClient)
+    expect(caughtUp()).toBe(true)
+    stop()
+    expect(caughtUp()).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('releases the step when the server has no MAM', async () => {
+    connectionStore.getState().setServerInfo({ identities: [], domain: 'example.com', features: [] })
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    simulateFreshSession(mockClient)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mockClient.internal.mam.catchUpAllConversations).not.toHaveBeenCalled()
+    expect(caughtUp()).toBe(false)
+  })
+
+  it('releases the step when a catch-up fails', async () => {
+    withMam()
+    mockClient.internal.mam.catchUpAllConversations.mockRejectedValue(new Error('boom'))
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    simulateFreshSession(mockClient)
+    await vi.advanceTimersByTimeAsync(MAM_ROOM_CATCHUP_DELAY_MS)
+    expect(caughtUp()).toBe(false)
+  })
+
+  it('clears on disconnect, and a stale owner of the old session cannot clear the next one', async () => {
+    withMam()
+    const stale = deferred()
+    mockClient.internal.mam.catchUpAllConversations.mockReturnValueOnce(stale.promise)
+    connectionStore.getState().setStatus('disconnected')
+    cleanup = setupBackgroundSyncSideEffects(mockClient)
+    simulateFreshSession(mockClient)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caughtUp()).toBe(true)
+
+    connectionStore.getState().setStatus('reconnecting')
+    expect(caughtUp()).toBe(false)
+
+    // New session: preparation owns the step; the old pipeline ending late must not release it.
+    connectionStore.getState().setStatus('online')
+    expect(caughtUp()).toBe(true)
+    stale.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caughtUp()).toBe(true)
+  })
+
+  it('records when the catch-up began and keeps it while owners overlap', () => {
+    vi.setSystemTime(1_000)
+    const first = connectionStore.getState().beginCatchUp()
+    vi.setSystemTime(5_000)
+    const second = connectionStore.getState().beginCatchUp()
+    expect(connectionStore.getState().catchUpStartedAt).toBe(1_000)
+    first()
+    first() // idempotent
+    expect(caughtUp()).toBe(true)
+    second()
+    expect(caughtUp()).toBe(false)
+    expect(connectionStore.getState().catchUpStartedAt).toBeNull()
   })
 })

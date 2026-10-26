@@ -114,6 +114,7 @@
         "reconnectingStep": "Genopretter forbindelse om {{seconds}}s",
         "connecting": "Opretter forbindelse...",
         "verifying": "Verificerer forbindelse...",
+        "updating": "Opdaterer...",
         "connectionError": "Forbindelsesfejl",
         "disconnected": "Afbrudt",
         "cancelReconnection": "Annuller genforbindelse"
@@ -830,6 +831,9 @@
             "offline": "Tilgængelig, når du er forbundet"
         },
         "soundsSection": "Lyde",
+        "inAppSection": "Mens Fluux er åben",
+        "inAppBanner": "Vis banner",
+        "inAppBannerDescription": "Til nye beskeder i andre samtaler",
         "soundInApp": "Afspil lyde i appen",
         "soundInAppDescription": "Når Fluux er åben, ved nye beskeder og kontaktanmodninger",
         "updates": "Opdateringer",

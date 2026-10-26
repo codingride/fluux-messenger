@@ -115,6 +115,7 @@
         "reconnectingStep": "Επανασύνδεση σε {{seconds}}δ",
         "connecting": "Σύνδεση...",
         "verifying": "Επαλήθευση σύνδεσης...",
+        "updating": "Ενημέρωση...",
         "connectionError": "Σφάλμα σύνδεσης",
         "disconnected": "Αποσυνδέθηκε",
         "cancelReconnection": "Ακύρωση επανασύνδεσης"
@@ -831,6 +832,9 @@
             "offline": "Διαθέσιμο μετά τη σύνδεση"
         },
         "soundsSection": "Ήχοι",
+        "inAppSection": "Όταν το Fluux είναι ανοιχτό",
+        "inAppBanner": "Εμφάνιση banner",
+        "inAppBannerDescription": "Για νέα μηνύματα σε άλλες συνομιλίες",
         "soundInApp": "Αναπαραγωγή ήχων στην εφαρμογή",
         "soundInAppDescription": "Όταν το Fluux είναι ανοιχτό, για νέα μηνύματα και αιτήματα επαφής",
         "updates": "Ενημερώσεις",

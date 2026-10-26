@@ -114,6 +114,7 @@
         "reconnectingStep": "将在 {{seconds}} 秒后重新连接",
         "connecting": "正在连接…",
         "verifying": "正在验证连接…",
+        "updating": "正在更新...",
         "connectionError": "连接错误",
         "disconnected": "已断开连接",
         "cancelReconnection": "取消重新连接"
@@ -830,6 +831,9 @@
             "offline": "连接后可用"
         },
         "soundsSection": "声音",
+        "inAppSection": "Fluux 打开时",
+        "inAppBanner": "显示横幅",
+        "inAppBannerDescription": "用于其他对话中的新消息",
         "soundInApp": "在应用内播放声音",
         "soundInAppDescription": "Fluux 打开时，收到新消息和联系人请求时播放",
         "updates": "更新",

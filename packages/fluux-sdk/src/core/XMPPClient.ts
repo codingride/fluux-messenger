@@ -1,5 +1,5 @@
 import { AvatarStateOwner, captureOccupantAvatar, registerAvatarStateOwner } from '../utils/avatarState'
-import { Client, Element } from '@xmpp/client'
+import { Client, Element, xml } from '@xmpp/client'
 import { createActor, type Subscription, type Snapshot } from 'xstate'
 import type { EventHook } from './EventHook'
 import type { XMPPClientConfig } from './clientConfig'
@@ -131,7 +131,7 @@ import {
   publishDiagnostic,
   type ApplicationStanzaOutDiagnostic,
 } from '../diagnostics/channel'
-import { NS_MAM } from './namespaces'
+import { NS_MAM, NS_PING } from './namespaces'
 import { createDefaultStoreBindings } from './defaultStoreBindings'
 import { createPresenceReader, type PresenceReader } from './presenceReader'
 import { initSearchIndex, backfillFromMessageCache, updateMessage as updateSearchIndex } from '../utils/searchIndex'
@@ -156,6 +156,12 @@ interface InternalSurface {
   conversationSync: ConversationSync
   /** Fetches and merges the conversation list outside a fresh session's setup. */
   refreshConversationList(): Promise<void>
+  /**
+   * Resolves once the server has answered a ping sent now and the encrypted
+   * messages received before that answer are decrypted, or after the timeout.
+   * Never rejects.
+   */
+  waitForReplayIngested(timeoutMs: number): Promise<void>
   entityTime: EntityTime
   lastActivity: LastActivity
   pubsub: PubSub
@@ -258,6 +264,7 @@ export class XMPPClient {
   private e2eeStorageBackend: StorageBackend = new InMemoryStorageBackend()
   private proxyAdapter?: ProxyAdapter
   private privacyOptions?: PrivacyOptions
+  private readonly e2eePlugins?: readonly string[]
   private stateSnapshot?: StateSnapshot
   /**
    * Connection management module.
@@ -275,8 +282,12 @@ export class XMPPClient {
    * End-to-end encryption plugin host. `null` before the first successful
    * connection — the manager is tied to a logged-in identity and is
    * constructed on successful connection (via `ensureE2EEManager`, driven by
-   * the session-lifecycle engine) when the JID becomes known. Torn down on
-   * explicit disconnect.
+   * the session-lifecycle engine) when the JID becomes known. Kept while the
+   * client reconnects on its own after a network loss, so registered plugins
+   * decrypt what a resumed session replays; torn down when the session ends
+   * (disconnect, cancelled reconnect, conflict, authentication failure).
+   * Its plugins hear of each reconnect through
+   * {@link E2EEPlugin.onReconnected}.
    *
    * Apps register {@link E2EEPlugin} implementations on `e2ee:manager-ready`,
    * or immediately if the manager already exists when subscribing. The Chat
@@ -511,6 +522,7 @@ export class XMPPClient {
     this.proxyAdapter = config.proxyAdapter
     // Store privacy options for avatar fetching behavior
     this.privacyOptions = config.privacyOptions
+    this.e2eePlugins = config.e2eePlugins
 
     // Initialize presence actor with persistence
     // Try to restore from persisted snapshot (sessionStorage if available)
@@ -698,8 +710,9 @@ export class XMPPClient {
 
     // E2EEManager is NOT constructed here — it's tied to a logged-in
     // identity. See `ensureE2EEManager` (called from handleConnectionSuccess)
-    // and `tearDownE2EEManager` (called on disconnect). Modules access it
-    // via `moduleDeps.getE2EEManager()`, which returns `null` before login.
+    // and `tearDownE2EEManager` (called when the session ends). Modules
+    // access it via `moduleDeps.getE2EEManager()`, which returns `null`
+    // before login.
 
     const moduleDeps = {
       stores: this.stores,
@@ -746,6 +759,7 @@ export class XMPPClient {
       on: (event, handler) => this.subscribeToBus(event, handler as ClientEvents[typeof event]),
       mam, mds, conversationSync, entityTime, lastActivity, pubsub,
       refreshConversationList: () => this.sessionLifecycle.refreshConversationList(),
+      waitForReplayIngested: (timeoutMs) => this.waitForReplayIngested(timeoutMs),
     }
     internalSurfaces.set(this, this.#internal)
 
@@ -781,11 +795,28 @@ export class XMPPClient {
     this.connection.setDisconnectHandler(() => {
       this.avatarState.cancel()
       this.presenceActor.send({ type: 'DISCONNECT' })
-      // Tear down the E2EEManager when the user disconnects — the manager
-      // is tied to a logged-in identity. If they reconnect (same JID or
-      // different), we rebuild fresh in handleConnectionSuccess so there's
-      // no stale account state.
+    })
+
+    // The E2EEManager is tied to a logged-in identity: tear it down when the
+    // session ends (logout, cancelled reconnect, conflict, auth failure). Keep
+    // it while the client reconnects on its own after a network loss: a
+    // resumed stream replays the messages queued during the outage at once,
+    // and only the plugins registered before the drop can decrypt them on
+    // arrival. ensureE2EEManager rebuilds it if the next session is for
+    // another identity.
+    this.connection.setSessionEndedHandler(() => {
       void this.tearDownE2EEManager()
+    })
+
+    // A session started with the manager kept from before a network loss:
+    // tell its plugins before anything is sent in it. A new session missed
+    // the PEP notifications sent while offline, so key lists the plugins had
+    // refreshed may be out of date. A manager for another account is left
+    // alone; ensureE2EEManager replaces it.
+    this.connection.setSessionStartedHandler((isResumption) => {
+      const manager = this.e2ee
+      if (!manager || !this.currentJid || manager.getAccountJid() !== getBareJid(this.currentJid)) return
+      manager.notifyReconnected({ resumed: isResumption })
     })
 
     // Set up stanza router - Connection will call this for each incoming stanza
@@ -1879,6 +1910,7 @@ export class XMPPClient {
       xmpp: this.buildE2EEPrimitives(),
       account: { jid: bareJid },
       logger: e2eeLogger,
+      ...(this.e2eePlugins && { expectedPlugins: this.e2eePlugins }),
     })
     // Route plugin-reported security upgrades (e.g. a late-arriving
     // sender key flipping a previously-untrusted message to trusted)
@@ -1946,10 +1978,10 @@ export class XMPPClient {
   }
 
   /**
-   * Tear down the E2EEManager on disconnect. Existing plugin state on the
-   * native side (e.g. Sequoia keys cached in Rust) is not affected — this
-   * only releases the host-side object so a subsequent reconnect starts
-   * from a clean slate.
+   * Tear down the E2EEManager when the session ends. Existing plugin state on
+   * the native side (e.g. Sequoia keys cached in Rust) is not affected — this
+   * only releases the host-side object so the next login starts from a clean
+   * slate.
    *
    * @internal
    */
@@ -2003,6 +2035,29 @@ export class XMPPClient {
     } catch (err) {
       this.repairAndRethrowSendError(err)
     }
+  }
+
+  private async waitForReplayIngested(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    // Next macrotask: the resume handler that calls this runs before the
+    // connection restores its Stream Management counters.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    try {
+      // No 'to': the server answers for the account (RFC 6120 §8.1.1.1).
+      await this.sendIQ(xml('iq', { type: 'get' }, xml('ping', { xmlns: NS_PING })), timeoutMs)
+    } catch {
+      // An error reply is still an answer; a timeout or a lost socket ends the wait.
+    }
+    // Encrypted replayed messages reach the store only once decrypted, which
+    // can end after the answer.
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([
+      this.messages.whenLiveDecryptsSettled(),
+      new Promise((resolve) => { timer = setTimeout(resolve, remaining) }),
+    ])
+    clearTimeout(timer)
   }
 
   protected async sendIQ(iq: Element, timeoutMs?: number): Promise<Element> {

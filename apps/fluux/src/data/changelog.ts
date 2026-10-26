@@ -20,14 +20,17 @@ export const changelog: ChangelogEntry[] = [
       type: 'added',
       items: [
         'While Fluux is reconnecting for more than two seconds, the open conversation or room shows the connection step ("Reconnecting in 5s", "Connecting...") under its name, and so does the list title on narrow screens',
+        'After reconnecting, the conversation header shows "Updating..." until the messages received while you were offline have arrived',
       ],
     }, {
       type: 'fixed',
       items: [
         'The message box no longer promises that messages will be sent on reconnection while sending is paused: it now says you can send once you are back online',
         'New-message dividers include all unread messages when new messages arrive after scrolling an unfocused room or chat',
+        'Scrolling up while a message above you finishes loading no longer snaps the conversation or room back to where you were a moment earlier',
         'The room message box is now a single editor: the caret can no longer drift from the text (seen with inline predictive text on macOS), and @mentions stay coloured while you type',
         'macOS: saved sign-in, encryption keys and local integrations share one keychain approval after a one-time migration. Existing secrets remain available to the previous release',
+        'Encrypted messages that arrive while your network is briefly down now show their text when Fluux reconnects, instead of "[OpenPGP-encrypted message]"',
       ],
     }],
   },

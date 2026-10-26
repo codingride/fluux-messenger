@@ -2,6 +2,7 @@ import { chatNotificationFixture, roomNotificationFixture, resetNotificationFixt
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useArrivalJumpStore } from '@/stores/arrivalJumpStore'
 import { renderHook, waitFor } from '@testing-library/react'
+import { useToastStore } from '@/stores/toastStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { setPlatformForTesting } from '@/platform'
 import { postActionableEventNotification } from '@/utils/actionableEventNotification'
@@ -40,6 +41,8 @@ const {
   getNotificationPermissionGranted: vi.fn(() => true),
 }))
 let mockPresenceStatus = 'online'
+let mockWindowVisible = false
+let mockJid = 'me@example.com'
 
 // Capture the handlers the hook registers with useNotificationEvents.
 let handlers: {
@@ -75,7 +78,7 @@ vi.mock('@fluux/sdk', async (importOriginal) => {
   return {
     ...actual,
     rosterStore: { getState: () => ({ getContact: () => undefined }) },
-    connectionStore: { getState: () => ({ jid: 'me@example.com' }) },
+    connectionStore: { getState: () => ({ jid: mockJid, windowVisible: mockWindowVisible }) },
     roomStore: { getState: () => ({ ...actual.roomStore.getState(), getRoom: (jid: string) => (jid === 'team@conf.example.com' ? {} : undefined) }) },
     usePresence: () => ({ presenceStatus: mockPresenceStatus }),
     useConnectionStatus: () => ({ status: 'disconnected' }),
@@ -100,6 +103,10 @@ describe('useDesktopNotifications posting + guard', () => {
     restorePlatform = setPlatformForTesting({ shell: 'desktop', os: 'macos' })
     isMobileTauri.mockResolvedValue(false)
     mockPresenceStatus = 'online'
+    mockWindowVisible = false
+    mockJid = 'me@example.com'
+    useSettingsStore.setState({ inAppBannerEnabled: true })
+    useToastStore.setState({ toasts: [] })
     getNotificationPermissionGranted.mockReturnValue(true)
     useSettingsStore.setState({ soundEnabled: true })
     ;(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {}
@@ -164,6 +171,139 @@ describe('useDesktopNotifications posting + guard', () => {
     })
     expect(sendNotification).not.toHaveBeenCalled()
     expect(requestAttention).toHaveBeenCalledTimes(1)
+  })
+
+  // FLM-145: with Fluux in front, its own banner replaces the system one.
+  describe('in-app banner while Fluux is in front', () => {
+    const arrive = (id: string, name: string) => handlers.onConversationMessage?.(
+      { id, name }, { id: `m-${id}`, from: id })
+
+    beforeEach(() => { mockWindowVisible = true })
+
+    it('shows a banner with the sender and preview, and no system notification', async () => {
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      expect(useToastStore.getState().toasts.map(toast => toast.message)).toEqual(['Alice: body text'])
+      expect(invoke).not.toHaveBeenCalledWith('post_notification', expect.anything())
+    })
+
+    it('opens the conversation at the message when tapped', async () => {
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      useToastStore.getState().toasts[0].onClick?.()
+      expect(navigateToConversation).toHaveBeenCalledWith('alice@example.com', 'm-alice@example.com')
+    })
+
+    it('replaces the previous banner with the newer one', async () => {
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      await arrive('carol@example.com', 'Carol')
+      expect(useToastStore.getState().toasts.map(toast => toast.message)).toEqual(['Carol: body text'])
+    })
+
+    it('hides after 5 seconds', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        renderHook(() => useDesktopNotifications())
+        await arrive('alice@example.com', 'Alice')
+        vi.advanceTimersByTime(5000)
+        expect(useToastStore.getState().toasts).toEqual([])
+      } finally { vi.useRealTimers() }
+    })
+
+    it('plays one light haptic on iPhone and none elsewhere', async () => {
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      expect(invoke).not.toHaveBeenCalledWith('plugin:ios-feedback|haptic', expect.anything())
+      restorePlatform()
+      restorePlatform = setPlatformForTesting({ shell: 'mobile', os: 'ios' })
+      isMobileTauri.mockResolvedValue(true)
+      await arrive('bob@example.com', 'Bob')
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('plugin:ios-feedback|haptic', { kind: 'selection' }))
+      expect(invoke.mock.calls.filter(([cmd]) => cmd === 'plugin:ios-feedback|haptic')).toHaveLength(1)
+      expect(invoke).not.toHaveBeenCalledWith('plugin:push|post_notification', expect.anything())
+    })
+
+    it('shows nothing and plays no haptic in Do Not Disturb', async () => {
+      mockPresenceStatus = 'dnd'
+      restorePlatform()
+      restorePlatform = setPlatformForTesting({ shell: 'mobile', os: 'ios' })
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      expect(useToastStore.getState().toasts).toEqual([])
+      expect(invoke).not.toHaveBeenCalledWith('plugin:ios-feedback|haptic', expect.anything())
+    })
+
+    // Review R3: the banner is in-app, so system permission does not gate it.
+    it('shows the banner and haptic without system notification permission', async () => {
+      getNotificationPermissionGranted.mockReturnValue(false)
+      restorePlatform()
+      restorePlatform = setPlatformForTesting({ shell: 'mobile', os: 'ios' })
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      expect(useToastStore.getState().toasts).toHaveLength(1)
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('plugin:ios-feedback|haptic', { kind: 'selection' }))
+    })
+
+    // Review R5: no unused avatar preparation that could finish after a newer banner.
+    it('does not prepare an avatar for the banner', async () => {
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      expect(getNotificationAvatarUrl).not.toHaveBeenCalled()
+    })
+
+    it('shows no banner and no haptic when Show banner is off', async () => {
+      useSettingsStore.setState({ inAppBannerEnabled: false })
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      expect(useToastStore.getState().toasts).toEqual([])
+      expect(invoke).not.toHaveBeenCalledWith('post_notification', expect.anything())
+    })
+
+    // Review R6: the global toast must not outlive the hook or its account.
+    it('removes its banner on unmount', async () => {
+      const { unmount } = renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      unmount()
+      expect(useToastStore.getState().toasts).toEqual([])
+    })
+
+    it('ignores a tap from a previous account', async () => {
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      const [toast] = useToastStore.getState().toasts
+      mockJid = 'other@example.com'
+      toast.onClick?.()
+      expect(navigateToConversation).not.toHaveBeenCalled()
+    })
+
+    // Review R10: Fluux can come to the front while the avatar is being prepared.
+    it('uses the banner when the window comes to the front during avatar preparation', async () => {
+      mockWindowVisible = false
+      vi.mocked(getNotificationAvatarUrl).mockImplementationOnce(async () => { mockWindowVisible = true; return undefined })
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      expect(useToastStore.getState().toasts.map(toast => toast.message)).toEqual(['Alice: body text'])
+      expect(invoke).not.toHaveBeenCalledWith('post_notification', expect.anything())
+    })
+
+    it('shows nothing when it comes to the front during preparation and Show banner is off', async () => {
+      mockWindowVisible = false
+      useSettingsStore.setState({ inAppBannerEnabled: false })
+      vi.mocked(getNotificationAvatarUrl).mockImplementationOnce(async () => { mockWindowVisible = true; return undefined })
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      expect(useToastStore.getState().toasts).toEqual([])
+      expect(invoke).not.toHaveBeenCalledWith('post_notification', expect.anything())
+    })
+
+    it('keeps the system notification when the window is not in front', async () => {
+      mockWindowVisible = false
+      renderHook(() => useDesktopNotifications())
+      await arrive('alice@example.com', 'Alice')
+      expect(useToastStore.getState().toasts).toEqual([])
+      expect(invoke).toHaveBeenCalledWith('post_notification', expect.objectContaining({ title: 'Alice' }))
+    })
   })
 
   it('withholds an iOS preview retracted during avatar loading', async () => {
@@ -731,4 +871,68 @@ describe('useDesktopNotifications posting + guard', () => {
       expect(invoke).toHaveBeenCalledWith('plugin:notification|notify', expect.anything())
     })
   })
+
+describe('useDesktopNotifications system post gate (FLM-152 R10)', () => {
+  let restorePlatform: () => void
+  beforeEach(() => {
+    resetNotificationFixtures()
+    vi.clearAllMocks()
+    handlers = {}
+    restorePlatform = setPlatformForTesting({ shell: 'desktop', os: 'macos' })
+    isMobileTauri.mockResolvedValue(false)
+    mockPresenceStatus = 'online'
+    mockWindowVisible = false
+    getNotificationPermissionGranted.mockReturnValue(true)
+    useSettingsStore.setState({ soundEnabled: true, inAppBannerEnabled: true })
+    useToastStore.setState({ toasts: [] })
+  })
+  afterEach(() => { restorePlatform(); invoke.mockReset(); invoke.mockResolvedValue(null) })
+
+  it('uses the banner when Fluux comes to the front while the native post is being prepared', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'prepare_communication_notification') mockWindowVisible = true
+      return null
+    })
+    renderHook(() => useDesktopNotifications())
+    await handlers.onConversationMessage?.({ id: 'alice@example.com', name: 'Alice' }, { id: 'm1', from: 'alice@example.com' })
+    expect(invoke).not.toHaveBeenCalledWith('post_notification', expect.anything())
+    expect(useToastStore.getState().toasts.map(toast => toast.message)).toEqual(['Alice: body text'])
+  })
+
+  // FLM-152 R12: a late callback must not show a retired account's preview.
+  it('shows no banner when the account changes while the native post is being prepared', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'prepare_communication_notification') { mockWindowVisible = true; mockJid = 'other@example.com' }
+      return null
+    })
+    renderHook(() => useDesktopNotifications())
+    await handlers.onConversationMessage?.({ id: 'alice@example.com', name: 'Alice' }, { id: 'm1', from: 'alice@example.com' })
+    expect(useToastStore.getState().toasts).toEqual([])
+    expect(invoke).not.toHaveBeenCalledWith('post_notification', expect.anything())
+  })
+
+  // FLM-152 R12: nor text from a conversation that is no longer eligible.
+  it('shows no banner when the conversation is gone by the time Fluux is in front', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'prepare_communication_notification') { mockWindowVisible = true; chatStore.setState({ conversations: new Map() }) }
+      return null
+    })
+    renderHook(() => useDesktopNotifications())
+    await handlers.onConversationMessage?.({ id: 'alice@example.com', name: 'Alice' }, { id: 'm1', from: 'alice@example.com' })
+    expect(useToastStore.getState().toasts).toEqual([])
+    expect(invoke).not.toHaveBeenCalledWith('post_notification', expect.anything())
+  })
+
+  it('shows nothing in that case when Show banner is off', async () => {
+    useSettingsStore.setState({ inAppBannerEnabled: false })
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'prepare_communication_notification') mockWindowVisible = true
+      return null
+    })
+    renderHook(() => useDesktopNotifications())
+    await handlers.onConversationMessage?.({ id: 'alice@example.com', name: 'Alice' }, { id: 'm1', from: 'alice@example.com' })
+    expect(invoke).not.toHaveBeenCalledWith('post_notification', expect.anything())
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+})
 })

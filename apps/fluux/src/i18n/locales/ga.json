@@ -114,6 +114,7 @@
         "reconnectingStep": "Ag athcheangal i {{seconds}}s",
         "connecting": "Ag ceangal...",
         "verifying": "Ag fíorú ceangal...",
+        "updating": "Ag nuashonrú...",
         "connectionError": "Earráid ceangail",
         "disconnected": "Dícheangailte",
         "cancelReconnection": "Cealaigh athcheangal"
@@ -836,6 +837,9 @@
             "offline": "Ar fáil nuair a bheidh tú ceangailte"
         },
         "soundsSection": "Fuaimeanna",
+        "inAppSection": "Nuair atá Fluux oscailte",
+        "inAppBanner": "Taispeáin meirge",
+        "inAppBannerDescription": "Do theachtaireachtaí nua i gcomhráite eile",
         "soundInApp": "Seinn fuaimeanna san aip",
         "soundInAppDescription": "Nuair atá Fluux oscailte, do theachtaireachtaí nua agus d'iarratais teagmhála",
         "updates": "Nuashonruithe",

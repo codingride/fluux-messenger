@@ -116,6 +116,7 @@
         "reconnectingStep": "Taasühendamine {{seconds}}s pärast",
         "connecting": "Ühendamine...",
         "verifying": "Ühenduse kontrollimine...",
+        "updating": "Värskendamine...",
         "connectionError": "Ühenduse viga",
         "disconnected": "Ühendus katkestatud",
         "cancelReconnection": "Tühista taasühendamine"
@@ -832,6 +833,9 @@
             "offline": "Saadaval pärast ühendumist"
         },
         "soundsSection": "Helid",
+        "inAppSection": "Kui Fluux on avatud",
+        "inAppBanner": "Kuva bänner",
+        "inAppBannerDescription": "Uute sõnumite jaoks teistes vestlustes",
         "soundInApp": "Esita helisid rakenduses",
         "soundInAppDescription": "Kui Fluux on avatud, uute sõnumite ja kontaktitaotluste puhul",
         "updates": "Värskendused",

@@ -116,6 +116,7 @@
         "reconnectingStep": "Reconectare în {{seconds}}s",
         "connecting": "Se conectează...",
         "verifying": "Se verifică conexiunea...",
+        "updating": "Se actualizează...",
         "connectionError": "Eroare de conexiune",
         "disconnected": "Deconectat",
         "cancelReconnection": "Anulează reconectarea"
@@ -834,6 +835,9 @@
             "offline": "Disponibil după conectare"
         },
         "soundsSection": "Sunete",
+        "inAppSection": "Cât timp Fluux este deschis",
+        "inAppBanner": "Afișează bannerul",
+        "inAppBannerDescription": "Pentru mesaje noi din alte conversații",
         "soundInApp": "Redă sunete în aplicație",
         "soundInAppDescription": "Cu Fluux deschis, pentru mesaje noi și cereri de contact",
         "updates": "Actualizări",

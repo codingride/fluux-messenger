@@ -1,4 +1,5 @@
 import type { DiscoveryDiagnostics } from '../../utils/websocketDiscovery'
+import { installOrderTolerantErrors } from '../../utils/xmppError'
 import type { DiscoveryFailure } from '../types/connection'
 import { client, Client, Element, xml } from '@xmpp/client'
 import { getMechanism } from '@xmpp/client/lib/createOnAuthenticate.js'
@@ -103,6 +104,10 @@ const AUTH_STREAM_ERROR_MARKERS = [
 
 const isAuthStreamError = (message: string): boolean =>
   AUTH_STREAM_ERROR_MARKERS.some(marker => message.includes(marker))
+
+/** States in which the session is over and only a new connect() starts another. */
+const isSessionEndState = (state: ConnectionStateValue): boolean =>
+  state === 'disconnected' || isTerminalState(state)
 
 /**
  * Thrown by `runTimedConnectionAttempt` when its timeout fires for a client
@@ -276,6 +281,12 @@ export class Connection extends BaseModule {
   // Callback for disconnect notification
   private onDisconnect?: () => void
 
+  // Callback for the end of a session (see setSessionEndedHandler)
+  private onSessionEnded?: () => void
+
+  // Callback for the start of a session (see setSessionStartedHandler)
+  private onSessionStarted?: (isResumption: boolean) => void
+
   // Callback for stanza routing
   private onStanza?: (stanza: Element) => void
 
@@ -405,6 +416,10 @@ export class Connection extends BaseModule {
             'attemptReconnect:unhandled-rejection'
           )
         })
+      }
+
+      if (isSessionEndState(stateValue) && !isSessionEndState(previousState)) {
+        this.onSessionEnded?.()
       }
 
       this.previousMachineState = stateValue
@@ -590,6 +605,39 @@ export class Connection extends BaseModule {
   }
 
   /**
+   * Set callback for the end of a session.
+   * Called once when the machine enters `disconnected` or a terminal state:
+   * an explicit disconnect, a cancelled or refused reconnect, a resource
+   * conflict, an authentication failure or a failed first login. A network
+   * loss the client recovers from on its own goes through `reconnecting` and
+   * does not end the session, so state the resumed stream still needs (such
+   * as the E2EE plugins that decrypt its replay) is kept.
+   */
+  setSessionEndedHandler(handler: () => void): void {
+    this.onSessionEnded = handler
+  }
+
+  /**
+   * Set callback for the start of a session, resumed or new.
+   * Called synchronously when a connection attempt succeeds, before the
+   * machine reports the client online and before the post-connect flow, so
+   * nothing has been sent in the session yet. `isResumption` is true when
+   * Stream Management resumed the previous session.
+   */
+  setSessionStartedHandler(handler: (isResumption: boolean) => void): void {
+    this.onSessionStarted = handler
+  }
+
+  /**
+   * Report a successful attempt: first to the session-started callback,
+   * then to the machine, which switches the status to online.
+   */
+  private signalConnectionSuccess(isResumption: boolean, source: string): void {
+    this.onSessionStarted?.(isResumption)
+    this.sendMachineEvent({ type: 'CONNECTION_SUCCESS' }, source)
+  }
+
+  /**
    * Set callback for stanza routing.
    * Called for each incoming stanza to route to modules.
    */
@@ -760,7 +808,7 @@ export class Connection extends BaseModule {
         'Connection attempt',
         async (isResumption) => {
           // Signal machine: initial connection succeeded
-          this.sendMachineEvent({ type: 'CONNECTION_SUCCESS' }, 'connect:connection-success')
+          this.signalConnectionSuccess(isResumption, 'connect:connection-success')
           await this.handleConnectionSuccess(isResumption, `Connected as ${jid}`, effectiveJoinedRooms)
         }
       )
@@ -1946,6 +1994,8 @@ export class Connection extends BaseModule {
     })
 
     this.authentications.set(xmppClient, authentication)
+    // xmpp.js reads an error's condition by child position; see the helper.
+    installOrderTolerantErrors(xmppClient)
     xmppClient.on('send', element => authentication.sent(element))
     xmppClient.on('element', element => authentication.received(element))
 
@@ -2885,7 +2935,7 @@ export class Connection extends BaseModule {
       // This shouldn't happen in normal flow, but guards against edge cases.
       if (this.xmpp && this.xmpp.status === 'online') {
         this.stores.console.addEvent('Connection still online - cancelling reconnect attempt', 'connection')
-        this.sendMachineEvent({ type: 'CONNECTION_SUCCESS' }, 'attemptReconnect:already-online')
+        this.signalConnectionSuccess(false, 'attemptReconnect:already-online')
         await this.handleConnectionSuccess(false, 'Reconnected', previouslyJoinedRooms)
         return
       }
@@ -2928,7 +2978,7 @@ export class Connection extends BaseModule {
           'Reconnect attempt',
           async (isResumption) => {
             // Signal machine: reconnect succeeded → connected.healthy
-            this.sendMachineEvent({ type: 'CONNECTION_SUCCESS' }, 'attemptReconnect:success')
+            this.signalConnectionSuccess(isResumption, 'attemptReconnect:success')
             await this.handleConnectionSuccess(
               isResumption,
               'Reconnected',

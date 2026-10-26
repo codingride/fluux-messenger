@@ -39,6 +39,12 @@ import {
   selectRoomsNeedingResumeSeed,
 } from '../utils/mamCatchUpUtils'
 import { executeWithConcurrency } from '../utils/concurrencyUtils'
+
+/**
+ * How long a resumed session holds the "Updating..." step while it waits for
+ * the server's replay of the stanzas queued during the outage.
+ */
+export const RESUME_REPLAY_LIMIT_MS = 10_000
 import {
   getRoomMembershipEpoch,
   invalidateRoomMemberships,
@@ -65,7 +71,10 @@ import {
  *
  * On SM resumption (`'resumed'` event), rooms already caught up to live rely on
  * replayed stanzas. Only joined, inactive rooms that still need archive coverage
- * receive a resume seed query.
+ * receive a resume seed query. The catch-up step stays up until the server
+ * answers a round trip sent after the resume, which it does only once it has
+ * replayed what it queued, and the encrypted replayed messages are decrypted,
+ * or until RESUME_REPLAY_LIMIT_MS.
  *
  * @param client - The client driving these side effects
  * @param options - Configuration options
@@ -88,8 +97,34 @@ export function setupBackgroundSyncSideEffects(
   // Rooms already given a resume seed this session, so a room that joins,
   // leaves, and rejoins can't re-query the archive repeatedly.
   const resumeSeededRooms = new Set<string>()
+
+  // "Updating..." owner held from the moment the connection is online until the
+  // catch-up owners below take over, so the step has no gap while the session
+  // is being prepared (inputs, MAM discovery).
+  let endSessionPrep: (() => void) | undefined
+  function endSessionPreparation(): void {
+    endSessionPrep?.()
+    endSessionPrep = undefined
+  }
+  // The owner a resumed session holds until the server's replay is answered.
+  let releaseResumeReplay: (() => void) | undefined
+  function endResumeReplay(): void {
+    releaseResumeReplay?.()
+    releaseResumeReplay = undefined
+  }
+
   // Timer for delayed room catch-up (cleared on cleanup or disconnect)
   let roomCatchUpTimer: ReturnType<typeof setTimeout> | undefined
+  // Owner held while the delayed room pass waits on its timer.
+  let endRoomTimerOwner: (() => void) | undefined
+  function cancelRoomCatchUpTimer(): void {
+    if (roomCatchUpTimer) {
+      clearTimeout(roomCatchUpTimer)
+      roomCatchUpTimer = undefined
+    }
+    endRoomTimerOwner?.()
+    endRoomTimerOwner = undefined
+  }
   // Epoch ms of the current fresh session's connection. Used as the forward
   // catch-up cursor boundary so live messages arriving during the 10s room
   // catch-up window can't poison the cursor and silently skip the offline gap.
@@ -187,6 +222,7 @@ export function setupBackgroundSyncSideEffects(
       membershipEpoch,
     }
     mamInFlightRooms.set(roomJid, reservation)
+    const endCatchUp = connectionStore.getState().beginCatchUp()
     try {
       const caughtUp = await catchUpFreshSessionRoom(
         roomJid,
@@ -212,6 +248,7 @@ export function setupBackgroundSyncSideEffects(
     } catch {
       return false
     } finally {
+      endCatchUp()
       if (mamInFlightRooms.get(roomJid) === reservation) {
         mamInFlightRooms.delete(roomJid)
       }
@@ -315,12 +352,15 @@ export function setupBackgroundSyncSideEffects(
 
     resumeSeededRooms.add(roomJid)
     logInfo(`Background sync: SM resumption — catching up late-joined room ${roomJid}`)
+    const endCatchUp = connectionStore.getState().beginCatchUp()
     try {
       await client.internal.mam.catchUpRoom(roomJid, sessionStartTime)
     } catch {
       // Best-effort, exactly like the resume pass this mirrors. The seed stays
       // recorded so a failing room can't be retried on every presence change;
       // the next session re-evaluates it from scratch.
+    } finally {
+      endCatchUp()
     }
   }
 
@@ -430,6 +470,13 @@ export function setupBackgroundSyncSideEffects(
     const activeConversationId = chatStore.getState().activeConversationId
 
     // Serialized pipeline: catch-up → roster discovery → archived check
+    // Catch-up owners for the "Updating..." step: the serialized conversation
+    // pipeline and the delayed room pass (held across its 10 s delay so the step
+    // does not drop and reappear). They take over from session preparation.
+    const endPipelineCatchUp = connectionStore.getState().beginCatchUp()
+    const endRoomCatchUp = connectionStore.getState().beginCatchUp()
+    endSessionPreparation()
+
     void (async () => {
       try {
         // Stage 1: Conversation catch-up (skip active — handled by chatSideEffects)
@@ -452,6 +499,8 @@ export function setupBackgroundSyncSideEffects(
         }
       } catch {
         // Silently ignore — best-effort sync
+      } finally {
+        endPipelineCatchUp()
       }
       // Re-decrypt anything stashed during this catch-up. retryPendingDecrypts is
       // a one-shot snapshot driven by KEY-availability events (key-unlock / plugin
@@ -466,8 +515,10 @@ export function setupBackgroundSyncSideEffects(
 
     // Stage 4: Room catch-up + member discovery (delayed to let rooms finish joining and discover MAM)
     const syncGeneration = sessionGeneration
+    endRoomTimerOwner = endRoomCatchUp
     roomCatchUpTimer = setTimeout(() => {
       roomCatchUpTimer = undefined
+      endRoomTimerOwner = undefined // the pass below now owns its release
       void (async () => {
         try {
           logInfo('Background sync: room catch-up (delayed 10s)')
@@ -494,9 +545,13 @@ export function setupBackgroundSyncSideEffects(
         } catch {
           // Silently ignore MAM catch-up errors
         }
-        if (syncGeneration !== sessionGeneration) return
-        initialRoomPassDone = true
-        await reconcileFreshSessionRooms(syncGeneration)
+        try {
+          if (syncGeneration !== sessionGeneration) return
+          initialRoomPassDone = true
+          await reconcileFreshSessionRooms(syncGeneration)
+        } finally {
+          endRoomCatchUp()
+        }
         if (syncGeneration !== sessionGeneration) return
         // Same rationale as the 1:1 catch-up retry above: room messages stashed
         // during this delayed pass (encrypted MUC history fetched after a mid-sync
@@ -534,7 +589,10 @@ export function setupBackgroundSyncSideEffects(
     if (!isFreshSession || backgroundSyncDone) return
     if (inputsReadyGeneration !== sessionGeneration) return
     if (connectionStore.getState().status !== 'online' || !client.isConnected()) return
-    const supportsMAM = connectionStore.getState().serverInfo?.features?.includes(NS_MAM) ?? false
+    const features = connectionStore.getState().serverInfo?.features
+    const supportsMAM = features?.includes(NS_MAM) ?? false
+    // Nothing will be fetched: don't hold the "Updating..." step open.
+    if (features && !supportsMAM) endSessionPreparation()
     if (!supportsMAM) return
     triggerBackgroundSync()
   }
@@ -556,6 +614,13 @@ export function setupBackgroundSyncSideEffects(
       freshSessionJoinedRooms.clear()
     }
     resetRoomRetryState()
+
+    // A cache-cleared resume upgraded to full setup: status is already online
+    // (no transition to start preparation) and the resume pass may have
+    // released its owners, so hold the step until the fresh sync takes over.
+    if (followsUninterruptedResume && !endSessionPrep && connectionStore.getState().status === 'online') {
+      endSessionPrep = connectionStore.getState().beginCatchUp()
+    }
 
     logInfo('Background sync: fresh session — waiting for MAM support and session inputs')
 
@@ -599,6 +664,21 @@ export function setupBackgroundSyncSideEffects(
     // the key already unlocked. Coalesced with any in-flight pass.
     void client.retryPendingDecrypts()
 
+    // The server replays the stanzas it queued during the outage right after
+    // the resume, and answers a new request only after them. Hold the step on
+    // that answer and on the decrypts it leaves running, bounded, so presence
+    // does not come back before the missed messages are in the store.
+    endResumeReplay()
+    const endReplay = connectionStore.getState().beginCatchUp()
+    endSessionPreparation()
+    const release = () => {
+      clearTimeout(replayLimit)
+      endReplay()
+    }
+    const replayLimit = setTimeout(release, RESUME_REPLAY_LIMIT_MS)
+    releaseResumeReplay = release
+    client.internal.waitForReplayIngested(RESUME_REPLAY_LIMIT_MS).then(release, release)
+
     const resumeGeneration = sessionGeneration
     const state = roomStore.getState()
     const eligible = selectRoomsNeedingResumeSeed(
@@ -614,10 +694,17 @@ export function setupBackgroundSyncSideEffects(
     }
 
     logInfo(`Background sync: SM resumption — catching up ${eligible.length} not-caught-up room(s)`)
+    // One owner across the whole sequential pass, so the step does not drop
+    // between rooms.
+    const endResumeCatchUp = connectionStore.getState().beginCatchUp()
     void (async () => {
-      for (const room of eligible) {
-        if (!client.isConnected()) break
-        await seedResumeRoomOnce(room.jid, resumeGeneration)
+      try {
+        for (const room of eligible) {
+          if (!client.isConnected()) break
+          await seedResumeRoomOnce(room.jid, resumeGeneration)
+        }
+      } finally {
+        endResumeCatchUp()
       }
     })()
   })
@@ -631,16 +718,25 @@ export function setupBackgroundSyncSideEffects(
     (status) => {
       if (status !== 'online' && previousStatus === 'online') {
         sessionGeneration += 1
+        endSessionPrep = undefined
+        connectionStore.getState().resetCatchUp()
         uninterruptedResumeMayEmitSyntheticOnline = false
         isFreshSession = false
         isResumedSession = false
         freshSessionJoinedRooms.clear()
         resumeSeededRooms.clear()
         resetRoomRetryState()
-        if (roomCatchUpTimer) {
-          clearTimeout(roomCatchUpTimer)
-          roomCatchUpTimer = undefined
-        }
+        cancelRoomCatchUpTimer()
+        endResumeReplay()
+      }
+      // A resumed session already ran its 'resumed' handler: nothing to prepare.
+      // Every other way online holds the step until the sync takes over: a
+      // reconnect, and a saved session restored by a new client. A status that
+      // flips straight from 'disconnected' to 'online' made no connection
+      // attempt (the demo), so there is nothing to catch up on.
+      if (status === 'online' && previousStatus !== 'online' && previousStatus !== 'disconnected' && !isResumedSession) {
+        endSessionPreparation()
+        endSessionPrep = connectionStore.getState().beginCatchUp()
       }
       previousStatus = status
     }
@@ -763,9 +859,9 @@ export function setupBackgroundSyncSideEffects(
         logInfo('Background sync: MAM support discovered')
       }
       hadMAMSupport = hasMAMSupport
-      if (hasMAMSupport) {
-        maybeTriggerBackgroundSync()
-      }
+      // Also without MAM: a late discovery that finds none releases the
+      // session preparation instead of leaving it held.
+      maybeTriggerBackgroundSync()
     }
   )
 
@@ -801,9 +897,8 @@ export function setupBackgroundSyncSideEffects(
     unsubscribeActiveRoom()
     unsubscribePluginRegistered()
     unsubscribeKeyUnlocked()
-    if (roomCatchUpTimer) {
-      clearTimeout(roomCatchUpTimer)
-      roomCatchUpTimer = undefined
-    }
+    cancelRoomCatchUpTimer()
+    endSessionPreparation()
+    endResumeReplay()
   }
 }

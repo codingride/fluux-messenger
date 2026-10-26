@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { usePresence } from '@fluux/sdk'
+import { usePresence, useConnectionStatus } from '@fluux/sdk'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useNotificationEvents } from './useNotificationEvents'
 import { announcedByPush } from './useNativePush'
@@ -61,6 +61,9 @@ function createNotificationSound(): () => void {
   }
 }
 
+/** Same post-reconnect wait as the notification banner (useDesktopNotifications). */
+const CATCHUP_WINDOW_MS = 3000
+
 /**
  * Hook to play a sound notification for new messages and room mentions.
  * Uses the shared useNotificationEvents hook for detection logic.
@@ -91,16 +94,54 @@ export function useSoundNotification(): void {
     }
   }, [])
 
-  const playSound = () => {
+  // After each move into 'online', a reconnect backlog gets one chime when the wait ends.
+  const { status } = useConnectionStatus()
+  const prevStatusRef = useRef(status)
+  const windowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Conversations that arrived during the post-reconnect wait (null: no wait in progress).
+  const burstPendingRef = useRef<Set<string> | null>(null)
+
+  const playNow = () => {
     if (presenceStatusRef.current === 'dnd' || !soundEnabledRef.current) return
     playSoundRef.current?.()
   }
 
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = status
+    if (status === 'online' && prev !== 'online') {
+      burstPendingRef.current = new Set()
+      windowTimerRef.current = setTimeout(() => {
+        windowTimerRef.current = null
+        const pending = burstPendingRef.current
+        burstPendingRef.current = null
+        if (pending?.size) playNow()
+      }, CATCHUP_WINDOW_MS)
+    } else if (status !== 'online' && prev === 'online') {
+      if (windowTimerRef.current) clearTimeout(windowTimerRef.current)
+      windowTimerRef.current = null
+      burstPendingRef.current = null
+    }
+  }, [status])
+
+  useEffect(() => () => { if (windowTimerRef.current) clearTimeout(windowTimerRef.current) }, [])
+
+  const playSound = (key: string) => {
+    if (burstPendingRef.current) {
+      burstPendingRef.current.add(key)
+      return
+    }
+    playNow()
+  }
+
   // Subscribe to notification events
   useNotificationEvents({
-    onConversationMessage: (_conv, message) => {
-      if (!announcedByPush(message)) playSound()
+    onConversationMessage: (conv, message) => {
+      if (!announcedByPush(message)) playSound(conv.id)
     },
-    onRoomMessage: playSound,
+    onRoomMessage: (room) => playSound(`room:${room.jid}`),
+    // A conversation read during the wait no longer needs its chime.
+    onConversationRead: (id) => { burstPendingRef.current?.delete(id) },
+    onRoomRead: (jid) => { burstPendingRef.current?.delete(`room:${jid}`) },
   })
 }

@@ -176,6 +176,9 @@ interface MessageEnvelopeContext {
 export class Chat extends BaseModule {
   private mamModule: MAM
   private correctionReceipts: CorrectionReceipts
+  // Live encrypted messages still being decrypted: they reach the store only
+  // when their decrypt ends.
+  private liveDecrypts = new Set<Promise<void>>()
 
   constructor(deps: ModuleDependencies, mamModule: MAM) {
     super(deps)
@@ -243,10 +246,10 @@ export class Chat extends BaseModule {
     }
 
     // tryHandleEncrypted returned false: no plugin claimed the stanza (or there
-    // is no manager). recordUnclaimedEME tags it — when a plugin is registered,
-    // an unclaimed EME stanza is an unsupported protocol (e.g. OMEMO) so the
-    // fallback <body> is shown with an "unsupported method" hint; otherwise the
-    // payload is stashed for retryPendingDecrypts() once a plugin comes online.
+    // is no manager). recordUnclaimedEME tags it — a protocol no registered or
+    // declared plugin handles (e.g. OMEMO) is unsupported, so the fallback
+    // <body> is shown with an "unsupported method" hint; otherwise the payload
+    // is stashed for retryPendingDecrypts() once its plugin comes online.
     // The two `!readStashed…` guards make this idempotent across re-entry
     // (carbon copies / second passes through handleMessageInternal).
     const manager = this.deps.getE2EEManager?.()
@@ -499,8 +502,23 @@ export class Chat extends BaseModule {
     const manager = this.deps.getE2EEManager?.()
     if (!manager) return false
     if (!stanzaHasE2EEClaim(stanza, manager)) return false
-    void this.decryptAndReprocess(manager, stanza, context)
+    const pending = this.decryptAndReprocess(manager, stanza, context)
+    this.liveDecrypts.add(pending)
+    const settle = () => { this.liveDecrypts.delete(pending) }
+    pending.then(settle, settle)
     return true
+  }
+
+  /**
+   * Resolves once every live decrypt started before this call, and any
+   * started while waiting, has ended (successfully or not).
+   *
+   * @internal
+   */
+  async whenLiveDecryptsSettled(): Promise<void> {
+    while (this.liveDecrypts.size > 0) {
+      await Promise.allSettled([...this.liveDecrypts])
+    }
   }
 
   private async decryptAndReprocess(

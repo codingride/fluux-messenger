@@ -1,6 +1,18 @@
-import { describe, it, expect } from 'vitest'
-import { createMockElement } from '../core/test-utils'
-import { parseXMPPError, formatXMPPError, type XMPPStanzaError } from './xmppError'
+import { describe, it, expect, vi } from 'vitest'
+import { createMockElement, parseElement } from '../core/test-utils'
+// xmpp.js ships no types for this internal module; it is the class iqCaller rejects with.
+// @ts-expect-error TS7016
+import StanzaError from '@xmpp/middleware/lib/StanzaError.js'
+// xmpp.js ships no types for these internal modules.
+// @ts-expect-error TS7016
+import StreamError from '@xmpp/connection/lib/StreamError.js'
+// @ts-expect-error TS7016
+import SASLError from '@xmpp/sasl/lib/SASLError.js'
+import type { Element } from '@xmpp/client'
+import { parseXMPPError, formatXMPPError, installOrderTolerantErrors, putErrorConditionFirst, type XMPPStanzaError } from './xmppError'
+
+// test-utils mocks '@xmpp/client'; the redirect and FAST paths need the real client.
+const { client } = await vi.importActual<typeof import('@xmpp/client')>('@xmpp/client')
 
 describe('parseXMPPError', () => {
   it('should parse a standard error element with type, condition, and text', () => {
@@ -226,5 +238,197 @@ describe('formatXMPPError', () => {
       condition: 'undefined-condition',
     }
     expect(formatXMPPError(error)).toBe('Undefined condition')
+  })
+})
+
+// Issue #1808: ejabberd 26.09 (xmpp 1.13.5) sends <text/> before the condition,
+// and xmpp.js 0.14 reads the first child as the condition.
+// Issue #1808: ejabberd 26.09 (xmpp 1.13.5) sends <text/> before the condition,
+// and xmpp.js 0.14 reads the first child as the condition. Both child orders
+// are valid XMPP, so each case runs with the text before and after it.
+const STANZAS = 'urn:ietf:params:xml:ns:xmpp-stanzas'
+const orders = (text: string, condition: string): Array<[string, string]> => [
+  ['text first (ejabberd 26.09)', text + condition],
+  ['condition first (RFC examples)', condition + text],
+]
+
+describe('installOrderTolerantErrors', () => {
+  // The real xmpp.js client: its own _onElement decides on redirects and errors.
+  function connectionSeeing(xmlText: string) {
+    const conn = client({ service: 'ws://localhost:1', domain: 'example.com' }) as unknown as {
+      _onElement(el: Element): void
+      _onSeeOtherHost(error: { condition: string }): void
+      on(event: string, handler: (...args: unknown[]) => void): void
+    }
+    installOrderTolerantErrors(conn)
+    const seen = { redirect: undefined as string | undefined, errors: [] as Array<{ condition: string }> }
+    conn._onSeeOtherHost = (error) => { seen.redirect = error.condition }
+    conn.on('error', (err) => seen.errors.push(err as { condition: string }))
+    conn._onElement(parseElement(xmlText))
+    return seen
+  }
+
+  it.each(orders(
+    '<text xmlns="urn:ietf:params:xml:ns:xmpp-streams">Moved</text>',
+    '<see-other-host xmlns="urn:ietf:params:xml:ns:xmpp-streams">other.example.com</see-other-host>',
+  ))('follows a see-other-host stream error: %s', (_label, children) => {
+    const seen = connectionSeeing(`<stream:error xmlns:stream="http://etherx.jabber.org/streams">${children}</stream:error>`)
+    expect(seen.redirect).toBe('see-other-host')
+    expect(seen.errors).toEqual([])
+  })
+
+  it.each(orders(
+    '<text xmlns="urn:ietf:params:xml:ns:xmpp-streams">Replaced</text>',
+    '<conflict xmlns="urn:ietf:params:xml:ns:xmpp-streams"/>',
+  ))('reports a conflict stream error as conflict: %s', (_label, children) => {
+    const seen = connectionSeeing(`<stream:error xmlns:stream="http://etherx.jabber.org/streams">${children}</stream:error>`)
+    expect(seen.errors.map(e => e.condition)).toEqual(['conflict'])
+  })
+
+  it.each(orders('<text xml:lang="en">Invalid token</text>', '<not-authorized/>'))(
+    'lets SASLError (read by the FAST and auth paths) see not-authorized: %s',
+    (_label, children) => {
+      const el = parseElement(`<failure xmlns="urn:ietf:params:xml:ns:xmpp-sasl">${children}</failure>`)
+      putErrorConditionFirst(el)
+      expect(SASLError.fromElement(el).condition).toBe('not-authorized')
+    },
+  )
+
+  it.each(orders(
+    `<text xmlns="${STANZAS}" xml:lang="en">Node not found</text>`,
+    `<item-not-found xmlns="${STANZAS}"/>`,
+  ))('lets an IQ error reject as item-not-found with its text: %s', (_label, children) => {
+    const iq = parseElement(`<iq type="error" id="1"><error type="cancel" code="404">${children}</error></iq>`)
+    putErrorConditionFirst(iq)
+    const err = StanzaError.fromElement(iq.getChild('error'))
+    expect([err.condition, err.message]).toEqual(['item-not-found', 'item-not-found - Node not found'])
+  })
+
+  it.each(orders(
+    `<text xmlns="${STANZAS}" xml:lang="en">Node not found</text>`,
+    `<item-not-found xmlns="${STANZAS}"/>`,
+  ))('rejects a real iqCaller request with item-not-found: %s', async (_label, children) => {
+    const conn = client({ service: 'ws://localhost:1', domain: 'example.com' }) as unknown as {
+      _onElement(el: Element): void
+      send(el: Element): Promise<void>
+      iqCaller: { request(el: Element): Promise<unknown> }
+    }
+    installOrderTolerantErrors(conn)
+    conn.send = async () => {}
+    const request = conn.iqCaller.request(parseElement('<iq type="get" id="q1"><pubsub xmlns="http://jabber.org/protocol/pubsub"/></iq>'))
+    conn._onElement(parseElement(`<iq type="error" id="q1"><error type="cancel" code="404">${children}</error></iq>`))
+    await expect(request).rejects.toMatchObject({ condition: 'item-not-found', message: 'item-not-found - Node not found' })
+  })
+
+  const parts = {
+    condition: `<resource-constraint xmlns="${STANZAS}"/>`,
+    text: `<text xmlns="${STANZAS}">Too many hats</text>`,
+    application: '<too-many xmlns="urn:example:app"/>',
+  }
+  const permutations = (items: string[]): string[][] =>
+    items.length <= 1 ? [items] : items.flatMap((item, i) =>
+      permutations([...items.slice(0, i), ...items.slice(i + 1)]).map(rest => [item, ...rest]))
+
+  it.each(permutations(['condition', 'text', 'application']))(
+    'keeps condition, text and application apart in the order %s, %s, %s', (...order) => {
+      const iq = parseElement(`<iq type="error"><error type="wait">${order.map(k => parts[k as keyof typeof parts]).join('')}</error></iq>`)
+      putErrorConditionFirst(iq)
+      const err = StanzaError.fromElement(iq.getChild('error'))
+      expect([err.condition, err.text, err.application?.name]).toEqual(['resource-constraint', 'Too many hats', 'too-many'])
+    })
+
+  // Real SASL2 + FAST negotiation: features in, authenticate out, failure back.
+  // The client's credentials callback offers a FAST token and a password, so a
+  // rejected token must fall back to PLAIN, and only on not-authorized.
+  async function negotiate(failureChildren: string, install: boolean) {
+    // Settles when the credentials callback's authenticate() call does, i.e.
+    // after the FAST attempt and any password fallback have finished.
+    let authenticated!: Promise<void>
+    const conn = client({
+      service: 'ws://localhost:1', domain: 'example.com',
+      credentials: async (authenticate: (c: object, m: string, ua: unknown) => Promise<void>,
+        _mechanisms: string[], fast: unknown) => {
+        const token = fast ? { mechanism: 'HT-SHA-256-NONE', token: 'tok', expiry: '2999-01-01T00:00:00Z' } : undefined
+        authenticated = authenticate({ username: 'alice', password: 'secret', token }, 'PLAIN', undefined)
+        await authenticated
+      },
+    } as never) as unknown as {
+      _onElement(el: Element): void
+      send(el: Element): Promise<void>
+      fast: { fetchToken(): Promise<unknown>; saveToken(): void; deleteToken(): Promise<void> }
+      on(event: string, handler: (...args: unknown[]) => void): void
+    }
+    if (install) installOrderTolerantErrors(conn)
+    const sent: string[] = []
+    const errors: string[] = []
+    let deleted = false
+    conn.fast.deleteToken = async () => { deleted = true }
+    conn.fast.saveToken = () => {}
+    conn.on('error', err => errors.push((err as Error).message))
+    conn.send = async (el: Element) => {
+      const mechanism = el.attrs.mechanism
+      if (el.name !== 'authenticate') return
+      sent.push(mechanism)
+      await Promise.resolve()
+      conn._onElement(parseElement(mechanism === 'HT-SHA-256-NONE'
+        ? `<failure xmlns="urn:xmpp:sasl:2">${failureChildren}</failure>`
+        : '<success xmlns="urn:xmpp:sasl:2"><authorization-identifier>alice@example.com</authorization-identifier></success>'))
+    }
+    conn._onElement(parseElement(
+      '<stream:features xmlns:stream="http://etherx.jabber.org/streams">'
+      + '<authentication xmlns="urn:xmpp:sasl:2"><mechanism>PLAIN</mechanism>'
+      + '<inline><fast xmlns="urn:xmpp:fast:0"><mechanism>HT-SHA-256-NONE</mechanism></fast></inline>'
+      + '</authentication></stream:features>'))
+    await vi.waitFor(() => expect(authenticated).toBeDefined())
+    await authenticated
+    return { sent, errors, deleted }
+  }
+
+  const SASL = 'urn:ietf:params:xml:ns:xmpp-sasl'
+  it.each(orders(
+    '<text xml:lang="en">Invalid token</text>',
+    `<not-authorized xmlns="${SASL}"/>`,
+  ))('invalidates a rejected FAST token and falls back to the password: %s', async (_label, children) => {
+    const result = await negotiate(children, true)
+    expect(result).toEqual({ sent: ['HT-SHA-256-NONE', 'PLAIN'], errors: [], deleted: true })
+  })
+
+  it('without the hook, a text-first rejection keeps the dead token and raises an error (control)', async () => {
+    const result = await negotiate(`<text xml:lang="en">Invalid token</text><not-authorized xmlns="${SASL}"/>`, false)
+    expect(result.deleted).toBe(false)
+    expect(result.errors).toEqual(['text'])
+  })
+
+  it.each([
+    ['stanza', STANZAS, (c: string) => `<iq type="error"><error type="wait">${c}</error></iq>`],
+    ['stream', 'urn:ietf:params:xml:ns:xmpp-streams',
+      (c: string) => `<stream:error xmlns:stream="http://etherx.jabber.org/streams">${c}</stream:error>`],
+  ])('ignores a foreign-namespace <text/> ahead of the protocol text and application (%s)', (_kind, ns, wrap) => {
+    const el = parseElement(wrap(
+      '<text xmlns="urn:example:ext">Not for display</text>'
+      + '<too-many xmlns="urn:example:app"/>'
+      + `<text xmlns="${ns}">Protocol reason</text><resource-constraint xmlns="${ns}"/>`))
+    putErrorConditionFirst(el)
+    const errorEl = el.name === 'iq' ? el.getChild('error') : el
+    const Err = ns === STANZAS ? StanzaError : StreamError
+    const err = Err.fromElement(errorEl)
+    expect([err.condition, err.text, err.application?.name]).toEqual(['resource-constraint', 'Protocol reason', 'too-many'])
+  })
+
+  it('reads SASL2 protocol text, not a foreign <text/>, ahead of it', () => {
+    const el = parseElement(
+      '<failure xmlns="urn:xmpp:sasl:2"><text xmlns="urn:example:ext">Not for display</text>'
+      + '<text xml:lang="en">Invalid token</text>'
+      + '<not-authorized xmlns="urn:ietf:params:xml:ns:xmpp-sasl"/></failure>')
+    putErrorConditionFirst(el)
+    const err = SASLError.fromElement(el)
+    expect([err.condition, err.text]).toEqual(['not-authorized', 'Invalid token'])
+  })
+
+  it('does nothing to a non-error element or a client without the entry point', () => {
+    const msg = parseElement('<message><body>hi</body></message>')
+    putErrorConditionFirst(msg)
+    expect(msg.children).toHaveLength(1)
+    expect(() => installOrderTolerantErrors({})).not.toThrow()
   })
 })

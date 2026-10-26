@@ -114,6 +114,7 @@
         "reconnectingStep": "Ponovno povezivanje za {{seconds}}s",
         "connecting": "Povezivanje...",
         "verifying": "Provjera veze...",
+        "updating": "Ažuriranje...",
         "connectionError": "Greška veze",
         "disconnected": "Odspojeno",
         "cancelReconnection": "Odustani od ponovnog povezivanja"
@@ -832,6 +833,9 @@
             "offline": "Dostupno nakon povezivanja"
         },
         "soundsSection": "Zvukovi",
+        "inAppSection": "Dok je Fluux otvoren",
+        "inAppBanner": "Prikaži baner",
+        "inAppBannerDescription": "Za nove poruke u drugim razgovorima",
         "soundInApp": "Reproduciraj zvukove u aplikaciji",
         "soundInAppDescription": "Dok je Fluux otvoren, za nove poruke i zahtjeve za kontakt",
         "updates": "Ažuriranja",
