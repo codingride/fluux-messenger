@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { setPlatformForTesting } from '@/platform'
 import type { InvokeFn } from './SequoiaPgpPlugin'
 import { SequoiaPgpPlugin } from './SequoiaPgpPlugin'
+import { deleteOwnKey } from './deleteOwnKey'
 import { OPENPGP_DESCRIPTOR } from './OpenPGPPluginBase'
 import { legacyNormalizeBackupPassphrase } from './backupPassphrase'
 import { getOwnKeyConflict } from '@/stores/ownKeyConflictStore'
@@ -2800,6 +2801,446 @@ describe('SequoiaPgpPlugin', () => {
         expect(fps).toContain(P2.fingerprint)
       })
     })
+
+    // FLM-157 review, finding R1: the plugin now stays registered through a
+    // network loss. When the server could not resume the session, the PEP
+    // notifications sent while offline are lost, so a key withdrawn meanwhile
+    // must not stay a recipient.
+    describe('a new session after a network loss, with the plugin kept registered', () => {
+      const ME = 'me@example.com'
+
+      it('re-reads the peer and own key lists before the next send', async () => {
+        const built = makeContext(ME)
+        await plugin.init(built.ctx)
+        const mePep = installPeerPep(built, ME)
+        const meSelf = fake.accounts.get(ME)!
+        const meSib = validKey('SIBLINGKEY0001', ME)
+        mePep.announce([meSelf, meSib])
+        const bobPep = installPeerPep(built, PEER)
+        const A = validKey('KEYAAAA0001')
+        const B = validKey('KEYBBBB0002')
+        bobPep.announce([A, B])
+        const first = recipientFpsFromEncrypt(await plugin.encrypt(await openBob(), encodeBodyAsPayload('before')))
+        expect(new Set(first)).toEqual(new Set([A.fingerprint, B.fingerprint, meSelf.fingerprint, meSib.fingerprint]))
+
+        // While offline, Bob withdraws B and our other device withdraws its key.
+        // This client never hears of it: the old session is gone.
+        bobPep.setAnnouncedFps([A.fingerprint])
+        mePep.setAnnouncedFps([meSelf.fingerprint])
+        plugin.onReconnected({ resumed: false })
+        // The keys stay known, to verify what was signed with them.
+        expect(plugin.getPeerFingerprints(PEER)).toEqual([A.fingerprint, B.fingerprint])
+
+        const after = recipientFpsFromEncrypt(await plugin.encrypt(await openBob(), encodeBodyAsPayload('after')))
+        expect(new Set(after)).toEqual(new Set([A.fingerprint, meSelf.fingerprint]))
+      })
+
+      it('does not let a key list read before the reconnect count as fresh after it', async () => {
+        const built = makeContext(ME)
+        await plugin.init(built.ctx)
+        const bobPep = installPeerPep(built, PEER)
+        const A = validKey('KEYAAAA0001')
+        const B = validKey('KEYBBBB0002')
+        bobPep.announce([A, B])
+        // A read of Bob's list started in the old session is still waiting for B.
+        const releaseOldRead = bobPep.deferNextDataFor(B.fingerprint)
+        const oldRead = plugin.probePeer(PEER)
+        await flush()
+
+        bobPep.setAnnouncedFps([A.fingerprint])
+        plugin.onReconnected({ resumed: false })
+        const firstSend = recipientFpsFromEncrypt(await plugin.encrypt(await openBob(), encodeBodyAsPayload('first')))
+        expect(firstSend).toContain(A.fingerprint)
+        expect(firstSend).not.toContain(B.fingerprint)
+        releaseOldRead()
+        await oldRead
+
+        const nextSend = recipientFpsFromEncrypt(await plugin.encrypt(await openBob(), encodeBodyAsPayload('next')))
+        expect(nextSend).toContain(A.fingerprint)
+        expect(nextSend).not.toContain(B.fingerprint)
+      })
+    })
+  })
+
+  // FLM-157 review, finding R2: before the plugin stayed registered, each
+  // reconnect registered it again, which retried a public-key publication that
+  // had failed. The reconnect itself now retries it.
+  describe('publication after a reconnect, with the plugin kept registered', () => {
+    const ME = 'me@example.com'
+
+    it.each([
+      ['a resumed session', true],
+      ['a new session', false],
+    ])('publishes our public key again after %s when the first publication failed', async (_label, resumed) => {
+      const built = makeContext(ME)
+      const publish = built.ctx.xmpp.publishPEP
+      let serverRefuses = true
+      built.ctx.xmpp.publishPEP = async (node, item, options) => {
+        if (serverRefuses && node.startsWith(METADATA_NODE)) throw new Error('internal-server-error')
+        return publish(node, item, options)
+      }
+      await plugin.init(built.ctx)
+      const ownFp = fake.accounts.get(ME)!.fingerprint
+      expect(built.warnings.some((w) => w.includes('public key publish failed'))).toBe(true)
+      expect(built.published.filter((p) => p.node.startsWith(METADATA_NODE))).toEqual([])
+
+      serverRefuses = false
+      plugin.onReconnected({ resumed })
+      await vi.waitFor(() => {
+        expect(built.published.map((p) => p.node)).toEqual(
+          expect.arrayContaining([dataNodeFor(ownFp), METADATA_NODE]),
+        )
+      })
+      expect(advertisedFingerprintsIn(built.published)).toEqual([ownFp])
+    })
+  })
+
+  // FLM-157 review, finding R4: the key check a reconnect starts reads the
+  // server, then records or clears the own-key conflict. When our key changes
+  // in between, the check must not compare the server's new key with our old
+  // one and block encryption, nor undo a conflict decision made since.
+  describe('the reconnect key check, when our key changes while it reads the server', () => {
+    const ME = 'me@example.com'
+    const SECRET_KEY_NODE = 'urn:xmpp:openpgp:0:secret-key'
+    type Built = ReturnType<typeof makeContext>
+    type Setup = { built: Built; device: SequoiaPgpPlugin; backup?: string }
+
+    const tamperedKeyList = (date: string): PEPItem => ({
+      id: 'current',
+      payload: {
+        name: 'public-keys-list',
+        attrs: { xmlns: OX_NS },
+        children: [pubkeyMetadata('TAMPEREDFP000000', date)],
+      },
+    })
+
+    /**
+     * Holds the `nth` next read of `account`'s key list (or of its key data)
+     * until `release()`, as a slow network does. The server answers with what
+     * it held when the read was sent, or when it is released.
+     */
+    const holdKeyRead = (
+      built: Built,
+      account: string,
+      answers: 'when-sent' | 'when-released',
+      of: 'key list' | 'key data' = 'key list',
+      nth = 1,
+    ) => {
+      const read = built.ctx.xmpp.queryPEP
+      let release!: () => void
+      const released = new Promise<void>((resolve) => { release = resolve })
+      let taken = false
+      let seen = 0
+      const held = (node: string) =>
+        of === 'key list' ? node === METADATA_NODE : node.startsWith(`${METADATA_NODE}:`)
+      built.ctx.xmpp.queryPEP = async (jid, node, maxItems) => {
+        if (taken || jid !== account || !held(node) || ++seen < nth) return read(jid, node, maxItems)
+        taken = true
+        const early = answers === 'when-sent' ? await read(jid, node, maxItems) : null
+        await released
+        return early ?? read(jid, node, maxItems)
+      }
+      return { taken: () => taken, release }
+    }
+
+    /** The server work `onReconnected` started, once it is done. */
+    const reconnectWork = (device: SequoiaPgpPlugin) =>
+      (device as unknown as { reconnectResync: Promise<void> }).reconnectResync
+
+    /** The fingerprints the server lists for our account now. */
+    const serverKeyList = async (built: Built) =>
+      advertisedFingerprintsIn(
+        (await built.ctx.xmpp.queryPEP(ME, METADATA_NODE, 1)).map((item) => ({ node: METADATA_NODE, item })),
+      ) ?? []
+    const ourKey = () => fake.accounts.get(ME)!.fingerprint
+
+    /** Our key on this device, published. */
+    const publishedKey = async (): Promise<Setup> => {
+      const built = makeContext(ME)
+      await plugin.init(built.ctx)
+      return { built, device: plugin }
+    }
+
+    /** This device holds one of our keys; the server holds a backup of another. */
+    const otherKeyInBackup = async (): Promise<Setup> => {
+      const first = makeContext(ME)
+      await plugin.init(first.ctx)
+      await plugin.backupSecretKey('shared-pp')
+      const backup = (await plugin.fetchSecretKeyBackup())!
+      fake.accounts.clear()
+      const device = new SequoiaPgpPlugin({ invoke: fake.invoke })
+      const built = makeContext(ME)
+      await device.init(built.ctx)
+      await built.ctx.xmpp.publishPEP(SECRET_KEY_NODE, {
+        id: 'current',
+        payload: { name: 'secretkey', attrs: { xmlns: OX_NS }, children: [encodeOpenPgpArmorForXep0373(backup)] },
+      })
+      return { built, device, backup }
+    }
+
+    /** The server lists a key this device does not hold: a conflict is shown. */
+    const conflictShown = async (): Promise<Setup> => {
+      await fake.invoke<KeyBundle>('openpgp_ensure_key', { accountJid: ME, userId: `xmpp:${ME}` })
+      const built = makeContext(ME)
+      built.peerPublish(ME, METADATA_NODE, tamperedKeyList('2024-01-01T00:00:00Z'))
+      await plugin.init(built.ctx)
+      expect(getOwnKeyConflict()).not.toBeNull()
+      return { built, device: plugin }
+    }
+
+    it.each([
+      { change: 'a rotation', setUp: publishedKey, answers: 'when-released' as const,
+        run: (s: Setup) => s.device.rotateEncryptionKey() },
+      { change: 'a restore from the server backup', setUp: otherKeyInBackup, answers: 'when-released' as const,
+        run: (s: Setup) => s.device.restoreSecretKey('shared-pp') },
+      { change: 'an import from a file', setUp: otherKeyInBackup, answers: 'when-released' as const,
+        run: (s: Setup) => s.device.importKeyFromFile(s.backup!, 'shared-pp') },
+      { change: 'a replacement of our identity', setUp: publishedKey, answers: 'when-released' as const,
+        run: (s: Setup) => s.device.retireAndGenerateIdentity() },
+      { change: 'overwriting the server to resolve a conflict', setUp: conflictShown, answers: 'when-sent' as const,
+        run: (s: Setup) => s.device.resolveOwnKeyConflict_overwriteServer() },
+    ])('leaves encryption unblocked after $change', async ({ setUp, answers, run }) => {
+      const setup = await setUp()
+      const read = holdKeyRead(setup.built, ME, answers)
+      setup.device.onReconnected({ resumed: true })
+      await vi.waitFor(() => expect(read.taken()).toBe(true))
+
+      // The change completes on its own: no key picker is asked for.
+      expect(await run(setup) ?? {}).not.toHaveProperty('needsPicker')
+      read.release()
+      await reconnectWork(setup.device)
+
+      expect(getOwnKeyConflict()).toBeNull()
+    })
+
+    it("leaves the next account's conflict in place after a log out", async () => {
+      const OTHER = 'other@example.com'
+      const { built } = await publishedKey()
+      const read = holdKeyRead(built, ME, 'when-released')
+      plugin.onReconnected({ resumed: true })
+      await vi.waitFor(() => expect(read.taken()).toBe(true))
+      await plugin.shutdown()
+
+      // The next account's server lists a key this device does not hold.
+      await fake.invoke<KeyBundle>('openpgp_ensure_key', { accountJid: OTHER, userId: `xmpp:${OTHER}` })
+      const next = makeContext(OTHER)
+      next.peerPublish(OTHER, METADATA_NODE, tamperedKeyList('2024-01-01T00:00:00Z'))
+      await new SequoiaPgpPlugin({ invoke: fake.invoke }).init(next.ctx)
+      const conflict = getOwnKeyConflict()
+      expect(conflict).toMatchObject({ kind: 'primary-mismatch', publishedFingerprint: 'TAMPEREDFP000000' })
+
+      read.release()
+      await reconnectWork(plugin)
+      expect(getOwnKeyConflict()).toBe(conflict)
+    })
+
+    // FLM-157 review of round 3: a check that starts while our key is already
+    // changing reads what the server held before the change published, so
+    // its verdict must not be written either, whether it ends after the
+    // change (a pending conflict overwrite put the conflict back) or before.
+    describe('when the check starts while the change is publishing', () => {
+      /** Holds `account`'s next publication of its public key until `release()`. */
+      const holdKeyPublication = (built: Built) => {
+        const publish = built.ctx.xmpp.publishPEP
+        let release!: () => void
+        const released = new Promise<void>((resolve) => { release = resolve })
+        let taken = false
+        built.ctx.xmpp.publishPEP = async (node, item, options) => {
+          if (taken || !node.startsWith(METADATA_NODE)) return publish(node, item, options)
+          taken = true
+          await released
+          return publish(node, item, options)
+        }
+        return { taken: () => taken, release }
+      }
+
+      /** Starts `run` and waits until it is publishing our key. */
+      const changePublishing = async (setup: Setup, run: (s: Setup) => Promise<unknown>) => {
+        const publication = holdKeyPublication(setup.built)
+        const change = run(setup)
+        await vi.waitFor(() => expect(publication.taken()).toBe(true))
+        return { change, release: publication.release }
+      }
+
+      // Each swaps our key before publishing it. A rotation keeps our
+      // fingerprint in the key list, so the check judges it by the key data.
+      const keyChanges = [
+        { change: 'a rotation', setUp: publishedKey, judgedBy: 'key data' as const,
+          run: (s: Setup) => s.device.rotateEncryptionKey() },
+        { change: 'a restore from the server backup', setUp: otherKeyInBackup, judgedBy: 'key list' as const,
+          run: (s: Setup) => s.device.restoreSecretKey('shared-pp') },
+        { change: 'an import from a file', setUp: otherKeyInBackup, judgedBy: 'key list' as const,
+          run: (s: Setup) => s.device.importKeyFromFile(s.backup!, 'shared-pp') },
+      ]
+      const overwrite = { change: 'overwriting the server to resolve a conflict', setUp: conflictShown,
+        judgedBy: 'key list' as const, run: (s: Setup) => s.device.resolveOwnKeyConflict_overwriteServer() }
+
+      it.each([...keyChanges, overwrite])(
+        'leaves encryption unblocked when the check ends after $change',
+        async ({ setUp, judgedBy, run }) => {
+          const setup = await setUp()
+          const { change, release } = await changePublishing(setup, run)
+          // The check reads what the server holds before the change publishes it.
+          const read = holdKeyRead(setup.built, ME, 'when-sent', judgedBy)
+          setup.device.onReconnected({ resumed: true })
+          await vi.waitFor(() => expect(read.taken()).toBe(true))
+
+          release()
+          expect(await change ?? {}).not.toHaveProperty('needsPicker')
+          read.release()
+          await reconnectWork(setup.device)
+
+          expect(getOwnKeyConflict()).toBeNull()
+        },
+      )
+
+      it.each(keyChanges)(
+        'leaves encryption unblocked when the check ends while $change is publishing',
+        async ({ setUp, run }) => {
+          const setup = await setUp()
+          const { change, release } = await changePublishing(setup, run)
+          setup.device.onReconnected({ resumed: true })
+          await reconnectWork(setup.device)
+
+          release()
+          expect(await change ?? {}).not.toHaveProperty('needsPicker')
+
+          expect(getOwnKeyConflict()).toBeNull()
+        },
+      )
+    })
+
+    // FLM-157 review, finding R5: once the check has passed, the reconnect
+    // publishes our key, merging it into the key list it reads from the
+    // server, and heals the node when the server refuses the publication.
+    // When a restore, an import or a replacement publishes a new key in
+    // between, nothing the reconnect writes may undo it: no old list, no
+    // retired key, no deleted list.
+    describe('when our key changes after the check, while the reconnect publishes it', () => {
+      const restore = { change: 'a restore from the server backup', setUp: otherKeyInBackup,
+        run: (s: Setup) => s.device.restoreSecretKey('shared-pp') }
+      const keyReplacements = [
+        restore,
+        { change: 'an import from a file', setUp: otherKeyInBackup,
+          run: (s: Setup) => s.device.importKeyFromFile(s.backup!, 'shared-pp') },
+        { change: 'a replacement of our identity', setUp: publishedKey,
+          run: (s: Setup) => s.device.retireAndGenerateIdentity() },
+      ]
+
+      it.each(keyReplacements)(
+        'keeps the new key list when $change publishes while the reconnect reads the list to merge',
+        async ({ setUp, run }) => {
+          const setup = await setUp()
+          // The check reads the key list first; the publication reads it again
+          // to merge our key into it. Its answer is the list before the change.
+          const read = holdKeyRead(setup.built, ME, 'when-sent', 'key list', 2)
+          setup.device.onReconnected({ resumed: true })
+          await vi.waitFor(() => expect(read.taken()).toBe(true))
+
+          expect(await run(setup) ?? {}).not.toHaveProperty('needsPicker')
+          read.release()
+          await reconnectWork(setup.device)
+
+          expect(await serverKeyList(setup.built)).toEqual([ourKey()])
+        },
+      )
+
+      /**
+       * The server refuses the reconnect's publication of our key list with
+       * precondition-not-met, so the reconnect heals the node: it deletes it,
+       * publishes again, and on a second refusal publishes without the
+       * refused options. The server processes each request when it is sent;
+       * its answer to the `held` one waits for `release()`.
+       */
+      const slowKeyListHealing = (built: Built, held: 'refusal' | 'delete' | 'second refusal') => {
+        const { publishPEP: publish, deletePEP: remove } = built.ctx.xmpp
+        let release!: () => void
+        const released = new Promise<void>((resolve) => { release = resolve })
+        let taken = false
+        const answerLate = async () => {
+          taken = true
+          await released
+        }
+        let refusals = held === 'second refusal' ? 2 : 1
+        built.ctx.xmpp.publishPEP = async (node, item, options) => {
+          if (node !== METADATA_NODE || refusals === 0) return publish(node, item, options)
+          refusals--
+          if (refusals === 0 && held !== 'delete') await answerLate()
+          throw Object.assign(new Error('conflict - precondition-not-met'), { condition: 'precondition-not-met' })
+        }
+        built.ctx.xmpp.deletePEP = async (node) => {
+          await remove(node)
+          if (held === 'delete' && node === METADATA_NODE && !taken) await answerLate()
+        }
+        return { taken: () => taken, release }
+      }
+
+      it.each([
+        { answered: 'refusal' as const, next: 'deletes the list' },
+        { answered: 'delete' as const, next: 'publishes the list again' },
+        { answered: 'second refusal' as const, next: 'publishes the list without the refused options' },
+      ])(
+        'keeps the new key list when a restore publishes before the $answered answer, after which the reconnect $next',
+        async ({ answered }) => {
+          const setup = await restore.setUp()
+          const healing = slowKeyListHealing(setup.built, answered)
+          setup.device.onReconnected({ resumed: true })
+          await vi.waitFor(() => expect(healing.taken()).toBe(true))
+
+          expect(await restore.run(setup)).not.toHaveProperty('needsPicker')
+          healing.release()
+          await reconnectWork(setup.device)
+
+          expect(await serverKeyList(setup.built)).toEqual([ourKey()])
+        },
+      )
+    })
+
+    // FLM-157 review, finding R6: deleting our key withdraws it from the
+    // server, then erases it here and unregisters the plugin. A reconnect in
+    // between must not publish it again: peers would encrypt to a key whose
+    // private material is gone.
+    describe('when a reconnect runs while we delete our key', () => {
+      /**
+       * Holds the server's answer to the next withdrawal of an item from
+       * `node` until `release()`; the server processes it when it is sent.
+       */
+      const holdWithdrawal = (built: Built, node: string) => {
+        const retract = built.ctx.xmpp.retractPEP
+        let release!: () => void
+        const released = new Promise<void>((resolve) => { release = resolve })
+        let taken = false
+        built.ctx.xmpp.retractPEP = async (target, itemId) => {
+          await retract(target, itemId)
+          if (taken || target !== node) return
+          taken = true
+          await released
+        }
+        return { taken: () => taken, release }
+      }
+
+      it.each([
+        { pending: 'the withdrawal of our key data', deleteBackup: false,
+          node: (fingerprint: string) => dataNodeFor(fingerprint) },
+        { pending: 'the withdrawal of our backup', deleteBackup: true,
+          node: () => SECRET_KEY_NODE },
+      ])('publishes nothing again when it runs during $pending', async ({ deleteBackup, node }) => {
+        const { built, device } = await publishedKey()
+        await device.backupSecretKey('shared-pp')
+        const deleted = ourKey()
+        const withdrawal = holdWithdrawal(built, node(deleted))
+        const deletion = deleteOwnKey(device, { deleteBackup, unregister: () => device.shutdown() })
+        await vi.waitFor(() => expect(withdrawal.taken()).toBe(true))
+
+        device.onReconnected({ resumed: true })
+        await reconnectWork(device)
+        withdrawal.release()
+        await deletion
+
+        expect(await serverKeyList(built)).toEqual([])
+        expect(await built.ctx.xmpp.queryPEP(ME, dataNodeFor(deleted), 1)).toEqual([])
+      })
+    })
   })
 
   describe('onPeerKeysChanged', () => {
@@ -5485,6 +5926,53 @@ describe('SequoiaPgpPlugin', () => {
 
       expect(store.isPeerVerified('alice@example.com', 'ALICE_FP')).toBe(false)
       expect(store.isPeerVerified('bob@example.com', 'BOB_FP')).toBe(true)
+    })
+
+    // FLM-157 review, finding R5: each reconnect reads the verification list
+    // again. A list read before a log out is not applied: by then the stores
+    // belong to the next account.
+    it('applies nothing from a list a reconnect read before a log out', async () => {
+      const { ctx, peerPublish } = makeContext('me@example.com')
+      const fp = 'FP_LOGOUT_TEST'
+      fake.accounts.set('me@example.com', {
+        fingerprint: fp,
+        publicArmored: makeOpenPgpArmor(
+          'PGP PUBLIC KEY BLOCK',
+          `Fingerprint: ${fp}\nUID: xmpp:me@example.com\nKind: public\nRotation: 0\n`,
+        ),
+        keychainBacked: true,
+      })
+      await plugin.init(ctx)
+      await new Promise((r) => setTimeout(r, 0))
+      // Another device published a list while this one was offline.
+      peerPublish(
+        'me@example.com',
+        VERIFICATIONS_NODE,
+        buildVerificationsPepItem(fp, { 'frank@example.com': 'FRANK_FP' }, 3),
+      )
+
+      // The reconnect's read of the list is answered after the log out.
+      const read = ctx.xmpp.queryPEP
+      let release!: () => void
+      const released = new Promise<void>((resolve) => { release = resolve })
+      let taken = false
+      ctx.xmpp.queryPEP = async (jid, node, maxItems) => {
+        if (taken || node !== VERIFICATIONS_NODE) return read(jid, node, maxItems)
+        taken = true
+        const items = await read(jid, node, maxItems)
+        await released
+        return items
+      }
+      plugin.onReconnected({ resumed: true })
+      await vi.waitFor(() => expect(taken).toBe(true))
+      await plugin.shutdown()
+      release()
+      await (plugin as unknown as { reconnectResync: Promise<void> }).reconnectResync
+
+      const store = await import('@/stores/verifiedPeerKeysStore')
+      expect(store.useVerifiedPeerKeysStore.getState().verifiedFingerprintByJid).toEqual({})
+      const { loadAppliedVerificationsVersion } = await import('./verificationSync')
+      expect(loadAppliedVerificationsVersion()).toBe(-1)
     })
   })
 

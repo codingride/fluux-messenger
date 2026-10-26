@@ -30,6 +30,7 @@ export const changelog: ChangelogEntry[] = [
         'Scrolling up while a message above you finishes loading no longer snaps the conversation or room back to where you were a moment earlier',
         'The room message box is now a single editor: the caret can no longer drift from the text (seen with inline predictive text on macOS), and @mentions stay coloured while you type',
         'macOS: saved sign-in, encryption keys and local integrations share one keychain approval after a one-time migration. Existing secrets remain available to the previous release',
+        'Encrypted messages that arrive while your network is briefly down now show their text when Fluux reconnects, instead of "[OpenPGP-encrypted message]"',
       ],
     }],
   },
