@@ -53,6 +53,8 @@ export async function showWebNotification(
   title: string,
   options: WebNotificationOptions,
   nav: WebNotificationNav = {},
+  /** Checked at final submission: true means another cue replaced this notification. */
+  superseded: () => boolean | Promise<boolean> = () => false,
 ): Promise<void> {
   const { onClick, ...notificationOptions } = options
   const soundOptions: NotificationOptions = osNotificationSilent() ? { silent: true } : {}
@@ -64,6 +66,7 @@ export async function showWebNotification(
 
   try {
     const registration = await serviceWorkerRegistration()
+    if (await superseded()) return
     if (registration) {
       await registration.showNotification(title, payload)
       return
@@ -75,6 +78,8 @@ export async function showWebNotification(
   if (typeof Notification === 'undefined') return
 
   try {
+    // A rejection above can arrive after Fluux gained focus.
+    if (await superseded()) return
     const notification = new Notification(title, { ...notificationOptions, ...soundOptions })
     notification.onclick = () => {
       window.focus()

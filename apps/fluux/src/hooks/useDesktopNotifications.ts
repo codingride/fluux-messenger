@@ -27,11 +27,17 @@ import { postPluginNotification } from '@/utils/postPluginNotification'
 import { currentAccountId, postNativeDesktopNotification } from '@/utils/nativeNotification'
 import { createNotificationCoalescer } from './notificationCoalescer'
 import { requestAttention } from '@/utils/attention'
+import { useToastStore } from '@/stores/toastStore'
+import { useSettingsStore } from '@/stores/settingsStore'
+import { iosHaptic } from '@/platform/ios/haptics'
 import { platform } from '@/platform'
 
 /** Duration of the post-reconnect window during which offline-delivery
  *  notifications are coalesced to one per conversation. */
 const CATCHUP_WINDOW_MS = 3000
+
+/** How long the in-app banner for a message in another conversation stays up. */
+const IN_APP_BANNER_MS = 5000
 
 /**
  * Hook to show system notifications for new messages and room mentions.
@@ -67,11 +73,12 @@ export function useDesktopNotifications(): void {
   const prevStatusRef = useRef(status)
   const windowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const coalescerRef = useRef(
-    createNotificationCoalescer<{ conv: Conversation; message: Message }>(),
+    createNotificationCoalescer<LocalMessageNotification>(),
   )
-  const showConvNotifRef = useRef<(conv: Conversation, message: Message) => void>(
-    () => {},
+  const showNotifRef = useRef<(target: LocalMessageNotification, arrival?: number) => Promise<boolean>>(
+    () => Promise.resolve(false),
   )
+  const hideBannerRef = useRef<() => void>(() => {})
 
   useEffect(() => {
     const accountGeneration = accountGenerationRef
@@ -90,9 +97,11 @@ export function useDesktopNotifications(): void {
       if (windowTimerRef.current) clearTimeout(windowTimerRef.current)
       windowTimerRef.current = null
       coalescerRef.current.drop()
+      hideBannerRef.current()
     })
     return () => {
       unsubscribe?.()
+      hideBannerRef.current()
       accountGeneration.current++
       clearAccount(account)
     }
@@ -248,21 +257,56 @@ export function useDesktopNotifications(): void {
     return undefined
   }
 
+  // Only one in-app banner at a time; a newer message replaces it.
+  const bannerRef = useRef<{ toastId: string; navType: string; navTarget: string } | null>(null)
+  const arrivalSeqRef = useRef(0)
+  const bannerSeqRef = useRef(0)
+  const hideBanner = (navType?: string, navTarget?: string) => {
+    const banner = bannerRef.current
+    if (!banner || (navTarget && (banner.navType !== navType || banner.navTarget !== navTarget))) return
+    bannerRef.current = null
+    useToastStore.getState().removeToast(banner.toastId)
+  }
   const isDnd = () => presenceStatusRef.current === 'dnd'
 
-  const showMessageNotification = async (original: LocalMessageNotification) => {
+  // With Fluux in front, its own banner replaces the system one. It is in-app, so it needs
+  // neither notification permission nor an avatar file, and an older arrival never replaces a newer one.
+  const showInAppBanner = (
+    { title, body, navType, navTarget, messageId }: NonNullable<ReturnType<typeof buildLocalMessageNotification>>,
+    arrival: number,
+    accountId: string | null,
+  ) => {
+    if (!useSettingsStore.getState().inAppBannerEnabled || arrival < bannerSeqRef.current) return
+    bannerSeqRef.current = arrival
+    hideBanner()
+    const toastId = useToastStore.getState().addToast('info', `${title}: ${body}`, IN_APP_BANNER_MS, () => {
+      if (currentAccountId() !== accountId) return
+      if (navType === 'conversation') navigateToConversationRef.current(navTarget, messageId)
+      else navigateToRoomRef.current(navTarget, messageId)
+    })
+    bannerRef.current = { toastId, navType, navTarget }
+    iosHaptic('selection')
+  }
+
+  /** Resolves false only when the arrival is no longer eligible, so a burst can try an older one. */
+  const showMessageNotification = async (original: LocalMessageNotification, arrival = ++arrivalSeqRef.current): Promise<boolean> => {
     const accountId = currentAccountId()
     const generation = accountGenerationRef.current
     const desktop = platform().notificationsManagedByOS
     let target = await resolveTarget(original)
-    if (!target || isDnd() || currentAccountId() !== accountId || accountGenerationRef.current !== generation) return
+    if (!target) return false
+    if (isDnd() || currentAccountId() !== accountId || accountGenerationRef.current !== generation) return true
     let notification = buildLocalMessageNotification(target, t, i18n?.language ?? 'en', !desktop)
-    if (!notification) return
+    if (!notification) return false
     requestAttention()
+    if (connectionStore.getState().windowVisible) {
+      showInAppBanner(notification, arrival, accountId)
+      return true
+    }
     if (!getNotificationPermissionGranted()) {
       notificationDebug.desktopNotification({ title: notification.title, body: '(permission not granted)',
         ...(target.kind === 'chat' ? { conversationId: target.entity.id } : { roomJid: target.entity.jid }) })
-      return
+      return true
     }
     const avatar = target.kind === 'chat'
       ? rosterStore.getState().getContact(target.entity.id)
@@ -271,9 +315,27 @@ export function useDesktopNotifications(): void {
     const mobile = desktop && await isMobileTauri()
     // Avatar/platform work may outlive a decrypt repair, edit, read or account change.
     target = await resolveTarget(original)
-    if (!target || isDnd() || currentAccountId() !== accountId || accountGenerationRef.current !== generation || !getNotificationPermissionGranted()) return
+    if (!target) return false
+    if (isDnd() || currentAccountId() !== accountId || accountGenerationRef.current !== generation) return true
     notification = buildLocalMessageNotification(target, t, i18n?.language ?? 'en', !desktop)
-    if (!notification) return
+    if (!notification) return false
+    // Fluux may come to the front during the avatar or platform work, including the waits inside
+    // the posting helpers, so each of them asks once more at final submission.
+    // Late callbacks revalidate the session and the current target and text before any banner or haptic.
+    const frontNow = async () => {
+      if (!connectionStore.getState().windowVisible) return false
+      const latest = await resolveTarget(original)
+      if (isDnd() || currentAccountId() !== accountId || accountGenerationRef.current !== generation) return true
+      const current = latest && buildLocalMessageNotification(latest, t, i18n?.language ?? 'en', !desktop)
+      if (!connectionStore.getState().windowVisible) return false
+      if (current) showInAppBanner(current, arrival, accountId)
+      return true
+    }
+    if (connectionStore.getState().windowVisible) {
+      showInAppBanner(notification, arrival, accountId)
+      return true
+    }
+    if (!getNotificationPermissionGranted()) return true
     const { title, body, navType, navTarget, messageId, count } = notification
     notificationDebug.desktopNotification({ title, body: '(message preview)',
       ...(target.kind === 'chat' ? { conversationId: navTarget } : { roomJid: navTarget }) })
@@ -285,6 +347,7 @@ export function useDesktopNotifications(): void {
           communication }, async () => {
           const latest = await resolveTarget(original)
           if (!latest || isDnd() || currentAccountId() !== accountId || accountGenerationRef.current !== generation || !getNotificationPermissionGranted()) return false
+          if (await frontNow()) return false
           // Keep the prepared count: unread growth remains eligible, not a content edit.
           const current = buildLocalMessageNotification(latest, t, i18n?.language ?? 'en', false, count)
           const latestCommunication = communicationMetadata(latest)
@@ -299,27 +362,37 @@ export function useDesktopNotifications(): void {
               ...(latestCommunication.roomName !== undefined ? { roomName: latestCommunication.roomName } : {}) }
           }
           return true
-        })
+        }, frontNow)
       } else {
         await postPluginNotification({ title, body,
           attachments: avatarUrl ? [{ id: 'avatar', url: avatarUrl }] : undefined,
-          extra: { navType, navTarget, messageId, accountId } }, messageRowRef(target.message))
+          extra: { navType, navTarget, messageId, accountId } }, messageRowRef(target.message), frontNow)
       }
     } else {
       await showWebNotification(title, { body, icon: avatarUrl || './icon-512.png', tag: webTag(navType, navTarget),
         onClick: () => navType === 'conversation' ? navigateToConversation(navTarget) : navigateToRoom(navTarget),
-      }, { from: navTarget, type: navType, count })
+      }, { from: navTarget, type: navType, count }, frontNow)
     }
+    return true
   }
 
   const showConversationNotification = (conv: Conversation, message: Message) =>
     showMessageNotification({ kind: 'chat', entity: conv, message })
-  const showRoomNotification = (room: Room, message: RoomMessage) =>
-    showMessageNotification({ kind: 'room', entity: room, message })
+
+  // While Fluux is in front a room arrival waits for the reconnect window like a chat does.
+  const showRoomNotification = (room: Room, message: RoomMessage) => {
+    const target: LocalMessageNotification = { kind: 'room', entity: room, message }
+    if (coalescerRef.current.isOpen() && connectionStore.getState().windowVisible) {
+      coalescerRef.current.add(`room:${room.jid}`, target)
+      return
+    }
+    return showMessageNotification(target)
+  }
 
   // Keep a ref to the latest dispatcher so the window-close timer is never stale.
   useEffect(() => {
-    showConvNotifRef.current = showConversationNotification
+    showNotifRef.current = showMessageNotification
+    hideBannerRef.current = () => hideBanner()
   })
 
   // Open a catch-up window on each transition INTO 'online' from a non-online
@@ -346,9 +419,20 @@ export function useDesktopNotifications(): void {
       if (windowTimerRef.current) clearTimeout(windowTimerRef.current)
       windowTimerRef.current = setTimeout(() => {
         windowTimerRef.current = null
-        for (const { value } of coalescer.flush()) {
-          void showConvNotifRef.current(value.conv, value.message)
+        const entries = coalescer.flush().map(({ value }) => value)
+        // In front there is one banner, so only the newest arrival gets one (and its haptic).
+        if (connectionStore.getState().windowVisible && entries.length > 1) {
+          // Newest first; the first one still eligible gets the banner.
+          // Arrival numbers follow message order, so a fallback never outranks a later live banner.
+          entries.sort((a, b) => b.message.timestamp.getTime() - a.message.timestamp.getTime())
+          const numbered = entries.map(target => ({ target, arrival: 0 })).reverse()
+          for (const item of numbered) item.arrival = ++arrivalSeqRef.current
+          void (async () => {
+            for (const { target, arrival } of numbered.reverse()) if (await showNotifRef.current(target, arrival)) return
+          })()
+          return
         }
+        for (const target of entries) void showNotifRef.current(target)
       }, CATCHUP_WINDOW_MS)
     }
 
@@ -375,7 +459,7 @@ export function useDesktopNotifications(): void {
     if (announcedByPush(message)) return
     const coalescer = coalescerRef.current
     if (coalescer.isOpen()) {
-      coalescer.add(conv.id, { conv, message })
+      coalescer.add(conv.id, { kind: 'chat', entity: conv, message })
       return
     }
     await showConversationNotification(conv, message)
@@ -388,10 +472,13 @@ export function useDesktopNotifications(): void {
   // has since read/opened.
   const handleConversationRead = (conversationId: string) => {
     coalescerRef.current.delete(conversationId)
+    hideBanner('conversation', conversationId)
     void dismissNotification('conversation', conversationId)
   }
 
   const handleRoomRead = (roomJid: string) => {
+    coalescerRef.current.delete(`room:${roomJid}`)
+    hideBanner('room', roomJid)
     void dismissNotification('room', roomJid)
   }
 
