@@ -103,3 +103,74 @@ export function hasErrorCondition(err: unknown, condition: string): boolean {
   if ((err as { condition?: string } | null)?.condition === condition) return true
   return err instanceof Error && err.message.includes(condition)
 }
+
+const NS_STREAM = 'http://etherx.jabber.org/streams'
+const NS_STREAM_ERRORS = 'urn:ietf:params:xml:ns:xmpp-streams'
+const NS_SASL = 'urn:ietf:params:xml:ns:xmpp-sasl'
+const NS_SASL2 = 'urn:xmpp:sasl:2'
+
+// ltx semantics, as xmpp.js's own `is()` uses: prefix-free name, inherited namespace.
+type Ltx = { getNS?: () => string; getName?: () => string }
+function elementNs(el: Element): string | undefined {
+  return (el as Ltx).getNS?.() ?? el.attrs?.xmlns
+}
+function elementName(el: Element): string {
+  return (el as Ltx).getName?.() ?? el.name
+}
+
+/**
+ * Order an error's children the way xmpp.js reads them: the defined condition
+ * (in `ns`), then the protocol `<text/>` (in `textNs`), then everything else
+ * with any other `<text/>` last. `@xmpp/error` takes children 1, 2 and 3 as
+ * condition, text-or-application and application, and recognises text by
+ * name alone, so a foreign-namespace `<text/>` must not sit ahead of the
+ * protocol text or of the application element.
+ */
+function conditionFirst(errorEl: Element, ns: string, textNs: readonly string[]): void {
+  const children = errorEl.children
+  if (!Array.isArray(children)) return
+  const isElement = (c: unknown): c is Element => typeof c !== 'string'
+  const isText = (c: Element) => elementName(c) === 'text'
+  const condition = children.find(c => isElement(c) && !isText(c) && elementNs(c) === ns)
+  if (!condition) return
+  const protocolText = children.filter(c => isElement(c) && isText(c) && textNs.includes(elementNs(c) ?? ''))
+  const foreignText = children.filter(c => isElement(c) && isText(c) && !protocolText.includes(c))
+  const rest = children.filter(c => c !== condition && !protocolText.includes(c) && !foreignText.includes(c))
+  children.splice(0, children.length, condition, ...protocolText, ...rest, ...foreignText)
+}
+
+/**
+ * Put an incoming error's defined condition first among its children, in place.
+ *
+ * xmpp.js 0.14 (`@xmpp/error`) takes the FIRST child element as the condition,
+ * and acts on it while parsing (`see-other-host` redirects, rejected FAST
+ * tokens, auth failures). RFC 6120 (§4.9.3, §6.5, §8.3.2) does not fix the
+ * child order, and ejabberd 26.09 (xmpp 1.13.5) sends `<text/>` before the
+ * condition, so the condition read as `text`. Covers stream errors, SASL
+ * failures and stanza errors. Call it before xmpp.js reads the element.
+ */
+export function putErrorConditionFirst(el: Element): void {
+  if (elementName(el) === 'error' && elementNs(el) === NS_STREAM) {
+    conditionFirst(el, NS_STREAM_ERRORS, [NS_STREAM_ERRORS])
+  } else if (elementName(el) === 'failure' && (elementNs(el) === NS_SASL || elementNs(el) === NS_SASL2)) {
+    conditionFirst(el, NS_SASL, [NS_SASL, NS_SASL2])
+  } else if (el.attrs?.type === 'error') {
+    const errorEl = el.getChild?.('error')
+    if (errorEl) conditionFirst(errorEl, NS_XMPP_STANZAS, [NS_XMPP_STANZAS])
+  }
+}
+
+/**
+ * Make an xmpp.js connection read error conditions by namespace. Wraps the
+ * instance's element entry point, which runs before any of its own error
+ * handling (the `error` event comes too late for the redirect and FAST paths).
+ */
+export function installOrderTolerantErrors(client: object): void {
+  const target = client as { _onElement?: (el: Element) => unknown }
+  const onElement = target._onElement
+  if (typeof onElement !== 'function') return
+  target._onElement = function (this: unknown, el: Element) {
+    putErrorConditionFirst(el)
+    return onElement.call(this, el)
+  }
+}
