@@ -6,6 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
+// Only the macOS store answers about refused items; iOS builds this module too.
+#[cfg(any(target_os = "macos", test))]
+use crate::keychain_refusal::{RefusalState, RefusedRetry};
+
 const LAST_USER: &str = "last_user";
 
 /// Credentials stored in the keychain.
@@ -22,9 +26,48 @@ pub trait SecretStore {
     fn set(&self, account: &str, secret: &str) -> Result<(), String>;
     /// Succeeds when the item does not exist.
     fn delete(&self, account: &str) -> Result<(), String>;
-    /// Explicit erase may retry a startup denial once; ordinary logout must not.
+    /// Restore: stage an account's new secret in the fresh item only. It
+    /// protects nothing until `commit_fresh`, so a failed restore changes no read.
     #[cfg(any(target_os = "macos", test))]
-    fn retry_denied_access(&self) -> Result<(), String> { Ok(()) }
+    fn fresh_write(&self, _account: &str, _secret: &str) -> Result<(), String> {
+        Err("Fresh start is unavailable for this store".into())
+    }
+    /// Whether the account was restored into the fresh item.
+    #[cfg(any(target_os = "macos", test))]
+    fn restored(&self, _account: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Drop a staged secret after a failed restore.
+    #[cfg(any(target_os = "macos", test))]
+    fn abort_fresh(&self, _account: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// Promote the staged secret and route the account to the fresh item from
+    /// now on, in every launch.
+    #[cfg(any(target_os = "macos", test))]
+    fn commit_fresh(&self, _account: &str) -> Result<(), String> {
+        Err("Fresh start is unavailable for this store".into())
+    }
+    /// Explicit erase may retry this account and its copies once, never
+    /// unrelated old items; ordinary logout must not clear any denial.
+    #[cfg(any(target_os = "macos", test))]
+    fn retry_denied_access(&self, _account: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// Whether this launch holds the user's refusal of the old items that
+    /// `account` reads. It inspects only what this launch already cached and
+    /// never asks the OS: offering a retry must not cause one.
+    #[cfg(any(target_os = "macos", test))]
+    fn refused_access(&self, _account: &str) -> Result<RefusalState, String> {
+        Ok(RefusalState::NotHeld)
+    }
+    /// The user's explicit request to read the old items refused for
+    /// `account` once more: one attempt, and only for a refusal this launch
+    /// holds. A restored account never reads its old items again.
+    #[cfg(any(target_os = "macos", test))]
+    fn retry_refused_access(&self, _account: &str) -> Result<RefusedRetry, String> {
+        Ok(RefusedRetry::NothingRefused)
+    }
     /// Optional old-layout read for a caller that validates a recovery candidate.
     #[cfg(any(target_os = "macos", test))]
     fn legacy_candidate(&self, _account: &str) -> Result<Option<String>, String> {
@@ -94,7 +137,10 @@ pub fn delete_macos(store: &impl SecretStore) -> Result<(), String> {
 /// Full wipe is an explicit erase, unlike keep-data logout.
 #[cfg(any(target_os = "macos", test))]
 pub fn delete_macos_explicit(store: &impl SecretStore) -> Result<(), String> {
-    store.retry_denied_access()?;
+    store.retry_denied_access(LAST_USER)?;
+    if let Some(jid) = store.get(LAST_USER)? {
+        store.retry_denied_access(&jid)?;
+    }
     delete_macos(store)
 }
 

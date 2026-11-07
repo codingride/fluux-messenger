@@ -28,6 +28,9 @@
 import type { StoreBindings } from './types/storeBindings'
 
 export const connectionBindingMethodKeys = [
+  'beginUpdate',
+  'beginReplay',
+  'isReceivingReplay',
   'setStatus',
   'setIsVerifying',
   'setJid',
@@ -151,6 +154,7 @@ export const roomBindingMethodKeys = [
   'isNonAnonymousRoomAcknowledged',
   'setNotifyAll',
   'joinedRooms',
+  'allRooms',
   'getRoomLastTimestamp',
   'triggerAnimation',
   // XEP-0313: MAM support for MUC rooms

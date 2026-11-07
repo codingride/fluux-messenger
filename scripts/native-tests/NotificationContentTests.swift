@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import Intents
 
 @main struct NotificationContentChecks {
     struct Output: Decodable { let title: String; let body: String; let subtitle: String? }
@@ -20,6 +21,9 @@ import UserNotifications
         let signedOut: Bool?
         let mismatch: Bool?
         let archiveUnavailable: Bool?
+        let failure: Bool?
+        let words: PreviewWords?
+        let snapshotAccount: String?
         let events: [PreviewEvent]?
     }
     struct Fixture: Decodable { let id: String; let ios: Input? }
@@ -32,15 +36,17 @@ import UserNotifications
         for fixture in corpus.cases {
             guard let input = fixture.ios else { continue }
             count += 1
+            let words = input.words ?? corpus.words
             let peer = "alice@example.test"
             let room = "team@conference.example.test"
             let account = "me@example.test"
-            let names = SharedNames(contacts: input.name == "" ? [:] : [peer: "Alice"],
+            let nickname = "Alice"
+            let names = SharedNames(contacts: input.name == "" ? [:] : [peer: nickname],
                                     rooms: input.room == true ? [room: "Team"] : [:],
                                     account: input.signedOut == true ? nil : account)
             let original = UNMutableNotificationContent()
             original.body = input.body
-            original.userInfo = ["from": input.room == true ? room + "/Alice" : peer,
+            original.userInfo = ["from": input.room == true ? room + "/" + nickname : peer,
                                  "to": input.mismatch == true ? "other@example.test" : account]
             if let encrypted = input.encrypted { original.userInfo["encrypted"] = encrypted }
             var output: UNNotificationContent?
@@ -56,36 +62,70 @@ import UserNotifications
                 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
                 defer { try? FileManager.default.removeItem(at: root) }
                 let ledger = try PreviewLedger(root: root)
-                let session = try ledger.capability(account: account, purge: false, now: 100)!
+                let diagnostic = try NotificationDiagnostic(root: root)
+                try diagnostic.activate()
+                let session = try ledger.capability(account: account, purge: false, now: Date().timeIntervalSince1970)!
                 let events = input.events ?? []
                 let result = PreviewResult(events: events, complete: input.complete != false, archiveUnavailable: input.archiveUnavailable)
                 if input.duplicate == true {
-                    _ = try ledger.claim(result, session: session, conversation: peer, request: "prior", nickname: "Alice", words: corpus.words, now: 100)
+                    _ = try ledger.claim(result, session: session, conversation: peer, request: "prior", nickname: nickname, words: words, now: Date().timeIntervalSince1970)
                 }
                 if input.read == true {
-                    _ = try ledger.merge([PreviewLedger.Delta(account: account, epoch: session.epoch, conversation: peer, uid: "one", archiveAuthority: account, key: PreviewLedger.archiveKey("one"), read: true, notified: false)], now: 100)
+                    _ = try ledger.merge([PreviewLedger.Delta(account: account, epoch: session.epoch, conversation: peer, uid: "one", archiveAuthority: account, key: PreviewLedger.archiveKey("one"), read: true, notified: false)], now: Date().timeIntervalSince1970)
                 }
-                let snapshot = try JSONSerialization.data(withJSONObject: ["opt_in": input.optIn != false, "peers": [peer: []]])
-                let content = NotificationPresentation.content(for: original, names: names)
-                let fallback = content.mutableCopy() as! UNMutableNotificationContent
-                fallback.body = corpus.words.activity
-                let delivery = PreviewDelivery(removeRequests: { _ in })
+                // FLM-294: exercise the real service's fallback policy, not a duplicate wiring.
+                let sessionValue = try JSONSerialization.jsonObject(with: JSONEncoder().encode(session))
+                let wordsValue = try JSONSerialization.jsonObject(with: JSONEncoder().encode(words))
+                let snapshot = try JSONSerialization.data(withJSONObject: ["account": input.snapshotAccount ?? account, "opt_in": input.optIn != false,
+                    "peers": [peer: []], "ledger": sessionValue, "words": wordsValue])
+                let service = NotificationService()
+                service.loadNames = { names }
+                var current = true
+                service.readSnapshot = { current ? snapshot : nil }
+                service.ledgerRoot = { root }
+                service.previewsAllowed = { [weak service] complete in
+                    if input.expired == true { service?.serviceExtensionTimeWillExpire() }
+                    complete(input.allowed != false)
+                }
+                var fetches = 0
+                service.runPreview = { _, _, _, isCurrent, complete in
+                    fetches += 1
+                    precondition(isCurrent(), "The service must begin with a current capability")
+                    if input.current == false {
+                        current = false
+                        precondition(!isCurrent(), "The worker's service guard must observe mid-lookup revocation")
+                    }
+                    complete(input.failure == true ? nil : result)
+                    return {}
+                }
                 var completions = 0
-                delivery.begin(content) { completions += 1; output = $0 }
-                delivery.updateFallback(fallback)
-                if input.expired == true { delivery.finish() }
-                delivery.start(fallback, snapshot: snapshot, sender: peer, allowed: input.allowed != false,
-                               isCurrent: { _ in input.current != false }, engine: { _, complete in complete(result); return {} },
-                               select: { result in
-                    var selected = (try? ledger.claim(result, session: session, conversation: peer, request: fixture.id, nickname: "Alice", words: corpus.words, now: 100)) ?? PreviewSelection()
-                    if (try? ledger.deliverable(selected, session: session, conversation: peer, now: 100)) != true { selected.body = nil }
-                    return selected
-                }, completion: { _ in preconditionFailure("begin owns completion") })
-                delivery.finish()
+                service.didReceive(UNNotificationRequest(identifier: fixture.id, content: original, trigger: nil)) {
+                    completions += 1; output = $0
+                }
                 precondition(completions == 1, fixture.id + ": completion must occur once")
+                if input.current == false {
+                    precondition(fetches == 1, "Revocation must occur during a lookup, not before it starts")
+                    let entries = try JSONDecoder().decode([NotificationDiagnostic.Entry].self, from: diagnostic.export())
+                    precondition(entries.contains { $0.decision == .capabilityChanged })
+                    print("revoked during lookup: service worker guard rejected the snapshot; delivery recorded capabilityChanged")
+                }
             }
-            if output?.title != input.expected.title || output?.body != input.expected.body || output?.subtitle != (input.expected.subtitle ?? "") {
-                failures.append("\(fixture.id): expected \(input.expected.title) / \(input.expected.body), got \(output?.title ?? "nil") / \(output?.body ?? "nil")")
+            print("\(fixture.id): \(output?.title ?? "nil") / \(output?.body ?? "nil")")
+            var expected = input.expected
+            #if os(macOS)
+            if input.room == true {
+                // Accepted room-attribution contract: validate iOS message formatting through
+                // the real incoming intent; macOS cannot apply iOS content enrichment.
+                let incoming = NotificationPresentation.incomingIntent(from: room + "/" + nickname, body: input.body, names: names)
+                if incoming?.sender?.displayName != expected.title || incoming?.content != expected.body {
+                    failures.append("\(fixture.id): incoming room intent does not match the iOS content contract: \(incoming?.content ?? "nil")")
+                }
+                // Separately retain the ordinary fallback exercised by this macOS host.
+                expected = Output(title: expected.title, body: input.body, subtitle: nickname)
+            }
+            #endif
+            if output?.title != expected.title || output?.body != expected.body || output?.subtitle != (expected.subtitle ?? "") {
+                failures.append("\(fixture.id): expected \(expected.title) / \(expected.body), got \(output?.title ?? "nil") / \(output?.body ?? "nil")")
             }
         }
         for failure in failures { print(failure) }

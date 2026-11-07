@@ -21,7 +21,8 @@
 //! keychain is unreachable). The in-memory map here is a cache — the
 //! first [`OpenpgpState::ensure_key`] call per account after a restart
 //! loads from disk. [`openpgp_forget_account`] removes both the cached
-//! entry and the on-disk material.
+//! entry and the on-disk material. Each account's unlock, import, rotation
+//! and forget run one at a time, in the order they were requested.
 
 use anyhow::{anyhow, Context, Result};
 use sequoia_openpgp as openpgp;
@@ -29,11 +30,13 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::State;
-use tokio::sync::OnceCell as AsyncOnceCell;
+use tokio::sync::{Mutex as AsyncMutex, OnceCell as AsyncOnceCell, OwnedMutexGuard};
 
-use crate::openpgp_storage::{KeyStorage, PassphraseBacking};
+use crate::keychain_refusal::RefusalState;
+use crate::openpgp_storage::{KeyStorage, PassphraseBacking, PersistedKey};
 
 use openpgp::{
     cert::{amalgamation::ValidateAmalgamation, Cert, CertBuilder},
@@ -158,6 +161,34 @@ pub struct DecryptOutput {
 #[path = "openpgp_notification_subkeys.rs"]
 mod notification_subkeys;
 
+/// What the recovery panel may do with `account_jid`'s locked key (FLM-304).
+/// Answered from cached state only, never from the keychain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeychainRetryAvailability {
+    /// No refusal is held and no key is unlocked, so nothing is left to do.
+    NotHeld,
+    /// The user refused the items this launch, and nothing has read them since.
+    Held,
+    /// A keychain read is under way, perhaps an earlier retry still waiting on
+    /// the user's answer. Its outcome decides, so neither answer holds yet.
+    Pending,
+    /// The key is unlocked here, for example by a retry whose prompt the user
+    /// allowed after its caller stopped waiting (FLM-408 R5). Using it reads
+    /// no keychain item.
+    Unlocked,
+}
+
+impl From<RefusalState> for KeychainRetryAvailability {
+    fn from(state: RefusalState) -> Self {
+        match state {
+            RefusalState::NotHeld => Self::NotHeld,
+            RefusalState::Held => Self::Held,
+            RefusalState::Pending => Self::Pending,
+        }
+    }
+}
+
 /// State held by the Tauri managed-state system. One entry per logged-in
 /// account, keyed on the bare JID.
 ///
@@ -174,9 +205,23 @@ mod notification_subkeys;
 ///
 /// Every account has an [`AsyncOnceCell<UnlockOutcome>`]: the first
 /// `ensure_key` or `prewarm` caller for a given JID runs the unlock; any
-/// concurrent caller awaits the same cell instead of racing to a second
-/// KDF run. On error the cell is evicted so a subsequent attempt starts
-/// fresh (e.g. after the user fixes a vanished `.pass` fallback file).
+/// concurrent caller waits its turn and reuses that cell's outcome instead
+/// of running a second KDF. A failure reaches the callers already waiting
+/// too, unless a forget, import or rotation took a turn after they asked.
+/// On error the cell is evicted so a subsequent attempt starts fresh (e.g.
+/// after the user fixes a vanished `.pass` fallback file).
+///
+/// # Per-account lifecycle order
+///
+/// Unlock ([`Self::ensure_key`]), backup import, subkey rotation and forget
+/// each hold the account's lifecycle lock while they load, save or delete its
+/// key file, passphrase and cached cell. The lock is granted in request order
+/// and waiting for it yields the command thread. Each operation's blocking
+/// work holds it too, so a caller that stops waiting does not release it
+/// early. A forget still waiting on a keychain prompt after its frontend
+/// deadline therefore finishes before a later `ensure_key` reads the
+/// passphrase: the replacement key never saves under the passphrase forget
+/// is deleting.
 ///
 /// [`AsyncOnceCell`]: tokio::sync::OnceCell
 pub struct OpenpgpState {
@@ -185,6 +230,8 @@ pub struct OpenpgpState {
     /// should join; absent = no attempt started yet. Cells carrying `Err`
     /// are evicted after observation so the next caller retries.
     entries: Mutex<HashMap<String, Arc<AsyncOnceCell<UnlockOutcome>>>>,
+    /// Per-JID lifecycle turn; see the type's lifecycle order section.
+    lifecycle: AsyncMutex<HashMap<String, Arc<AccountTurn>>>,
     storage: Arc<KeyStorage>,
     /// Test-only instrumentation: how many times the blocking KDF path
     /// actually ran. Concurrent `ensure_key` calls must coalesce to one
@@ -197,6 +244,16 @@ pub struct OpenpgpState {
 /// multiple awaiters can each take a copy without another KDF round.
 type UnlockOutcome = Result<KeyBundle, String>;
 
+/// One account's place in line for lifecycle work.
+#[derive(Default)]
+struct AccountTurn {
+    /// Granted in request order; waiting for it yields.
+    lock: Arc<AsyncMutex<()>>,
+    /// Turns taken by forget, import and rotation, which replace the key or
+    /// its cached cell. A waiting unlock compares it before sharing a failure.
+    changes: AtomicU64,
+}
+
 impl OpenpgpState {
     /// Production constructor — persists keys under
     /// `<base_dir>/openpgp/` and prefers the OS keychain for the
@@ -204,6 +261,7 @@ impl OpenpgpState {
     pub fn new(base_dir: PathBuf) -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
+            lifecycle: AsyncMutex::default(),
             storage: Arc::new(KeyStorage::new(base_dir)),
             #[cfg(test)]
             blocking_runs: std::sync::atomic::AtomicUsize::new(0),
@@ -217,7 +275,18 @@ impl OpenpgpState {
     pub fn for_testing(base_dir: PathBuf) -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
+            lifecycle: AsyncMutex::default(),
             storage: Arc::new(KeyStorage::for_testing(base_dir)),
+            blocking_runs: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn for_testing_with_storage(storage: KeyStorage) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            lifecycle: AsyncMutex::default(),
+            storage: Arc::new(storage),
             blocking_runs: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -234,11 +303,27 @@ impl OpenpgpState {
         account_jid: String,
         user_id: String,
     ) -> Result<KeyBundle, String> {
+        let account = self.account_turn(&account_jid).await;
+        // The attempt this call joins, and the changes made before it asked.
+        let changes = account.changes.load(Ordering::SeqCst);
+        let joined = self.cell_for(&account_jid);
+        // Held through the cell, the unlock and an error eviction. The blocking
+        // worker keeps its own share, so a caller that stops waiting cannot
+        // release the turn while the unlock still loads or saves.
+        let turn = Arc::new(Arc::clone(&account.lock).lock_owned().await);
+        // A caller that waited on a failed unlock shares its error instead of
+        // repeating the KDF, unless a forget, import or rotation ran since.
+        if account.changes.load(Ordering::SeqCst) == changes {
+            if let Some(Err(error)) = joined.get() {
+                return Err(error.clone());
+            }
+        }
         let cell = self.cell_for(&account_jid);
 
         let storage = Arc::clone(&self.storage);
         let jid_for_task = account_jid.clone();
         let user_id_for_task = user_id;
+        let worker_turn = Arc::clone(&turn);
         #[cfg(test)]
         let counter = &self.blocking_runs;
 
@@ -247,6 +332,7 @@ impl OpenpgpState {
                 #[cfg(test)]
                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 tauri::async_runtime::spawn_blocking(move || {
+                    let _turn = worker_turn;
                     Self::run_blocking(&storage, &jid_for_task, &user_id_for_task)
                 })
                 .await
@@ -265,6 +351,7 @@ impl OpenpgpState {
             // stable for the identity's lifetime).
             self.entries.lock().unwrap().remove(&account_jid);
         }
+        drop(turn);
 
         outcome
     }
@@ -372,17 +459,89 @@ impl OpenpgpState {
 
     /// Forget the account: drop the cell AND remove every on-disk trace
     /// (encrypted TSK, fallback passphrase file, keychain entry). Safe
-    /// to call for an unknown account. All locks, file I/O and authorization
-    /// run on the blocking pool, never on the command's event-loop thread.
+    /// to call for an unknown account. Waiting for the account's lifecycle
+    /// lock yields; the state lock, file I/O and authorization run on the
+    /// blocking pool, never on the command's event-loop thread.
     pub async fn forget_account(self: &Arc<Self>, account_jid: &str) -> Result<(), String> {
+        let lifecycle = self.change_turn(account_jid).await;
         let state = Arc::clone(self);
         let account_jid = account_jid.to_owned();
         tauri::async_runtime::spawn_blocking(move || {
+            let _lifecycle = lifecycle;
             state.entries.lock().unwrap().remove(&account_jid);
             state.storage.forget(&account_jid).map_err(anyhow_to_string)
         })
         .await
         .map_err(|error| format!("OpenPGP forget task panicked: {error}"))?
+    }
+
+    /// Whether the recovery panel may offer the keychain retry for
+    /// `account_jid`: `Held` when its key exists on disk but is locked, and
+    /// this launch holds the user's refusal of the items that unlock it.
+    /// `Pending` while a keychain read is under way, such as a retry still
+    /// waiting on the user's answer: the panel must not take that for a
+    /// consumed refusal. `Unlocked` once the key is unlocked here, so a
+    /// retry whose late answer unlocked it can still be used: the next retry
+    /// returns that key without a read. It never reads the keychain and
+    /// never waits.
+    pub fn keychain_retry_available(
+        &self,
+        account_jid: &str,
+    ) -> Result<KeychainRetryAvailability, String> {
+        if self.read_cached_bundle(account_jid, "account").is_ok() {
+            return Ok(KeychainRetryAvailability::Unlocked);
+        }
+        if !self.storage.has_persisted_key(account_jid) {
+            return Ok(KeychainRetryAvailability::NotHeld);
+        }
+        self.storage
+            .refused_access(account_jid)
+            .map(KeychainRetryAvailability::from)
+            .map_err(anyhow_to_string)
+    }
+
+    /// The user's explicit request, from the recovery panel, to ask the OS
+    /// once more for the refused items that unlock `account_jid`'s key.
+    /// Nothing calls it on its own. It unlocks only the key already on disk:
+    /// it never generates, replaces or deletes one, and a restored account
+    /// never reads its old items. Errors keep their recovery codes:
+    /// `openpgp-keychain-refused:` when the user refuses again, and
+    /// `openpgp-keychain-retry-unavailable:` when there is nothing to retry.
+    pub async fn retry_keychain_access(
+        self: &Arc<Self>,
+        account_jid: String,
+    ) -> Result<KeyBundle, String> {
+        let lifecycle = self.change_turn(&account_jid).await;
+        let this = Arc::clone(self);
+        tauri::async_runtime::spawn_blocking(move || {
+            let _lifecycle = lifecycle;
+            if let Ok(bundle) = this.read_cached_bundle(&account_jid, "account") {
+                return Ok(bundle);
+            }
+            let unavailable = || {
+                format!("openpgp-keychain-retry-unavailable: no refused keychain access to retry for {account_jid}")
+            };
+            if !this.storage.has_persisted_key(&account_jid)
+                || !this
+                    .storage
+                    .retry_refused_access(&account_jid)
+                    .map_err(anyhow_to_string)?
+            {
+                return Err(unavailable());
+            }
+            let persisted = this
+                .storage
+                .load(&account_jid)
+                .map_err(anyhow_to_string)?
+                .ok_or_else(unavailable)?;
+            let bundle = Self::unlocked_bundle(&this.storage, &account_jid, persisted)?;
+            let cell = Arc::new(AsyncOnceCell::new());
+            let _ = cell.set(Ok(bundle.clone()));
+            this.entries.lock().unwrap().insert(account_jid, cell);
+            Ok(bundle)
+        })
+        .await
+        .unwrap_or_else(|join_err| Err(format!("keychain retry task panicked: {join_err}")))
     }
 
     /// Produce a passphrase-encrypted backup of the currently-loaded TSK
@@ -424,25 +583,29 @@ impl OpenpgpState {
         account_jid: String,
         backup_message: String,
         passphrase: String,
+        without_migration: bool,
     ) -> Result<KeyBundle, String> {
+        let lifecycle = self.change_turn(&account_jid).await;
         let this = Arc::clone(self);
         tauri::async_runtime::spawn_blocking(move || {
+            let _lifecycle = lifecycle;
             let tsk_armored =
                 crate::openpgp_backup::decrypt_tsk_with_passphrase(&backup_message, &passphrase)
                     .map_err(anyhow_to_string)?;
             let cert = Cert::from_bytes(tsk_armored.as_bytes())
                 .map_err(|e| format!("parse imported TSK: {e}"))?;
             let cert = ensure_account_user_id(cert, &account_jid).map_err(anyhow_to_string)?;
-            let backing = this
-                .storage
-                .save(&account_jid, &cert)
-                .map_err(anyhow_to_string)?;
+            let backing = if without_migration {
+                this.storage.save_fresh(&account_jid, &cert)
+            } else {
+                this.storage.save(&account_jid, &cert)
+            }
+            .map_err(anyhow_to_string)?;
             let bundle = bundle_from_cert(&cert, backing).map_err(anyhow_to_string)?;
 
             // Replace any existing cell so the next ensure_key observes
-            // the imported bundle. This method is user-initiated and runs
-            // exclusively after an explicit "restore from backup" choice,
-            // so we don't need to coordinate with concurrent unlockers.
+            // the imported bundle. The lifecycle lock keeps unlocks and
+            // forget for this account out until the cell is replaced.
             let mut entries = this.entries.lock().unwrap();
             let cell = Arc::new(AsyncOnceCell::new());
             let _ = cell.set(Ok(bundle.clone()));
@@ -501,9 +664,12 @@ impl OpenpgpState {
         backup_message: String,
         passphrase: String,
         selected_fingerprint: String,
+        without_migration: bool,
     ) -> Result<KeyBundle, String> {
+        let lifecycle = self.change_turn(&account_jid).await;
         let this = Arc::clone(self);
         tauri::async_runtime::spawn_blocking(move || {
+            let _lifecycle = lifecycle;
             let tsks = crate::openpgp_backup::decrypt_all_tsks_with_passphrase(
                 &backup_message,
                 &passphrase,
@@ -525,10 +691,12 @@ impl OpenpgpState {
             let cert = Cert::from_bytes(tsk_armored.as_bytes())
                 .map_err(|e| format!("parse selected TSK: {e}"))?;
             let cert = ensure_account_user_id(cert, &account_jid).map_err(anyhow_to_string)?;
-            let backing = this
-                .storage
-                .save(&account_jid, &cert)
-                .map_err(anyhow_to_string)?;
+            let backing = if without_migration {
+                this.storage.save_fresh(&account_jid, &cert)
+            } else {
+                this.storage.save(&account_jid, &cert)
+            }
+            .map_err(anyhow_to_string)?;
             let bundle = bundle_from_cert(&cert, backing).map_err(anyhow_to_string)?;
 
             let mut entries = this.entries.lock().unwrap();
@@ -559,9 +727,11 @@ impl OpenpgpState {
         self: &Arc<Self>,
         account_jid: String,
     ) -> Result<KeyBundle, String> {
+        let lifecycle = self.change_turn(&account_jid).await;
         let bundle = self.read_cached_bundle(&account_jid, "account")?;
         let this = Arc::clone(self);
         tauri::async_runtime::spawn_blocking(move || {
+            let _lifecycle = lifecycle;
             let current = Cert::from_bytes(bundle.secret_armored.as_bytes())
                 .map_err(|e| format!("parse current cert for rotation: {e}"))?;
             let rotated = rotate_encryption_subkey(current).map_err(anyhow_to_string)?;
@@ -573,9 +743,8 @@ impl OpenpgpState {
 
             // Replace the cached cell so subsequent encrypt / decrypt
             // / backup calls observe the rotated material immediately.
-            // Rotation is a user-initiated action, so it runs exclusively
-            // with respect to other key lifecycle ops on this account —
-            // no coordination with concurrent unlockers needed.
+            // The lifecycle lock keeps unlocks and forget for this
+            // account out until the cell is replaced.
             let mut entries = this.entries.lock().unwrap();
             let cell = Arc::new(AsyncOnceCell::new());
             let _ = cell.set(Ok(new_bundle.clone()));
@@ -597,6 +766,26 @@ impl OpenpgpState {
     }
 
     // ---- internals ----------------------------------------------------
+
+    /// This account's place in line, created on first use.
+    async fn account_turn(&self, account_jid: &str) -> Arc<AccountTurn> {
+        Arc::clone(
+            self.lifecycle
+                .lock()
+                .await
+                .entry(account_jid.to_owned())
+                .or_default(),
+        )
+    }
+
+    /// Wait, in request order, for this account's earlier lifecycle work, and
+    /// record a turn that replaces the key or its cached cell.
+    async fn change_turn(&self, account_jid: &str) -> OwnedMutexGuard<()> {
+        let account = self.account_turn(account_jid).await;
+        let turn = Arc::clone(&account.lock).lock_owned().await;
+        account.changes.fetch_add(1, Ordering::SeqCst);
+        turn
+    }
 
     /// Get-or-insert the per-JID cell. The returned `Arc` is cheap to
     /// hold across an await because the inner `AsyncOnceCell` does its
@@ -639,33 +828,43 @@ impl OpenpgpState {
     /// run it on a dedicated worker thread without capturing `&self`.
     fn run_blocking(storage: &KeyStorage, jid: &str, user_id: &str) -> Result<KeyBundle, String> {
         if let Some(persisted) = storage.load(jid).map_err(anyhow_to_string)? {
-            // Heal keys generated before we stopped setting a validity
-            // period: Gajim refuses to restore an expiring secret key, and
-            // the expiry lives in the signatures rather than in the backup
-            // blob, so it has to be cleared here — once, on the way in.
-            // A failure is logged and tolerated: an unhealed key still
-            // works locally, and losing the unlock would lock the user out
-            // of their own messages over an interop nicety.
-            match strip_key_expiration(persisted.cert.clone()) {
-                Ok(Some(healed)) => {
-                    let backing = storage.save(jid, &healed).map_err(anyhow_to_string)?;
-                    tracing::info!("openpgp: cleared key expiration for {}", jid);
-                    return bundle_from_cert(&healed, backing).map_err(anyhow_to_string);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        "openpgp: could not clear key expiration for {}: {:#}",
-                        jid,
-                        e
-                    )
-                }
-            }
-            return bundle_from_cert(&persisted.cert, persisted.backing).map_err(anyhow_to_string);
+            return Self::unlocked_bundle(storage, jid, persisted);
         }
         let cert = generate_cert(user_id).map_err(anyhow_to_string)?;
         let backing = storage.save(jid, &cert).map_err(anyhow_to_string)?;
         bundle_from_cert(&cert, backing).map_err(anyhow_to_string)
+    }
+
+    /// The bundle of a persisted key that just unlocked, at startup or after
+    /// the user's keychain retry.
+    fn unlocked_bundle(
+        storage: &KeyStorage,
+        jid: &str,
+        persisted: PersistedKey,
+    ) -> Result<KeyBundle, String> {
+        // Heal keys generated before we stopped setting a validity
+        // period: Gajim refuses to restore an expiring secret key, and
+        // the expiry lives in the signatures rather than in the backup
+        // blob, so it has to be cleared here — once, on the way in.
+        // A failure is logged and tolerated: an unhealed key still
+        // works locally, and losing the unlock would lock the user out
+        // of their own messages over an interop nicety.
+        match strip_key_expiration(persisted.cert.clone()) {
+            Ok(Some(healed)) => {
+                let backing = storage.save(jid, &healed).map_err(anyhow_to_string)?;
+                tracing::info!("openpgp: cleared key expiration for {}", jid);
+                return bundle_from_cert(&healed, backing).map_err(anyhow_to_string);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    "openpgp: could not clear key expiration for {}: {:#}",
+                    jid,
+                    e
+                )
+            }
+        }
+        bundle_from_cert(&persisted.cert, persisted.backing).map_err(anyhow_to_string)
     }
 
     /// Test helper — number of times the blocking KDF path executed
@@ -675,6 +874,15 @@ impl OpenpgpState {
     pub fn blocking_run_count(&self) -> usize {
         self.blocking_runs
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Test helper — whether lifecycle work holds `account_jid`'s turn.
+    #[cfg(test)]
+    fn turn_is_taken(&self, account_jid: &str) -> bool {
+        let accounts = self.lifecycle.try_lock().expect("the turn map is free");
+        accounts
+            .get(account_jid)
+            .is_some_and(|account| account.lock.try_lock().is_err())
     }
 
     /// Test helper — synchronous wrapper around the async `ensure_key`.
@@ -870,6 +1078,31 @@ pub fn openpgp_has_persisted_key(account_jid: String, state: State<'_, Arc<Openp
     state.storage.has_persisted_key(&account_jid)
 }
 
+/// Whether the recovery panel may offer to ask the OS again for the items
+/// the user refused this launch: `"held"`, `"not-held"`, `"pending"` while
+/// a keychain read is under way, or `"unlocked"` once the key is unlocked
+/// here. Reads only cached answers, never the keychain.
+#[tauri::command]
+pub fn openpgp_keychain_retry_available(
+    account_jid: String,
+    state: State<'_, Arc<OpenpgpState>>,
+) -> Result<KeychainRetryAvailability, String> {
+    state.keychain_retry_available(&account_jid)
+}
+
+/// The user's explicit keychain retry from the recovery panel. Unlocks the
+/// existing key and returns its public projection; never generates one.
+#[tauri::command]
+pub async fn openpgp_retry_keychain_access(
+    account_jid: String,
+    state: State<'_, Arc<OpenpgpState>>,
+) -> Result<PublicKeyInfo, String> {
+    Arc::clone(&state)
+        .retry_keychain_access(account_jid)
+        .await
+        .map(|bundle| PublicKeyInfo::from(&bundle))
+}
+
 /// Encrypt the in-memory TSK for `account_jid` under `passphrase`. The
 /// returned armored OpenPGP message is converted by the TS side to the
 /// XEP-0373 §5 PEP payload: Base64 raw OpenPGP bytes in `<secretkey/>`.
@@ -893,10 +1126,16 @@ pub async fn openpgp_backup_import(
     account_jid: String,
     backup_message: String,
     passphrase: String,
+    without_migration: Option<bool>,
     state: State<'_, Arc<OpenpgpState>>,
 ) -> Result<PublicKeyInfo, String> {
     Arc::clone(&state)
-        .import_backup(account_jid, backup_message, passphrase)
+        .import_backup(
+            account_jid,
+            backup_message,
+            passphrase,
+            without_migration.unwrap_or(false),
+        )
         .await
         .map(|bundle| PublicKeyInfo::from(&bundle))
 }
@@ -923,6 +1162,7 @@ pub async fn openpgp_backup_import_selected(
     backup_message: String,
     passphrase: String,
     selected_fingerprint: String,
+    without_migration: Option<bool>,
     state: State<'_, Arc<OpenpgpState>>,
 ) -> Result<PublicKeyInfo, String> {
     Arc::clone(&state)
@@ -931,6 +1171,7 @@ pub async fn openpgp_backup_import_selected(
             backup_message,
             passphrase,
             selected_fingerprint,
+            without_migration.unwrap_or(false),
         )
         .await
         .map(|bundle| PublicKeyInfo::from(&bundle))
@@ -2233,6 +2474,220 @@ mod tests {
         );
     }
 
+    /// Stand-in for the macOS keychain. Its first `pause` call ("get", "set"
+    /// or "delete") waits for the test's answer, as a pending authorization
+    /// prompt does; with `fail` that call then fails as an unreadable keychain.
+    struct PausingStore {
+        items: Mutex<HashMap<String, String>>,
+        pause: &'static str,
+        fail: bool,
+        prompt: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    }
+
+    impl PausingStore {
+        /// The store, the signal that its paused call started, and its answer.
+        fn new(
+            pause: &'static str,
+            fail: bool,
+        ) -> (
+            Arc<Self>,
+            std::sync::mpsc::Receiver<()>,
+            std::sync::mpsc::Sender<()>,
+        ) {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (answer_tx, answer_rx) = std::sync::mpsc::channel();
+            let store = Arc::new(Self {
+                items: Mutex::default(),
+                pause,
+                fail,
+                prompt: Mutex::new(Some((entered_tx, answer_rx))),
+            });
+            (store, entered_rx, answer_tx)
+        }
+
+        /// Wait for the answer if this is the paused call; true when it was.
+        fn paused(&self, operation: &str) -> bool {
+            if operation != self.pause {
+                return false;
+            }
+            let Some((entered, answered)) = self.prompt.lock().unwrap().take() else {
+                return false;
+            };
+            let _ = entered.send(());
+            // A bounded failure guard, not a sleep or a retry.
+            let _ = answered.recv_timeout(std::time::Duration::from_secs(10));
+            true
+        }
+
+        fn is_empty(&self) -> bool {
+            self.items.lock().unwrap().is_empty()
+        }
+    }
+
+    impl crate::credentials::SecretStore for PausingStore {
+        fn get(&self, account: &str) -> Result<Option<String>, String> {
+            if self.paused("get") && self.fail {
+                return Err("keychain unavailable".into());
+            }
+            Ok(self.items.lock().unwrap().get(account).cloned())
+        }
+        fn set(&self, account: &str, secret: &str) -> Result<(), String> {
+            self.paused("set");
+            self.items
+                .lock()
+                .unwrap()
+                .insert(account.into(), secret.into());
+            Ok(())
+        }
+        fn delete(&self, account: &str) -> Result<(), String> {
+            self.paused("delete");
+            self.items.lock().unwrap().remove(account);
+            Ok(())
+        }
+    }
+
+    /// A state over `dir` whose passphrases live in `store`.
+    fn state_with_store(dir: &std::path::Path, store: &Arc<PausingStore>) -> Arc<OpenpgpState> {
+        Arc::new(OpenpgpState::for_testing_with_storage(
+            KeyStorage::for_testing_with_store(dir.to_path_buf(), store.clone()),
+        ))
+    }
+
+    /// Save a key for `jid` under `dir`; only a fallback file holds its passphrase.
+    async fn seed_key(dir: &std::path::Path, jid: &str) -> KeyBundle {
+        Arc::new(OpenpgpState::for_testing(dir.to_path_buf()))
+            .ensure_key(jid.into(), "Alice".into())
+            .await
+            .unwrap()
+    }
+
+    // FLM-93 N1: replacing an identity calls ensure_key once forget's frontend
+    // deadline passes, even while forget still waits on a keychain prompt. The
+    // new key must not be saved under the passphrase forget is deleting.
+    #[tokio::test(flavor = "current_thread")]
+    async fn forget_holds_off_a_following_ensure_key_until_it_ends() {
+        let (store, entered, answer) = PausingStore::new("delete", false);
+        let dir = fresh_tmp_dir();
+        let jid = "alice@example.com";
+        let state = state_with_store(&dir, &store);
+        let retired = state.ensure_key(jid.into(), "Alice".into()).await.unwrap();
+
+        let mut forget = Box::pin(state.forget_account(jid));
+        assert!(futures_util::poll!(forget.as_mut()).is_pending());
+        entered
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("forget reaches the keychain delete");
+        let mut replacement = Box::pin(state.ensure_key(jid.into(), "Alice".into()));
+        assert!(futures_util::poll!(replacement.as_mut()).is_pending());
+        assert_eq!(
+            state.blocking_run_count(),
+            1,
+            "ensure_key must not load or save while forget is still deleting"
+        );
+
+        answer.send(()).unwrap();
+        forget.await.unwrap();
+        let replacement = replacement.await.unwrap();
+        assert_ne!(replacement.fingerprint, retired.fingerprint);
+        // Restart: the replacement key still unlocks from disk and the store.
+        let reloaded = state_with_store(&dir, &store)
+            .ensure_key(jid.into(), "Alice".into())
+            .await
+            .expect("the replacement key stays unlockable");
+        assert_eq!(reloaded.fingerprint, replacement.fingerprint);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // FLM-339 F1: an unlock whose caller stops waiting keeps the account's turn
+    // until its blocking save ends, so a following forget cannot run under it
+    // and leave the abandoned save's key and passphrase behind.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_abandoned_unlock_keeps_forget_out_until_its_save_ends() {
+        let (store, entered, answer) = PausingStore::new("set", false);
+        let dir = fresh_tmp_dir();
+        let jid = "alice@example.com";
+        let state = state_with_store(&dir, &store);
+
+        let mut unlock = Box::pin(state.ensure_key(jid.into(), "Alice".into()));
+        assert!(futures_util::poll!(unlock.as_mut()).is_pending());
+        entered
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the unlock reaches the passphrase save");
+        drop(unlock);
+        assert!(
+            state.turn_is_taken(jid),
+            "the abandoned unlock's save must still hold the account's turn"
+        );
+
+        let forget = state.forget_account(jid);
+        answer.send(()).unwrap();
+        forget.await.unwrap();
+        // Forget ran after the save, so nothing of that key is left behind.
+        assert!(!state.storage.has_persisted_key(jid));
+        assert!(store.is_empty(), "forget must remove the saved passphrase");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // FLM-339 F2: callers already waiting on an unlock share its failure
+    // instead of each repeating the KDF and recovery once it fails.
+    #[tokio::test(flavor = "current_thread")]
+    async fn callers_waiting_on_a_failed_unlock_share_its_error() {
+        let dir = fresh_tmp_dir();
+        let jid = "alice@example.com";
+        seed_key(&dir, jid).await;
+        let (store, entered, answer) = PausingStore::new("get", true);
+        let state = state_with_store(&dir, &store);
+
+        let mut first = Box::pin(state.ensure_key(jid.into(), "Alice".into()));
+        assert!(futures_util::poll!(first.as_mut()).is_pending());
+        entered
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the unlock reaches the keychain read");
+        let mut waiting = Box::pin(state.ensure_key(jid.into(), "Alice".into()));
+        assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+
+        answer.send(()).unwrap();
+        let first = first.await.expect_err("the keychain read fails");
+        let waiting = waiting.await.expect_err("the waiting caller fails too");
+        assert_eq!(waiting, first);
+        assert_eq!(
+            state.blocking_run_count(),
+            1,
+            "a caller waiting on the failed unlock must not repeat it"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // FLM-339 F2 with FLM-93 N1: a caller queued behind a forget does not share
+    // a failure from before that forget; it gets a new key.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_caller_queued_behind_forget_does_not_share_an_earlier_failure() {
+        let dir = fresh_tmp_dir();
+        let jid = "alice@example.com";
+        let retired = seed_key(&dir, jid).await;
+        let (store, entered, answer) = PausingStore::new("get", true);
+        let state = state_with_store(&dir, &store);
+
+        let mut first = Box::pin(state.ensure_key(jid.into(), "Alice".into()));
+        assert!(futures_util::poll!(first.as_mut()).is_pending());
+        entered
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the unlock reaches the keychain read");
+        let mut forget = Box::pin(state.forget_account(jid));
+        assert!(futures_util::poll!(forget.as_mut()).is_pending());
+        let mut replacement = Box::pin(state.ensure_key(jid.into(), "Alice".into()));
+        assert!(futures_util::poll!(replacement.as_mut()).is_pending());
+
+        answer.send(()).unwrap();
+        first.await.expect_err("the keychain read fails");
+        forget.await.unwrap();
+        let replacement = replacement
+            .await
+            .expect("the caller queued behind forget gets a new key");
+        assert_ne!(replacement.fingerprint, retired.fingerprint);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn fingerprint_of_handles_non_pgp_input() {
         let err = fingerprint_of("not an OpenPGP block").expect_err("must reject");
@@ -2392,6 +2847,7 @@ mod tests {
                 "alice@example.com".into(),
                 backup,
                 "correct-horse-battery-staple".into(),
+                false,
             )
             .await
             .unwrap();
@@ -2411,6 +2867,470 @@ mod tests {
             0,
             "import_backup must prime the cell so ensure_key skips the KDF"
         );
+    }
+
+    /// FLM-299 / FLM-298: the user refused the old keychain items (legacy
+    /// items only, or the old combined item too), so migration can never
+    /// finish. Both production imports, told to skip migration, must restore
+    /// the same identity through the very store that cached the refusal,
+    /// decrypt the original ciphertext, and keep doing so after a restart
+    /// without reading the refused items again. Other accounts are untouched.
+    #[test]
+    fn flm299_backup_import_without_migration_recovers_after_refused_keychain() {
+        use crate::{
+            credentials::SecretStore,
+            macos_secrets::{Backend, Secrets, StoreError},
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering as O};
+        #[derive(Clone, Default)]
+        struct Memory {
+            items: Arc<Mutex<std::collections::BTreeMap<String, String>>>,
+            refused_reads: Arc<AtomicUsize>,
+            fresh: Arc<Mutex<Vec<String>>>,
+        }
+        impl SecretStore for Memory {
+            fn get(&self, a: &str) -> Result<Option<String>, String> {
+                Ok(self.items.lock().unwrap().get(a).cloned())
+            }
+            fn set(&self, a: &str, v: &str) -> Result<(), String> {
+                self.items.lock().unwrap().insert(a.into(), v.into());
+                Ok(())
+            }
+            fn delete(&self, a: &str) -> Result<(), String> {
+                self.items.lock().unwrap().remove(a);
+                Ok(())
+            }
+        }
+        impl Backend for Memory {
+            fn read(&self, a: &str) -> Result<Option<String>, StoreError> {
+                // The fresh item reads normally, and so does an absent old
+                // combined item; every old item that exists is refused.
+                if a == "secrets-fresh-v1" || !self.items.lock().unwrap().contains_key(a) {
+                    return self.get(a).map_err(Into::into);
+                }
+                self.refused_reads.fetch_add(1, O::SeqCst);
+                Err(StoreError::denied())
+            }
+            fn accounts(&self) -> Result<Vec<String>, StoreError> {
+                Ok(self.items.lock().unwrap().keys().cloned().collect())
+            }
+            fn fresh_accounts(&self) -> Result<Vec<String>, StoreError> {
+                Ok(self.fresh.lock().unwrap().clone())
+            }
+            fn mark_fresh_account(&self, account: &str) -> Result<(), StoreError> {
+                self.fresh.lock().unwrap().push(account.into());
+                Ok(())
+            }
+        }
+        let jid = "alice@example.com";
+        let bob_account = "openpgp_passphrase:bob@example.com";
+        let device_a = new_state();
+        let original = device_a.ensure_key_sync(jid, "Alice").unwrap();
+        device_a.ensure_key_sync("bob@example.com", "Bob").unwrap();
+        let ciphertext = device_a
+            .encrypt("bob@example.com", &[original.public_armored.clone()], "old message")
+            .unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let backup = rt
+            .block_on(device_a.encrypt_backup(jid.into(), "backup-code".into()))
+            .unwrap();
+        let fingerprint = rt
+            .block_on(device_a.import_backup_all(backup.clone(), "backup-code".into()))
+            .unwrap()[0]
+            .fingerprint
+            .clone();
+
+        for selected in [false, true] {
+            for old_combined in [false, true] {
+                let raw = Memory::default();
+                raw.set("mcp-token", "old-mcp-token").unwrap();
+                raw.set("openpgp_passphrase:alice@example.com", "b2xk").unwrap();
+                raw.set(bob_account, "b3RoZXI=").unwrap();
+                if old_combined {
+                    raw.set("secrets-v1", "{\"version\":1,\"items\":{}}").unwrap();
+                }
+                let old_items = raw.items.lock().unwrap().clone();
+                let dir = fresh_tmp_dir();
+                let open = |secrets: Arc<Secrets<Memory>>| {
+                    Arc::new(OpenpgpState::for_testing_with_storage(
+                        KeyStorage::for_testing_with_store(dir.clone(), secrets),
+                    ))
+                };
+                let import = |state: &Arc<OpenpgpState>, without_migration: bool| {
+                    if selected {
+                        rt.block_on(state.import_backup_selected(
+                            jid.into(),
+                            backup.clone(),
+                            "backup-code".into(),
+                            fingerprint.clone(),
+                            without_migration,
+                        ))
+                    } else {
+                        rt.block_on(state.import_backup(
+                            jid.into(),
+                            backup.clone(),
+                            "backup-code".into(),
+                            without_migration,
+                        ))
+                    }
+                };
+                // One store, whose cache remembers the refusal, for the whole
+                // session: the restore must work through it.
+                let secrets = Arc::new(Secrets::new(raw.clone()));
+                let state = open(secrets.clone());
+                assert!(import(&state, false).is_err());
+                assert!(raw.refused_reads.load(O::SeqCst) > 0, "the refusal happened");
+                let restored = import(&state, true).unwrap();
+                assert_eq!(restored.fingerprint, original.fingerprint);
+                assert_eq!(
+                    state.decrypt(jid, &ciphertext, &[]).unwrap().plaintext,
+                    "old message"
+                );
+                // Other accounts keep their old route, and its refusal.
+                assert_eq!(*raw.fresh.lock().unwrap(), ["openpgp_passphrase:alice@example.com"]);
+                assert!(secrets.get(bob_account).is_err());
+
+                // Restart: a new cache over the same storage.
+                let refused_before = raw.refused_reads.load(O::SeqCst);
+                let restarted = open(Arc::new(Secrets::new(raw.clone())));
+                let bundle = rt
+                    .block_on(restarted.ensure_key(jid.into(), "Alice".into()))
+                    .unwrap();
+                assert_eq!(bundle.fingerprint, original.fingerprint);
+                assert_eq!(
+                    restarted.decrypt(jid, &ciphertext, &[]).unwrap().plaintext,
+                    "old message"
+                );
+                assert_eq!(raw.refused_reads.load(O::SeqCst), refused_before);
+                let items = raw.items.lock().unwrap();
+                for (name, value) in &old_items {
+                    assert_eq!(items.get(name), Some(value), "{name} preserved");
+                }
+                assert!(items.contains_key("secrets-fresh-v1"));
+            }
+        }
+    }
+
+    /// A stand-in keychain whose user refuses the items named in `refused`.
+    /// Every read of an old item is logged; nothing touches a real keychain.
+    #[derive(Clone, Default)]
+    struct RefusingKeychain {
+        items: Arc<Mutex<std::collections::BTreeMap<String, String>>>,
+        refused: Arc<Mutex<std::collections::BTreeSet<String>>>,
+        reads: Arc<Mutex<Vec<String>>>,
+        /// While set, a read waits here, like macOS's prompt left open.
+        prompt: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
+    }
+    impl crate::credentials::SecretStore for RefusingKeychain {
+        fn get(&self, a: &str) -> Result<Option<String>, String> {
+            Ok(self.items.lock().unwrap().get(a).cloned())
+        }
+        fn set(&self, a: &str, v: &str) -> Result<(), String> {
+            self.items.lock().unwrap().insert(a.into(), v.into());
+            Ok(())
+        }
+        fn delete(&self, a: &str) -> Result<(), String> {
+            self.items.lock().unwrap().remove(a);
+            Ok(())
+        }
+    }
+    impl crate::macos_secrets::Backend for RefusingKeychain {
+        fn read(&self, a: &str) -> Result<Option<String>, crate::macos_secrets::StoreError> {
+            self.reads.lock().unwrap().push(a.into());
+            if let Some(answer) = self.prompt.lock().unwrap().take() {
+                let _ = answer.recv();
+            }
+            if self.refused.lock().unwrap().contains(a) {
+                return Err(crate::macos_secrets::StoreError::denied());
+            }
+            Ok(self.items.lock().unwrap().get(a).cloned())
+        }
+        fn accounts(&self) -> Result<Vec<String>, crate::macos_secrets::StoreError> {
+            Ok(self.items.lock().unwrap().keys().cloned().collect())
+        }
+    }
+    impl RefusingKeychain {
+        fn set_secret(&self, name: &str, value: &str) {
+            self.items.lock().unwrap().insert(name.into(), value.into());
+        }
+        fn reads(&self) -> usize {
+            self.reads.lock().unwrap().len()
+        }
+        fn refuse(&self, names: &[&str]) {
+            *self.refused.lock().unwrap() = names.iter().map(|name| name.to_string()).collect();
+        }
+        /// Leave the next read's prompt open until the returned sender answers.
+        fn open_prompt(&self) -> std::sync::mpsc::Sender<()> {
+            let (answer, prompt) = std::sync::mpsc::channel();
+            *self.prompt.lock().unwrap() = Some(prompt);
+            answer
+        }
+        /// A launch: a new process cache over the same items and key files.
+        fn launch(&self, dir: &std::path::Path) -> Arc<OpenpgpState> {
+            Arc::new(OpenpgpState::for_testing_with_storage(KeyStorage::for_testing_with_store(
+                dir.to_path_buf(),
+                Arc::new(crate::macos_secrets::Secrets::new(self.clone())),
+            )))
+        }
+    }
+    fn key_files(dir: &std::path::Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
+        std::fs::read_dir(dir.join("openpgp"))
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), std::fs::read(entry.path()).unwrap())
+            })
+            .collect()
+    }
+
+    /// FLM-304, the captain on FLM-298 review R3: "Never, but maybe an
+    /// explicit retry try could be proposed in a advanced panel, in case there
+    /// is no other way to recover the key". After the user refused the
+    /// keychain at startup, nothing reads it again on its own; each explicit
+    /// retry asks once; a granted retry unlocks the same key, which decrypts
+    /// what arrived before, with no key generated, replaced or deleted.
+    #[test]
+    fn flm304_explicit_keychain_retry_unlocks_the_same_key_only_on_request() {
+        let jid = "alice@example.com";
+        let keychain = RefusingKeychain::default();
+        let dir = fresh_tmp_dir();
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let first = keychain.launch(&dir);
+        let original = first.ensure_key_sync(jid, "Alice").unwrap();
+        let ciphertext = first
+            .encrypt(jid, &[original.public_armored.clone()], "waiting message")
+            .unwrap();
+        assert!(keychain.items.lock().unwrap().contains_key("secrets-v1"));
+        let files = key_files(&dir);
+
+        // The next launch, the user refuses the keychain prompt.
+        keychain.refuse(&["secrets-v1"]);
+        keychain.reads.lock().unwrap().clear();
+        let state = keychain.launch(&dir);
+        let refused = state.ensure_key_sync(jid, "Alice").unwrap_err();
+        assert!(refused.starts_with("openpgp-storage-unavailable:"), "{refused}");
+        assert_eq!(keychain.reads(), 1);
+
+        // Never automatic: unlocking again, prewarming and offering the retry
+        // all keep the refusal without asking the keychain.
+        assert!(state.ensure_key_sync(jid, "Alice").is_err());
+        // The prewarm unlocks in the background. Once it has started, the next
+        // unlock waits for it to end, so no answer below is taken while the
+        // prewarm holds the store (which answers `Pending`).
+        let runs = state.blocking_run_count();
+        state.prewarm(jid.into(), "Alice".into());
+        while state.blocking_run_count() == runs {
+            std::thread::yield_now();
+        }
+        assert!(state.ensure_key_sync(jid, "Alice").is_err());
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Held));
+        assert_eq!(keychain.reads(), 1, "no read without the user's request");
+
+        // One request, one read; a new refusal is kept like the first.
+        let again = rt.block_on(state.retry_keychain_access(jid.into())).unwrap_err();
+        assert!(again.starts_with("openpgp-keychain-refused:"), "{again}");
+        assert_eq!(keychain.reads(), 2);
+        assert!(state.ensure_key_sync(jid, "Alice").is_err());
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Held));
+        assert_eq!(keychain.reads(), 2);
+
+        // The user grants access on the next request.
+        keychain.refuse(&[]);
+        let runs = state.blocking_run_count();
+        let unlocked = rt.block_on(state.retry_keychain_access(jid.into())).unwrap();
+        assert_eq!(keychain.reads(), 3);
+        assert_eq!(unlocked.fingerprint, original.fingerprint);
+        assert_eq!(state.decrypt(jid, &ciphertext, &[]).unwrap().plaintext, "waiting message");
+        assert_eq!(state.ensure_key_sync(jid, "Alice").unwrap().fingerprint, original.fingerprint);
+        assert_eq!(state.blocking_run_count(), runs, "the retry primed the unlocked key");
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Unlocked));
+        assert_eq!(
+            rt.block_on(state.retry_keychain_access(jid.into())).unwrap().fingerprint,
+            original.fingerprint
+        );
+        assert_eq!(keychain.reads(), 3, "an unlocked key reads nothing more");
+        assert_eq!(key_files(&dir), files, "no key generated, replaced or deleted");
+
+        // The next launch unlocks as usual.
+        let restarted = keychain.launch(&dir);
+        assert_eq!(restarted.ensure_key_sync(jid, "Alice").unwrap().fingerprint, original.fingerprint);
+        assert_eq!(restarted.decrypt(jid, &ciphertext, &[]).unwrap().plaintext, "waiting message");
+    }
+
+    /// FLM-304: the retry is offered for, and reads, only a refusal that keeps
+    /// an existing key locked. Without a key it neither reads nor generates.
+    #[test]
+    fn flm304_keychain_retry_never_generates_a_key() {
+        let keychain = RefusingKeychain::default();
+        keychain.set_secret("mcp-token", "token");
+        keychain.refuse(&["secrets-v1"]);
+        let dir = fresh_tmp_dir();
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let state = keychain.launch(&dir);
+        assert_eq!(state.keychain_retry_available("carol@example.com"), Ok(KeychainRetryAvailability::NotHeld));
+        let unavailable = rt
+            .block_on(state.retry_keychain_access("carol@example.com".into()))
+            .unwrap_err();
+        assert!(unavailable.starts_with("openpgp-keychain-retry-unavailable:"), "{unavailable}");
+        assert_eq!(keychain.reads(), 0);
+        assert!(!state.storage.has_persisted_key("carol@example.com"));
+    }
+
+    /// FLM-304: a key whose combined-item secret no longer unlocks it, and
+    /// whose old per-account item the user refused, is the other locked case.
+    /// The retry reads only that item, once, and unlocks the same key.
+    #[test]
+    fn flm304_retry_rereads_a_refused_old_item_for_a_desynced_key() {
+        let jid = "alice@example.com";
+        let account = "openpgp_passphrase:alice@example.com";
+        let keychain = RefusingKeychain::default();
+        let dir = fresh_tmp_dir();
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let original = keychain.launch(&dir).ensure_key_sync(jid, "Alice").unwrap();
+        // The old item keeps the working secret; the combined item lost it.
+        let bundle = keychain.items.lock().unwrap()["secrets-v1"].clone();
+        let mut parsed: serde_json::Value = serde_json::from_str(&bundle).unwrap();
+        let working = parsed["items"][account].as_str().unwrap().to_owned();
+        parsed["items"][account] = "c3RhbGU=".into();
+        keychain.set_secret("secrets-v1", &parsed.to_string());
+        keychain.set_secret(account, &working);
+        keychain.refuse(&[account]);
+
+        let state = keychain.launch(&dir);
+        let locked = state.ensure_key_sync(jid, "Alice").unwrap_err();
+        assert!(locked.contains("decrypt persisted TSK"), "{locked}");
+        let old_reads = || keychain.reads.lock().unwrap().iter().filter(|a| *a == account).count();
+        assert_eq!(old_reads(), 1);
+        assert!(state.ensure_key_sync(jid, "Alice").is_err());
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Held));
+        assert_eq!(old_reads(), 1, "no read without the user's request");
+
+        keychain.refuse(&[]);
+        let unlocked = rt.block_on(state.retry_keychain_access(jid.into())).unwrap();
+        assert_eq!(unlocked.fingerprint, original.fingerprint);
+        assert_eq!(old_reads(), 2);
+        assert_eq!(keychain.items.lock().unwrap()[account], working, "the old item is kept");
+    }
+
+    /// FLM-408 R2: a granted read whose secret still cannot unlock the key
+    /// consumes the refusal. Nothing is left to retry, so the panel's action
+    /// goes away, and a further request reads nothing.
+    #[test]
+    fn flm304_a_granted_read_that_cannot_unlock_leaves_nothing_to_retry() {
+        let jid = "alice@example.com";
+        let account = "openpgp_passphrase:alice@example.com";
+        let keychain = RefusingKeychain::default();
+        let dir = fresh_tmp_dir();
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        keychain.launch(&dir).ensure_key_sync(jid, "Alice").unwrap();
+        // Neither the combined item nor the old item holds the working secret.
+        let bundle = keychain.items.lock().unwrap()["secrets-v1"].clone();
+        let mut parsed: serde_json::Value = serde_json::from_str(&bundle).unwrap();
+        parsed["items"][account] = "c3RhbGU=".into();
+        keychain.set_secret("secrets-v1", &parsed.to_string());
+        keychain.set_secret(account, "b2xk");
+        keychain.refuse(&[account]);
+
+        let state = keychain.launch(&dir);
+        assert!(state.ensure_key_sync(jid, "Alice").is_err());
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Held));
+        let old_reads = || keychain.reads.lock().unwrap().iter().filter(|a| *a == account).count();
+        assert_eq!(old_reads(), 1);
+
+        keychain.refuse(&[]);
+        let failed = rt.block_on(state.retry_keychain_access(jid.into())).unwrap_err();
+        assert!(!failed.starts_with("openpgp-keychain-refused:"), "{failed}");
+        assert_eq!(old_reads(), 2);
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::NotHeld));
+        let unavailable = rt.block_on(state.retry_keychain_access(jid.into())).unwrap_err();
+        assert!(unavailable.starts_with("openpgp-keychain-retry-unavailable:"), "{unavailable}");
+        assert_eq!(old_reads(), 2, "nothing is left to ask again");
+    }
+
+    /// FLM-408 R4: a retry whose caller gave up while macOS's prompt stays
+    /// open is unfinished, not a consumed refusal. Asking meanwhile answers
+    /// `Pending` at once, and once the user refuses, the retry is offered again.
+    #[test]
+    fn flm304_a_retry_still_on_its_prompt_is_pending_not_consumed() {
+        let jid = "alice@example.com";
+        let keychain = RefusingKeychain::default();
+        let dir = fresh_tmp_dir();
+        keychain.launch(&dir).ensure_key_sync(jid, "Alice").unwrap();
+        keychain.refuse(&["secrets-v1"]);
+        keychain.reads.lock().unwrap().clear();
+        let state = keychain.launch(&dir);
+        assert!(state.ensure_key_sync(jid, "Alice").is_err());
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Held));
+        assert_eq!(keychain.reads(), 1);
+
+        let answer = keychain.open_prompt();
+        let retry = {
+            let state = Arc::clone(&state);
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+                rt.block_on(state.retry_keychain_access(jid.into()))
+            })
+        };
+        while keychain.reads() < 2 {
+            std::thread::yield_now();
+        }
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Pending));
+
+        // The user refuses on the prompt that stayed open.
+        answer.send(()).unwrap();
+        let refused = retry.join().unwrap().unwrap_err();
+        assert!(refused.starts_with("openpgp-keychain-refused:"), "{refused}");
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Held));
+        assert_eq!(keychain.reads(), 2, "asking while the prompt was open read nothing");
+    }
+
+    /// FLM-408 R5: the user allows a retry's prompt only after the App
+    /// stopped waiting for it. The key is then unlocked here while the App
+    /// still has it locked, so asking answers `Unlocked`, not `NotHeld`, and
+    /// the next request returns that key without reading the keychain.
+    #[test]
+    fn flm304_a_retry_allowed_after_its_caller_gave_up_leaves_the_key_ready() {
+        let jid = "alice@example.com";
+        let keychain = RefusingKeychain::default();
+        let dir = fresh_tmp_dir();
+        let original = keychain.launch(&dir).ensure_key_sync(jid, "Alice").unwrap();
+        let files = key_files(&dir);
+        keychain.refuse(&["secrets-v1"]);
+        keychain.reads.lock().unwrap().clear();
+        let state = keychain.launch(&dir);
+        assert!(state.ensure_key_sync(jid, "Alice").is_err());
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Held));
+
+        // The App's request outlives its time limit on the open prompt; its
+        // caller no longer waits for the answer.
+        let answer = keychain.open_prompt();
+        let retry = {
+            let state = Arc::clone(&state);
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+                rt.block_on(state.retry_keychain_access(jid.into()))
+            })
+        };
+        while keychain.reads() < 2 {
+            std::thread::yield_now();
+        }
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Pending));
+
+        // The user then allows that prompt.
+        keychain.refuse(&[]);
+        answer.send(()).unwrap();
+        assert_eq!(retry.join().unwrap().unwrap().fingerprint, original.fingerprint);
+        assert_eq!(state.keychain_retry_available(jid), Ok(KeychainRetryAvailability::Unlocked));
+        assert_eq!(keychain.reads(), 2);
+
+        // The panel's next press uses that key and asks the keychain nothing.
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        assert_eq!(
+            rt.block_on(state.retry_keychain_access(jid.into())).unwrap().fingerprint,
+            original.fingerprint
+        );
+        assert_eq!(keychain.reads(), 2, "using the unlocked key reads nothing");
+        assert_eq!(key_files(&dir), files, "no key generated, replaced or deleted");
     }
 
     // ---- encryption-subkey rotation --------------------------------
@@ -3000,6 +3920,7 @@ mod tests {
                 "alice@example.com".into(),
                 web_backup,
                 backup_passphrase.into(),
+                false,
             ))
             .expect("Sequoia must decrypt a backup created by openpgp.js");
         assert_eq!(
@@ -3017,6 +3938,7 @@ mod tests {
                 "bob@example.com".into(),
                 bob_backup,
                 backup_passphrase.into(),
+                false,
             ))
             .expect("Sequoia must decrypt Bob's web backup");
 
@@ -3056,7 +3978,7 @@ mod tests {
 
         let device_b = Arc::new(OpenpgpState::for_testing(fresh_tmp_dir()));
         let err = device_b
-            .import_backup("alice@example.com".into(), backup, "wrong".into())
+            .import_backup("alice@example.com".into(), backup, "wrong".into(), false)
             .await;
         assert!(err.is_err(), "wrong passphrase must not yield a bundle");
 

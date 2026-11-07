@@ -89,6 +89,26 @@ import UniformTypeIdentifiers
         }
     }
 
+    /// FLM-418 R8: the widget is told when the names change owner, and only then.
+    static func widgetReloadOnAccountChange() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func update(_ account: String?) {
+            let done = DispatchSemaphore(value: 0)
+            ShareSuggestions.update(SharedNames(account: account), root: root, deleteAll: { $0(nil) }, delete: { $1(nil) },
+                                    accountChanged: { reloads += 1 }) { _ in done.signal() }
+            precondition(done.wait(timeout: .now() + 5) == .success)
+        }
+        var reloads = 0
+        update("me@example.com")
+        precondition(reloads == 1, "Signing in reloads the widget")
+        update("me@example.com")
+        precondition(reloads == 1, "The same account leaves it alone")
+        update(nil)
+        precondition(reloads == 2, "Signing out reloads it")
+    }
+
     /// An opted-in snapshot that does not cover the sender leaves the server's body alone.
     static func uncoveredBody() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -136,15 +156,10 @@ import UniformTypeIdentifiers
     }
 
     static func fixtureImage() -> Data {
-        let context = CGContext(data: nil, width: 640, height: 480, bitsPerComponent: 8, bytesPerRow: 0,
-                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-        context.setFillColor(CGColor(red: 0.3, green: 0.5, blue: 0.8, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: 640, height: 480))
-        let output = NSMutableData()
-        let destination = CGImageDestinationCreateWithData(output, UTType.png.identifier as CFString, 1, nil)!
-        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
-        precondition(CGImageDestinationFinalize(destination))
-        return output as Data
+        // The mirror/image contracts use real project bytes, shared with the iOS fixture.
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        return try! Data(contentsOf: project.appendingPathComponent("assets/readme/fluux-logo.png"))
     }
 
     static func mirror() throws {
@@ -250,6 +265,36 @@ import UniformTypeIdentifiers
         precondition(NotificationPresentation.intent(from: "invalid", body: "Fixture", names: names) == nil)
     }
 
+    /// Captain's report: tapping the Siri suggestion "Envoyer un message à Babette"
+    /// opened the app on its current screen instead of Babette's conversation.
+    static func suggestionLaunch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let names = SharedNames(contacts: ["babette@example.com": "Babette"], rooms: ["team@muc.example.com": "Team"], account: "me+work@example.com")
+        for destination in [ConversationDestination(account: "me+work@example.com", jid: "babette@example.com", type: "chat"),
+                            ConversationDestination(account: "me+work@example.com", jid: "team@muc.example.com", type: "groupchat")] {
+            let donated = INInteraction(intent: ShareSuggestions.intent(for: destination, names: names, root: root)!, response: nil)
+            // iOS keeps the donation archived and hands a decoded copy back with the tap.
+            let archive = try NSKeyedArchiver.archivedData(withRootObject: donated, requiringSecureCoding: true)
+            let tapped = try NSKeyedUnarchiver.unarchivedObject(ofClass: INInteraction.self, from: archive)!
+            let opened = ShareSuggestions.destination(of: tapped.intent)
+            precondition(opened == destination, "A tapped suggestion must name its own conversation")
+            let link = URLComponents(url: ShortcutConversation(opened!).url(scheme: "net.processone.fluux")!, resolvingAgainstBaseURL: false)!
+            precondition(link.scheme == "net.processone.fluux" && link.host == "shortcut")
+            precondition(Set(link.queryItems!) == [URLQueryItem(name: "account", value: destination.account),
+                                                   URLQueryItem(name: "kind", value: destination.type),
+                                                   URLQueryItem(name: "id", value: destination.jid)])
+        }
+        precondition(ShareSuggestions.intent(for: ConversationDestination(account: "other@example.com", jid: "babette@example.com", type: "chat"), names: names, root: root) == nil,
+                     "Only the signed-in account's conversations are suggested")
+        let other = INSendMessageIntent(recipients: nil, outgoingMessageType: .outgoingMessageText, content: nil, speakableGroupName: nil,
+                                        conversationIdentifier: "babette@example.com", serviceName: nil, sender: nil, attachments: nil)
+        precondition(ShareSuggestions.destination(of: other) == nil, "A conversation id Fluux did not donate opens nothing")
+        precondition(ShareSuggestions.destination(of: INIntent()) == nil, "Only a message suggestion names a conversation")
+        precondition(ShareSuggestions.destination(of: nil) == nil)
+    }
+
     static func roomParticipants() throws {
         let json = #"{"account":"me@example.com","rooms":{"team@muc.example.com":"Team"},"roomParticipants":{"team@muc.example.com":{"ownNick":"Me","nicks":["Alice","Bob","Me"]}}}"#
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -316,12 +361,90 @@ import UniformTypeIdentifiers
         precondition(SharedNames.load(root: root).roomParticipants.isEmpty, "Logout wipes participants")
     }
 
+    /// push_gate sends the room's bare address in `from` and the occupant's nick in `muc_nick`.
+    static func mucNick() {
+        let room = "team@muc.example.com"
+        let json = #"{"account":"me@example.com","contacts":{"alice@example.com":"Alice"},"rooms":{"team@muc.example.com":"Team"},"roomParticipants":{"team@muc.example.com":{"ownNick":"Me","nicks":["Alice","Bob","Me"]}}}"#
+        let names = try! JSONDecoder().decode(SharedNames.self, from: Data(json.utf8))
+        func deliver(_ from: String, _ extra: [String: Any]) -> UNNotificationContent {
+            let content = UNMutableNotificationContent()
+            content.body = "Hello"
+            content.userInfo = ["from": from, "to": "me@example.com"].merging(extra) { $1 }
+            var output: UNNotificationContent?
+            let service = NotificationService()
+            service.loadNames = { names }
+            service.readSnapshot = { nil }
+            service.ledgerRoot = { nil }
+            service.didReceive(UNNotificationRequest(identifier: "muc-nick", content: content, trigger: nil)) { output = $0 }
+            return output!
+        }
+        let shown = deliver(room, ["muc_nick": "Alice"])
+        precondition(shown.title == "Team" && shown.subtitle == "Alice" && shown.interruptionLevel != .passive)
+        let legacy = deliver(room + "/Alice", [:])
+        precondition(legacy.title == shown.title && legacy.subtitle == shown.subtitle)
+        precondition(deliver(room + "/Alice", ["muc_nick": "Bob"]).subtitle == "Bob", "muc_nick wins over the from resource")
+        precondition(deliver(room, ["muc_nick": "Me"]).interruptionLevel == .passive, "Own nick is delivered passively")
+        for absent: [String: Any] in [[:], ["muc_nick": ""], ["muc_nick": 42]] {
+            let result = deliver(room, absent)
+            precondition(result.title == "Team" && result.subtitle.isEmpty, "\(absent)")
+        }
+        let direct = deliver("alice@example.com", ["muc_nick": "Mallory"])
+        precondition(direct.title == "Alice" && direct.subtitle.isEmpty)
+        let unknown = deliver("other@muc.example.com", ["muc_nick": "Mallory"])
+        precondition(unknown.title == "other" && unknown.subtitle.isEmpty)
+        let intent = NotificationPresentation.intent(from: NotificationPresentation.sender(of: ["from": room, "muc_nick": "Alice"], names: names)!, body: "Hello", names: names)!
+        precondition(intent.sender?.displayName == "Alice" && intent.recipients?.map { $0.displayName } == ["Bob"])
+        print("muc_nick passed")
+    }
+
+    /// Accepted room-attribution layout: room identity first, independent of occupancy.
+    static func roomFirst() {
+        let room = "xsf@muc.xmpp.org"
+        for participants in [[:], [room: SharedRoomParticipants(ownNick: "Me", nicks: ["Seve", "Me"])]] {
+            var names = SharedNames(contacts: ["seve@example.com": "Seve"], rooms: [room: "XSF"], account: "me@example.com")
+            names.roomParticipants = participants
+            for nick in ["Seve", ""] {
+                let original = UNMutableNotificationContent()
+                original.subtitle = "Stale server subtitle"
+                original.body = "> finally, XSF funding!"
+                original.threadIdentifier = "server-room-thread"
+                original.sound = .default
+                original.userInfo = ["from": room, "muc_nick": nick, "to": "me@example.com"]
+                let from = NotificationPresentation.sender(of: original.userInfo, names: names)!
+                let incoming = NotificationPresentation.incomingIntent(from: from, body: original.body, names: names)!
+                precondition(incoming.sender?.personHandle?.value == room && incoming.sender?.displayName == names.rooms[room],
+                             "The notification origin is the room, never an occupant")
+                precondition(incoming.speakableGroupName == nil, "Do not restore an occupant-first group heading")
+                let result = NotificationPresentation.content(for: original, names: names)
+                precondition(result.title == names.rooms[room])
+                #if os(iOS)
+                precondition(result.subtitle.isEmpty && result.body == incoming.content)
+                #else
+                precondition(result.subtitle == nick && result.body == original.body)
+                #endif
+                precondition(result.threadIdentifier == original.threadIdentifier)
+                precondition(result.sound != nil && result.userInfo["to"] as? String == "me@example.com")
+                precondition(original.subtitle == "Stale server subtitle", "Do not mutate the request")
+                print("Room alert: title=\(result.title), subtitle=\(result.subtitle), body=\(result.body)")
+            }
+            let direct = NotificationPresentation.incomingIntent(from: "seve@example.com", body: "Hello", names: names)
+            precondition(direct?.sender?.displayName == "Seve" && direct?.content == "Hello")
+        }
+        print("room-first passed")
+    }
+
     static func main() {
         switch CommandLine.arguments[1] {
+        case "room-first":
+            roomFirst()
+        case "muc-nick":
+            mucNick()
         case "room-participants":
             try! roomParticipants()
         case "account-guard":
             accountGuard()
+        case "widget-reload":
+            try! widgetReloadOnAccountChange()
         case "stalled-mirror-cleanup":
             try! stalledMirrorCleanup()
         case "signed-out":
@@ -350,6 +473,8 @@ import UniformTypeIdentifiers
             try! mirror()
         case "intents":
             intents()
+        case "suggestion-launch":
+            try! suggestionLaunch()
         case "conversations":
             conversations()
         case "direct":

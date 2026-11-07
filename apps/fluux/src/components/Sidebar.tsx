@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, type RefObject } from 
 import { useTranslation } from 'react-i18next'
 import { detectRenderLoop, trackSelectorChange } from '@/utils/renderLoopDetector'
 import { useWindowDrag, useRouteSync, useFollowUnarchivedActive } from '@/hooks'
+import { useHingePosture } from '@/hooks/useHingePosture'
 import { useModalStore } from '@/stores/modalStore'
 import { useUpdateAffordance } from '@/stores/appUpdateStore'
 import {
@@ -166,6 +167,11 @@ export function Sidebar({ mobileRailOnly = false, onSelectContact, onStartChat, 
     return () => mediaQuery.removeEventListener('change', handleChange)
   }, [])
 
+  // A half-open foldable iPhone in landscape splits the window at the hinge: the rail and the
+  // list end there, and the width follows the hinge rather than the saved width (.hinge-aside).
+  const hinge = useHingePosture()
+  const hingeColumns = isDesktop && hinge.x !== null
+
   // Handle resize drag
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -218,8 +224,8 @@ export function Sidebar({ mobileRailOnly = false, onSelectContact, onStartChat, 
   return (
     <aside
       ref={sidebarRef}
-      className="relative bg-fluux-sidebar chrome-sidebar flex select-none flex-shrink-0"
-      style={{ width: isDesktop ? sidebarWidth : mobileRailOnly ? 'auto' : '100%' }}
+      className={`relative bg-fluux-sidebar chrome-sidebar flex select-none flex-shrink-0${hingeColumns ? ' hinge-aside' : ''}`}
+      style={{ width: hingeColumns ? undefined : isDesktop ? sidebarWidth : mobileRailOnly ? 'auto' : '100%' }}
     >
       {/* Icon Rail — top clearance is now provided by the desktop AppBar
           (which hosts the macOS traffic lights), so the rail just needs a small
@@ -307,17 +313,17 @@ export function Sidebar({ mobileRailOnly = false, onSelectContact, onStartChat, 
       {/* Main Content */}
       <div className={`${mobileRailOnly ? 'hidden md:flex' : 'flex'} flex-1 flex-col min-w-0`}>
         {/* Header - with drag region for window movement */}
-        <div className="h-14 px-4 flex items-center border-b border-fluux-bg shadow-sm" {...dragRegionProps}>
-          <h1 className="flex-1 font-semibold text-fluux-text truncate">
+        <div data-testid="sidebar-header" className="h-14 px-4 flex items-center border-b border-fluux-bg shadow-sm" {...dragRegionProps}>
+          <div className="flex-1 min-w-0 font-semibold text-fluux-text">
             <ConnectionStepSlot narrowOnly>
-            {sidebarView === 'messages' ? (showArchived ? t('messages.archivedTitle') : t('sidebar.messages'))
-              : sidebarView === 'rooms' ? t('sidebar.rooms')
-              : sidebarView === 'contacts' ? t('sidebar.contacts')
-              : sidebarView === 'admin' ? t('sidebar.admin')
-              : sidebarView === 'settings' ? t('sidebar.settings')
-              : t('sidebar.search')}
+              <h1 className="truncate">{sidebarView === 'messages' ? (showArchived ? t('messages.archivedTitle') : t('sidebar.messages'))
+                : sidebarView === 'rooms' ? t('sidebar.rooms')
+                : sidebarView === 'contacts' ? t('sidebar.contacts')
+                : sidebarView === 'admin' ? t('sidebar.admin')
+                : sidebarView === 'settings' ? t('sidebar.settings')
+                : t('sidebar.search')}</h1>
             </ConnectionStepSlot>
-          </h1>
+          </div>
           {sidebarView === 'messages' && (
             <MessagesHeaderActions
               showArchived={showArchived}
@@ -425,8 +431,8 @@ export function Sidebar({ mobileRailOnly = false, onSelectContact, onStartChat, 
         </div>
       </div>
 
-      {/* Resize Handle - desktop only */}
-      <Tooltip content={t('sidebar.resizeHint')} position="right" delay={800}>
+      {/* Resize Handle - desktop only, and never on a hinge */}
+      {!hingeColumns && <Tooltip content={t('sidebar.resizeHint')} position="right" delay={800}>
         <div
           role="separator"
           aria-orientation="vertical"
@@ -439,7 +445,7 @@ export function Sidebar({ mobileRailOnly = false, onSelectContact, onStartChat, 
           className={`hidden md:block absolute top-0 end-0 w-1 h-full z-50 transition-colors
                       ${isResizing ? 'bg-fluux-brand/40' : isResizeHover ? 'bg-fluux-brand/20' : ''}`}
         />
-      </Tooltip>
+      </Tooltip>}
 
       {/* Add Contact Modal */}
       {showAddContact && (

@@ -1,18 +1,23 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, Navigate } from 'react-router'
 import { useTranslation } from 'react-i18next'
+import { useForgetWrapOnAccountChange } from '@/hooks/useForgetWrapOnAccountChange'
+import { useWrapIdentityAliases } from '@/hooks/useWrapIdentityAliases'
 import { useConnectionStatus, useXMPPContext } from '@fluux/sdk'
 import type { E2EEManager } from '@fluux/sdk'
 import { useE2EEPluginRegistration } from './hooks/useE2EEPluginRegistration'
 import { isKeyLocked } from './e2ee/webPassphraseStore'
 import { attemptCachedUnlockOrPrompt } from '@/e2ee/silentRestore'
 import { probeRemoteIdentityState, identityChoiceFromProbe, pepReaderFor } from './e2ee/secretKeyProbe'
-import type { BackupProbeResult } from './e2ee/OpenPGPPluginBase'
+import type { BackupProbeResult, RestoreResult, OpenPGPPluginBase } from './e2ee/OpenPGPPluginBase'
 import { isOpenpgpEnabled } from './stores/encryptionSettingsStore'
 import { useToastStore } from './stores/toastStore'
 import { useAppUpdateStore } from './stores/appUpdateStore'
 import { UnlockEncryptionDialog } from './components/UnlockEncryptionDialog'
+import { BackupRecoveryDialog } from './components/BackupRecoveryDialog'
+import { KeyPickerDialog } from './components/KeyPickerDialog'
 import { IdentityChoiceDialog } from './components/IdentityChoiceDialog'
+import { KeychainRetryOffer } from './components/KeychainRetryPanel'
 import { RestorePassphraseDialog } from './components/RestorePassphraseDialog'
 import { parseArmorPassphraseFormat } from './e2ee/passphraseFormatHeader'
 import { useWebUnlockDialogStore } from './stores/webUnlockDialogStore'
@@ -21,7 +26,8 @@ import { LoginScreen } from './components/LoginScreen'
 import { ChatLayout } from './components/ChatLayout'
 import { TabBlockedScreen } from './components/TabBlockedScreen'
 import { UpdateModal } from './components/UpdateModal'
-import { useSessionPersistence, getSession } from './hooks/useSessionPersistence'
+import { useSessionPersistence } from './hooks/useSessionPersistence'
+import { getSession } from '@/utils/sessionStorage'
 import { useTabCoordination } from './hooks/useTabCoordination'
 import { useFullscreen } from './hooks/useFullscreen'
 import { useTauriCloseHandler } from './hooks/useTauriCloseHandler'
@@ -42,6 +48,7 @@ import { startSystemNotificationEffect } from '@/effects/systemNotificationEffec
 import { markConnectActive } from './utils/reconnectIntent'
 import { platform } from './platform'
 import { useCustomWindowChrome } from './platform/windowChrome'
+import { installStartupCleanup } from './utils/startupRecovery'
 
 // Fixed title bar height for macOS traffic lights (only used in Tauri on macOS)
 const TITLEBAR_HEIGHT = 28
@@ -83,8 +90,11 @@ function App() {
   // Detect render loops before they freeze the UI
   detectRenderLoop('App')
 
-  const { status } = useConnectionStatus()
+  const { status, jid: accountJid } = useConnectionStatus()
+  useForgetWrapOnAccountChange(status, accountJid)
+  useWrapIdentityAliases()
   const { client } = useXMPPContext()
+  useEffect(() => installStartupCleanup(() => client.disconnect()), [client])
   useMcpBridge(client)
   const { t } = useTranslation()
   const addToast = useToastStore((s) => s.addToast)
@@ -199,6 +209,7 @@ function App() {
   // showWebUnlockDialog: App is the single owner of the connect-time
   // E2EE bootstrap flow.
   const [pendingIdentityChoice, setPendingIdentityChoice] = useState<{
+    manager: E2EEManager
     accountJid: string
     serverBackup: BackupProbeResult
     publishedFingerprints: string[]
@@ -211,7 +222,7 @@ function App() {
   // Holds the armored file content while the user types the file
   // passphrase. Decoupled from `pendingIdentityChoice` so the choice
   // dialog can dismiss as soon as the file is picked.
-  const [pendingImportFile, setPendingImportFile] = useState<string | null>(null)
+  const [pendingImportFile, setPendingImportFile] = useState<{ content: string; manager: E2EEManager } | null>(null)
 
   // Startup reconnect (tab session, remembered FAST token or keychain password).
   // `startupPending` is true from the first render while one is coming or in
@@ -236,10 +247,18 @@ function App() {
     }
   }, [status])
 
+  const [recoveryManager, setRecoveryManager] = useState<E2EEManager | null>(null)
+  const recoveryOffers = useRef(new WeakSet<object>())
+  const [startupPicker, setStartupPicker] = useState<{
+    manager: E2EEManager
+    result: Extract<RestoreResult, { needsPicker: true }>
+  } | null>(null)
+
   const handleE2EERegistered = useCallback(async (manager: E2EEManager) => {
     if (!isOpenpgpEnabled()) return
-    // Connect-time E2EE recovery routing (both platforms). Two
-    // conditions resolve through the same IdentityChoiceDialog:
+    // Only a macOS desktop secret-store refusal uses guided backup recovery.
+    // Recognized desync/corruption, missing keys and other platforms retain
+    // the existing IdentityChoiceDialog:
     //
     //   - `local-key-unrecoverable`: a local key exists but couldn't
     //     be unlocked (keychain/key desync, corruption, missing
@@ -254,12 +273,21 @@ function App() {
       | {
           hasNoLocalKey?: () => Promise<boolean>
           isKeyRecoveryNeeded?: () => boolean
+          isKeyStorageUnavailable?: () => boolean
         }
       | null
       | undefined
     if (accountJid && plugin) {
       try {
         const recoveryNeeded = plugin.isKeyRecoveryNeeded?.() === true
+        if (plugin.isKeyStorageUnavailable?.() && platform().shell === 'desktop' && platform().os === 'macos') {
+          if (client.e2ee !== manager) return
+          if (!recoveryOffers.current.has(plugin)) {
+            recoveryOffers.current.add(plugin)
+            setRecoveryManager(manager)
+          }
+          return
+        }
         const hasNoLocal =
           !recoveryNeeded && plugin.hasNoLocalKey
             ? await plugin.hasNoLocalKey()
@@ -274,6 +302,7 @@ function App() {
           if (client.e2ee !== manager) return
           if (recoveryNeeded || state.hasServerIdentity) {
             setPendingIdentityChoice({
+              manager,
               accountJid,
               ...identityChoiceFromProbe(state),
               reason: recoveryNeeded
@@ -292,6 +321,7 @@ function App() {
         if (client.e2ee !== manager) return
         if (plugin.isKeyRecoveryNeeded?.() === true) {
           setPendingIdentityChoice({
+            manager,
             accountJid,
             ...identityChoiceFromProbe(null),
             reason: 'local-key-unrecoverable',
@@ -331,50 +361,66 @@ function App() {
 
   const handleIdentityRestoreFromServer = useCallback(
     async (passphrase: string) => {
-      const plugin = client.e2ee?.getPlugin('openpgp') as
+      const manager = pendingIdentityChoice?.manager
+      if (!manager || client.e2ee !== manager) throw new Error(t('settings.encryption.recoveryAccountChanged'))
+      const plugin = manager.getPlugin('openpgp') as
         | {
-            restoreSecretKey?: (pp: string) => Promise<unknown>
+            restoreSecretKey?: (pp: string) => Promise<RestoreResult>
           }
         | null
         | undefined
       if (!plugin?.restoreSecretKey) {
         throw new Error(t('settings.encryption.backupPluginUnavailable'))
       }
-      await plugin.restoreSecretKey(passphrase)
+      const result = await plugin.restoreSecretKey(passphrase)
+      if (!manager || client.e2ee !== manager) return
+      if ('needsPicker' in result) {
+        setStartupPicker({ manager, result })
+        setPendingIdentityChoice(null)
+        return
+      }
       setPendingIdentityChoice(null)
       // The plugin signals key-unlocked itself now (it re-runs deferred
       // decrypts via the SDK), so no notifyE2EEKeyUnlocked() call is needed.
       addToast('success', t('settings.encryption.restoreSuccess'))
     },
-    [client, t, addToast],
+    [client, pendingIdentityChoice, t, addToast],
   )
 
   const handleIdentityImportFromFile = useCallback(async () => {
-    const plugin = client.e2ee?.getPlugin('openpgp') as
+    const manager = pendingIdentityChoice?.manager
+    if (!manager || client.e2ee !== manager) throw new Error(t('settings.encryption.recoveryAccountChanged'))
+    const plugin = manager.getPlugin('openpgp') as
       | { pickKeyFile?: () => Promise<string | null> }
       | null
       | undefined
     if (!plugin?.pickKeyFile) return
     const content = await plugin.pickKeyFile()
-    if (!content) return
+    if (!content || !manager || client.e2ee !== manager) return
     // Close the choice dialog and hand off to the passphrase dialog.
     setPendingIdentityChoice(null)
-    setPendingImportFile(content)
-  }, [client])
+    setPendingImportFile({ content, manager })
+  }, [client, pendingIdentityChoice, t])
 
   const handleImportFilePassphrase = useCallback(
     async (passphrase: string) => {
-      if (!pendingImportFile) return
+      if (!pendingImportFile || client.e2ee !== pendingImportFile.manager) return
       const plugin = client.e2ee?.getPlugin('openpgp') as
         | {
-            importKeyFromFile?: (armored: string, pp: string) => Promise<unknown>
+            importKeyFromFile?: (armored: string, pp: string) => Promise<RestoreResult>
           }
         | null
         | undefined
       if (!plugin?.importKeyFromFile) {
         throw new Error(t('settings.encryption.backupPluginUnavailable'))
       }
-      await plugin.importKeyFromFile(pendingImportFile, passphrase)
+      const result = await plugin.importKeyFromFile(pendingImportFile.content, passphrase)
+      if (client.e2ee !== pendingImportFile.manager) return
+      if ('needsPicker' in result) {
+        setStartupPicker({ manager: pendingImportFile.manager, result })
+        setPendingImportFile(null)
+        return
+      }
       setPendingImportFile(null)
       addToast('success', t('settings.encryption.restoreSuccess'))
     },
@@ -382,7 +428,9 @@ function App() {
   )
 
   const handleIdentityReplaceIdentity = useCallback(async () => {
-    const plugin = client.e2ee?.getPlugin('openpgp') as
+    const manager = pendingIdentityChoice?.manager
+    if (!manager || client.e2ee !== manager) throw new Error(t('settings.encryption.recoveryAccountChanged'))
+    const plugin = manager.getPlugin('openpgp') as
       | { retireAndGenerateIdentity?: () => Promise<unknown> }
       | null
       | undefined
@@ -390,8 +438,17 @@ function App() {
       throw new Error(t('settings.encryption.backupPluginUnavailable'))
     }
     await plugin.retireAndGenerateIdentity()
+    if (client.e2ee !== manager) return
     setPendingIdentityChoice(null)
     addToast('success', t('settings.encryption.restoreSuccess'))
+  }, [client, pendingIdentityChoice, t, addToast])
+
+  // FLM-304: the macOS keychain retry inside the choice unlocked the existing key.
+  // Only the choice that asked closes; a newer one opened meanwhile stays.
+  const handleIdentityKeychainUnlocked = useCallback((choice: NonNullable<typeof pendingIdentityChoice>) => {
+    if (client.e2ee !== choice.manager) return
+    setPendingIdentityChoice(current => current === choice ? null : current)
+    addToast('success', t('settings.encryption.keychainRetry.success'))
   }, [client, t, addToast])
 
   // Check if we have a stored session (for reconnect scenarios)
@@ -503,7 +560,24 @@ function App() {
           onClose={() => closeWebUnlockDialog()}
         />
       )}
-      {pendingIdentityChoice && (
+      {recoveryManager && <BackupRecoveryDialog client={client} manager={recoveryManager}
+        onClose={() => setRecoveryManager(null)} onRestored={() => {
+          setRecoveryManager(null)
+          addToast('success', t('settings.encryption.restoreSuccess'))
+        }} />}
+      {startupPicker && client.e2ee === startupPicker.manager && <KeyPickerDialog
+        candidates={startupPicker.result.candidates} onCancel={() => setStartupPicker(null)}
+        onConfirm={async fingerprint => {
+          const { manager, result } = startupPicker
+          if (client.e2ee !== manager) return
+          const plugin = manager.getPlugin('openpgp') as OpenPGPPluginBase
+          await plugin.installSelectedKey(result.backupContext.message, result.backupContext.passphrase, fingerprint,
+            { typedPassphrase: result.backupContext.typedPassphrase })
+          if (client.e2ee !== manager) return
+          setStartupPicker(null)
+          addToast('success', t('settings.encryption.restoreSuccess'))
+        }} />}
+      {pendingIdentityChoice && client.e2ee === pendingIdentityChoice.manager && (
         <IdentityChoiceDialog
           reason={pendingIdentityChoice.reason}
           serverBackup={pendingIdentityChoice.serverBackup}
@@ -512,9 +586,17 @@ function App() {
           onImportFromFile={handleIdentityImportFromFile}
           onReplaceIdentity={handleIdentityReplaceIdentity}
           onCancel={() => setPendingIdentityChoice(null)}
+          advanced={pendingIdentityChoice.reason === 'local-key-unrecoverable' ? ({ onBusyChange }) => (
+            <KeychainRetryOffer
+              plugin={pendingIdentityChoice.manager.getPlugin('openpgp')}
+              hintAction={t('settings.encryption.identityChoice.importFromFileTitle')}
+              onBusyChange={onBusyChange}
+              onUnlocked={() => handleIdentityKeychainUnlocked(pendingIdentityChoice)}
+            />
+          ) : undefined}
         />
       )}
-      {pendingImportFile && (
+      {pendingImportFile && client.e2ee === pendingImportFile.manager && (
         <RestorePassphraseDialog
           title={t('settings.encryption.importFileDialogTitle')}
           body={t('settings.encryption.importFileDialogBody')}
@@ -523,7 +605,7 @@ function App() {
           // free-text entry with a reveal toggle, no autofill, trimming. A Fluux
           // backup file (Passphrase-Format: xep0373) gets the masked dashed input.
           mode="import"
-          isBackupCode={parseArmorPassphraseFormat(pendingImportFile) === 'xep0373'}
+          isBackupCode={parseArmorPassphraseFormat(pendingImportFile.content) === 'xep0373'}
           onConfirm={handleImportFilePassphrase}
           onCancel={() => setPendingImportFile(null)}
         />

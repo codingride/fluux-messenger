@@ -56,6 +56,8 @@ export interface UseDirectionalHistoryLoadsInput {
   conversationId: string
   firstMessageId: string | undefined
   messageCount: number
+  /** The store's interior placement version for this window; see `DirectionalHistoryWindow`. */
+  interiorPlacementVersion: number
   windowAtLiveEdge: boolean | undefined
   isLoadingOlder: boolean | undefined
   isLoadingNewer: boolean | undefined
@@ -76,6 +78,46 @@ export interface DirectionalHistoryLoads {
    * transition depends on it.
    */
   applyReleaseDecision: (decision: DirectionalHistoryReleaseDecision) => void
+  /**
+   * Submit a fresh positioning request for a load that is still in flight after its first restore,
+   * so the window shift that just landed is restored too. Returns the new request's generation, or
+   * null when the controller refused it. Stable identity.
+   */
+  restartRestore: (saved: DirectionalHistorySnapshot) => number | null
+}
+
+/** Submit the request that holds the reader's anchor across a load's window shift. */
+function beginRestoreRequest(
+  ports: DirectionalHistoryLoadPorts,
+  saved: DirectionalHistorySnapshot,
+  event: 'directional-history-capture' | 'directional-history-restart',
+): number | null {
+  const request = runScrollShadowSafely({
+    event,
+    conversationId: saved.conversationId,
+    fallback: null,
+    observe: () => ports.beginDirectionalHistory({
+      conversationId: saved.conversationId,
+      desired: {
+        kind: 'anchor',
+        // A restart keeps the row the load's first restore held and its place, which follow the
+        // reader's scroll after capture; the capture row and offset are only where the reader
+        // started.
+        messageId: saved.placementAnchorId ?? saved.anchorMessageId,
+        placement: {
+          kind: 'top-offset',
+          offsetPx: pixelOffset(
+            saved.placementOffsetFromTop ?? saved.anchorOffsetFromTop,
+          ),
+        },
+      },
+      distanceFromBottom: pixelOffset(saved.distanceFromBottom),
+      executor: ports.buildExecutor(saved),
+    }) ?? null,
+  })
+  if (!request) return null
+  ports.getCoordinator()?.attachGeneration(saved.requestId, request.generation)
+  return request.generation
 }
 
 export function useDirectionalHistoryLoads({
@@ -83,6 +125,7 @@ export function useDirectionalHistoryLoads({
   conversationId,
   firstMessageId,
   messageCount,
+  interiorPlacementVersion,
   windowAtLiveEdge,
   isLoadingOlder,
   isLoadingNewer,
@@ -154,6 +197,7 @@ export function useDirectionalHistoryLoads({
       historyComplete: Boolean(isHistoryComplete),
       windowAtLiveEdge: windowAtLiveEdge !== false,
       travelledAway: ports.hasTravelledAway(conversationId, edge),
+      interiorPlacementVersion,
       capture: () => {
         capture = browser.capture(firstMessageId ?? '', messageCount)
         return capture?.facts ?? {
@@ -174,27 +218,7 @@ export function useDirectionalHistoryLoads({
     if (result.clearTravel) ports.clearTravel(conversationId, edge)
 
     const saved = result.snapshot
-    const request = runScrollShadowSafely({
-      event: 'directional-history-capture',
-      conversationId,
-      fallback: null,
-      observe: () => ports.beginDirectionalHistory({
-        conversationId,
-        desired: {
-          kind: 'anchor',
-          messageId: saved.anchorMessageId,
-          placement: {
-            kind: 'top-offset',
-            offsetPx: pixelOffset(saved.anchorOffsetFromTop),
-          },
-        },
-        distanceFromBottom: pixelOffset(saved.distanceFromBottom),
-        executor: ports.buildExecutor(saved),
-      }) ?? null,
-    })
-    if (request) {
-      ports.getCoordinator()?.attachGeneration(saved.requestId, request.generation)
-    }
+    beginRestoreRequest(ports, saved, 'directional-history-capture')
     return { saved, capture }
   }
 
@@ -245,10 +269,17 @@ export function useDirectionalHistoryLoads({
     runLoad(started.saved, () => onScrollToTop?.())
   }
 
+  const restartRestore = useCallback(
+    (saved: DirectionalHistorySnapshot) =>
+      beginRestoreRequest(portsRef.current, saved, 'directional-history-restart'),
+    [],
+  )
+
   return {
     triggerLoadOlder,
     triggerLoadNewer,
     handleLoadEarlier,
     applyReleaseDecision,
+    restartRestore,
   }
 }

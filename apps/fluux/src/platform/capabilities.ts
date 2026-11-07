@@ -121,6 +121,8 @@ export interface PlatformCapabilities {
    * XMPP push app server (XEP-0357).
    */
   readonly usesNativePush: boolean
+  /** The app writes the unread list a home-screen widget shows. */
+  readonly publishesUnreadWidget: boolean
   /** Accepted gestures can use UIKit feedback generators. */
   readonly nativeHaptics: boolean
 
@@ -273,6 +275,7 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     usesWebPush: web,
     nativeHaptics: ios,
     usesNativePush: shell === 'mobile' && os === 'ios',
+    publishesUnreadWidget: shell === 'mobile' && os === 'ios',
 
     // Window and process. macOS overlays its window controls on the content,
     // Windows has no native frame at all, Linux keeps a native title bar.
@@ -304,4 +307,19 @@ export function deriveCapabilities(shell: PlatformShell, os: PlatformOS): Platfo
     hasMcpBridge: desktop,
     followsSystemTextSize: ios,
   }
+}
+
+/** Stream Management resumption request for the standard window: ten minutes. */
+const SM_RESUME_STANDARD_SECONDS = 600
+/** Provisional native-iOS request: suspended apps may be away overnight. */
+const SM_RESUME_NATIVE_IOS_SECONDS = 24 * 60 * 60
+
+/**
+ * How long to ask the server to keep a dropped XMPP session resumable (XEP-0198).
+ *
+ * Only the native iOS/iPadOS app asks for a day; iOS browsers, Android and
+ * desktop keep ten minutes. Read from the platform record, not the user agent.
+ */
+export function streamManagementMaxSeconds(host: Pick<PlatformCapabilities, 'shell' | 'os'>): number {
+  return host.shell === 'mobile' && host.os === 'ios' ? SM_RESUME_NATIVE_IOS_SECONDS : SM_RESUME_STANDARD_SECONDS
 }

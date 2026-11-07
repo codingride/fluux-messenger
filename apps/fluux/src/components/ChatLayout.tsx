@@ -43,12 +43,13 @@ import { useEventsSoundNotification } from '@/hooks/useEventsSoundNotification'
 import { useEventsDesktopNotifications } from '@/hooks/useEventsDesktopNotifications'
 import { useSDKErrorToasts } from '@/hooks/useSDKErrorToasts'
 import { useReactionNotifications } from '@/hooks/useReactionNotifications'
+import { reportStartupShell } from '@/utils/startupRecovery'
 import { useEasterEggNotifications } from '@/hooks/useEasterEggNotifications'
 import { useFocusZones, useViewNavigation, isMobileWeb, isSmallScreen, useWindowVisibility, useRouteSync, useDayBoundaryWatcher, type FocusZoneRefs } from '@/hooks'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { useIosPaneNavigation } from '@/hooks/useIosPaneNavigation'
 import { useDeepLink } from '@/hooks/useDeepLink'
-import { saveViewState, getSavedViewState, type ViewStateData } from '@/hooks/useSessionPersistence'
+import { saveViewState, getSavedViewState, type ViewStateData } from '@/utils/sessionStorage'
 import { useModalStore } from '@/stores/modalStore'
 import { Server, ShieldOff, MessageCircle, Hash, Users, Search, Settings, Plus, ArrowLeft, Loader2, type LucideIcon } from 'lucide-react'
 
@@ -57,6 +58,7 @@ import { Server, ShieldOff, MessageCircle, Hash, Users, Search, Settings, Plus, 
  * now lives in the global modalStore, so no context provider is needed.
  */
 export function ChatLayout() {
+  useEffect(() => { void reportStartupShell() }, [])
   return <ChatLayoutContent />
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "fluux"
-version = "0.18.0"
+version = "0.18.2"
 description = "A productive messaging client that's pleasant to use."
 authors = ["ProcessOne"]
 license = "AGPL-3.0-or-later"
@@ -13,8 +13,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = []
-# Investigation #1386: explicit standard-identity test mode; never enabled by ordinary builds.
-macos-communication-test = []
+# Communication Notifications for standard-identity macOS releases; Dev stays excluded.
+macos-communication = []
+# Disposable unsigned qualification only: no real secrets or notifications.
+startup-recovery-lab = []
 # Enabled by the production Tauri config; local Dev builds keep ring only.
 production-tls = ["rustls/aws_lc_rs", "rustls/prefer-post-quantum"]
 
@@ -51,6 +53,7 @@ tauri-plugin-share-inbox = { path = "plugins/share-inbox" }
 tauri-plugin-push = { path = "plugins/push" }
 tauri-plugin-share-sheet = { path = "plugins/share-sheet" }
 tauri-plugin-ios-feedback = { path = "plugins/ios-feedback" }
+tauri-plugin-widgets = { path = "plugins/widgets" }
 tauri-plugin-background-task = { path = "plugins/background-task" }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
@@ -150,11 +153,18 @@ tauri-plugin-single-instance = { version = "=2.5.3", features = ["deep-link"] }
 keyring = { version = "3", features = ["windows-native", "sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
+# Mock runtime verifies desktop plugin registration without launching an app.
+tauri = { version = "2", features = ["test"] }
 # test-util enables tokio's paused-time test runtime (`#[tokio::test(start_paused = true)]`),
 # used to make the Happy Eyeballs connection-racing tests deterministic without real waits.
 # Test-only: not pulled into release builds.
 tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
+
+# Same version the app's windowing already resolves to. The Windows minimize
+# tests drive a real window with it (tests/windows_minimize_to_tray.rs).
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+tao = "0.37"
 
 # user-idle for Windows (macOS uses ioreg, Linux uses direct X11 calls)
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -183,8 +193,15 @@ notify-rust = "4.17"
 webkit2gtk = { version = "=2.0.2", features = ["v2_32"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Reuse the vendored runtime dependency; its narrow startup termination gate
+# preserves Wry's navigation delegate and default behavior after startup.
+wry = { version = "=0.57.0", default-features = false, features = ["fluux-startup-recovery"] }
 # Same Security framework wrapper used by iOS; macOS retains file-based items.
 security-framework = "3"
+# Exact native references for interruption-safe retirement of legacy copies.
+# Both packages already occur in the Security framework dependency graph.
+security-framework-sys = "2"
+core-foundation = "0.10"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSBundle", "NSNotification", "NSString", "NSThread", "NSProcessInfo", "NSDictionary", "NSArray", "NSError", "NSURL"] }
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
@@ -218,10 +235,17 @@ strip = "debuginfo"  # Use debuginfo instead of true to keep symbols needed by T
 # Xcode 27 internalizes SwiftRs.o's C exports. Keep the runtime shim global in
 # the Tauri archive only (Brendonovich/swift-rs#80); remove this pin after release.
 swift-rs = { git = "https://github.com/alchaplinsky/swift-rs", rev = "aaf38d45ab3a4b10a5af3a3dbc64424e998fae8c" }
-# wry 0.57.0 with tauri-apps/wry#1856 backported: custom-protocol responses are
-# delivered on the main queue, so a WKURLSchemeTask stopped by WebKit (page
-# reload, WebContent process recycled after sleep) cannot race the did* calls
-# and abort the process (tauri-apps/wry#1822). Drop once Tauri ships a wry
-# release containing the fix (#1502).
+# wry 0.57.0 carries two patches (vendor/wry/FLUUX_PATCH.md): #1856 delivers
+# custom-protocol responses on the main queue, avoiding stopped-task races
+# (#1822/#1502); the macOS fluux-startup-recovery feature gates the runtime's
+# termination reload through the host's single retry budget. Remove this vendor
+# only after Tauri includes #1856 AND provides an equivalent termination hook,
+# the host no longer needs the custom callback registration, and native regression proof passes.
 # For the crate-local lint allowances, see vendor/wry/FLUUX_PATCH.md.
 wry = { path = "vendor/wry" }
+
+# FLM-343: opt-in native journey with injected stores, never an installed app.
+[[test]]
+name = "backup_recovery_host"
+path = "tests/backup_recovery_host.rs"
+harness = false

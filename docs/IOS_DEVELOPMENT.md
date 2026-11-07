@@ -279,8 +279,9 @@ What runs natively:
 - **OpenPGP.** The same Sequoia engine as the desktop. The key is unlocked from
   the keychain at login, so no passphrase is asked per session, and key
   rotation is available.
-- **Notifications.** Local notifications go through the OS. Remote push uses
-  APNs and XEP-0357 (see [Remote push notifications](#remote-push-notifications)).
+- **Notifications.** Local notifications go through the OS. Room-picture rendering
+  in iOS system banners remains unverified; in-app room toasts are separate.
+  Remote push uses APNs and XEP-0357 (see [Remote push notifications](#remote-push-notifications)).
   Tapping a notification attributed to the signed-in account opens its conversation.
   See [badge snapshot semantics](../README.md#siri-and-shortcuts-on-ios) for what
   the icon counts. A conversation's notifications are removed once it is read. Pushes whose `from` names no conversation (neutral alerts, or a
@@ -294,6 +295,8 @@ What runs natively:
   [Receive a shared link, document, or image](#receive-a-shared-link-document-or-image)).
 - **`xmpp:` links.** The app registers the `xmpp` URL scheme. A link opens the
   conversation, or prefills the login screen when no account is connected.
+- **Foldable iPhone hinge.** Half open, the layout splits at the hinge (see
+  [Foldable iPhone hinge](#foldable-iphone-hinge)).
 
 Not available yet:
 
@@ -313,6 +316,48 @@ Not available yet:
 - **Distribution.** TestFlight only; there is no App Store release yet.
 
 Validate on a device before trusting a build with existing accounts or keys.
+
+## Foldable iPhone hinge
+
+On a foldable iPhone, such as the iPhone Duo, the native host reports the hinge
+to the page as CSS variables on `<html>` (`HingeReporter.swift`,
+`HingeLayout.swift` in the `ios-feedback` plugin). It uses only public UIKit
+APIs from iOS 27.1:
+
+- `--fluux-device-posture`: `folded` while `UIHingeInteraction` reports the
+  hinge partially open, `flat` when it is fully open or closed.
+- `--fluux-hinge-x` or `--fluux-hinge-y`: the fold, in CSS pixels from the web
+  view's left or top edge. It is the middle of the web view's division region,
+  `UIView.reservedRegions(kind: .division)`. The Duo's inner screen reports a
+  40-point band around 475.5 points; the cover screen reports none.
+- `--fluux-hinge-margin`: how far buttons keep from the fold on each side, from
+  the region's margins: 20 points on the Duo.
+
+UIKit sends no update when the division region appears. Unfolding from the
+cover screen, the hinge reports half open before the inner screen has its band,
+so while half open without a line the host looks again every quarter second,
+for up to ten seconds after the last change.
+
+Half open in landscape, the rail and the conversation list end at the fold and
+the chat starts there. The list's resize handle is hidden, and the saved width
+returns when the device opens flat. Half open in portrait, the messages end
+above the fold and the composer starts below it. Both sides keep their content
+the margin away from the fold. Fully open, closed, and every other device keep
+the usual layout.
+
+Known limit, accepted: half open in portrait with the keyboard open, the
+composer stays just above the fold. iOS docks the keyboard below the fold and
+ends the page above it, so the page has no room below the fold for the
+composer. The `hinge-layout` suite keeps this case: with the page ending above
+the fold, the composer sits at the bottom of the page.
+
+Building the reporter needs the iOS 27.1 SDK. Older SDKs, such as the one CI
+uses, leave it out, and the page then lays out flat.
+`npm run test:ios-hinge` checks the line and margin against the regions the
+Duo simulator reported. The `hinge-layout` Playwright suite
+(`e2e/hinge-layout.ts`) checks the layouts with the same variables. To drive
+the Duo's hinge in Simulator, see
+[iPad and iPhone Duo simulators](qa/ipad-iphone-duo-simulators.md#flm-177-environment-and-method).
 
 ## Native localStorage
 
@@ -365,6 +410,41 @@ For changes to the native host, run `cargo test --locked` and
 preparation has its own `npm run test:ios-icons` check. See also
 [Tauri mobile prerequisites](https://v2.tauri.app/start/prerequisites/#ios).
 
+## Unread conversations widget
+
+The `FluuxWidgets` extension (iOS 17 or later; the app itself still supports iOS 15) lists the
+conversations with unread messages: a home-screen widget in small, medium and large sizes, and a
+lock-screen widget (circular and inline) that shows only the unread total. A row holds the name, the
+unread count, an `@` marker for a mention and the time of the last message, never message text.
+Tapping a row opens that conversation through the `net.processone.fluux://shortcut` link the Shortcuts
+actions already use.
+
+The widget never connects to the server. It reads `UnreadWidget.json` from the App Group folder:
+
+- The app writes it. `unreadConversations` (SDK) selects the rows by the app icon badge's rule, so a
+  quiet room does not appear; `utils/unreadWidget.ts` builds the list, with `total` equal to the badge,
+  and the `widgets` plugin (`plugins/widgets`) writes the file and asks WidgetKit to redraw. It writes
+  nothing off iOS (`publishesUnreadWidget`), and an empty list on sign-out.
+- While the app is suspended, a push that raises the badge adds its conversation to the file
+  (`NotificationService.swift`, `UnreadList.recordPush`). Reloading a widget from a notification
+  extension is undocumented and unreliable: the file is right, but iOS may redraw only when it chooses
+  or when the app next opens.
+- Avatars come from the `Avatars/` copies the notification mirror already keeps.
+
+The Swift model (`plugins/widgets/ios/Sources/UnreadList.swift`) is compiled by the plugin, the
+widget and the notification extension. Strings are English and French (`mobile/ios/Widgets/Resources`).
+
+**Apple setup.** The widget has its own App ID, `<application identifier>.widgets`, joined to the
+existing App Group `group.<application identifier>.share`. It needs no push or keychain capability.
+Create the App ID and its development and App Store provisioning profiles in Apple Developer before
+the first signed build: automatic signing would otherwise create the App ID silently, visible to the
+whole team. The demo identity needs `<demo identifier>.widgets` in the demo's own group.
+
+Checks: `npm run test:ios-notifications` (list model and the push hook), `npm run test:ios-extensions`,
+and `npm run test:ios-build-scripts` (the install and TestFlight scripts require the widget and check
+its signature and group). A simulator build compiles the extension; the gallery and a push while
+suspended need a signed build on a device.
+
 ## Receive a shared link, document, or image
 
 Re-run `npm run tauri:ios:init` after adding or updating the sharing plugin.
@@ -402,7 +482,7 @@ file's own signature before allowing the larger size. Multi-file selections are
 not advertised. The normal server upload limit still applies. Imports belong to this installed app, not
 to a particular XMPP account: the user chooses the recipient after signing in.
 The extension cannot send messages itself. Successful sends donate account-bound
-conversation metadata to iOS for share-sheet suggestions. Logout, account changes,
+conversation metadata to iOS for share-sheet and Siri suggestions. Logout, account changes,
 and removed contacts, rooms or local conversations remove their donations.
 Suggestions never authorize a send without recipient confirmation.
 
@@ -532,20 +612,47 @@ and the extension rechecks ownership at handoff.
 The app server sends notifications with `mutable-content`. For notifications belonging to the signed-in account,
 the `FluuxNotification` service extension replaces the title with the sender's name, read from `NotificationNames.json` in the App Group container, which the app keeps up to
 date with the roster and the joined rooms. A contact shows its name. A room shows the room name as title and the
-nick as subtitle, provided the app server keeps the occupant's resource in `from`. An unknown sender shows the local
+nick on the first message line. The nick comes from the push's `muc_nick` attribute when the app server sends the room's bare address in `from`, otherwise from the resource of `from` (see [PUSH_PAYLOAD.md](PUSH_PAYLOAD.md)). Without either, the room name is shown alone. An unknown sender shows the local
 part of its JID. Enable the App Group `group.net.processone.fluux.share` for the App ID
 `net.processone.fluux.notification` as well, and regenerate its provisioning profile.
 
-Remote pushes use iOS Communication Notifications. The main app declares
+Remote pushes use iOS Communication Notifications. A known room's incoming intent
+identifies the room by its bare JID, room name and cached room picture, never an
+occupant identity with a room picture. The nickname starts the message text, followed
+by the unchanged message; a missing nickname adds no prefix. This keeps the room
+first without the occupant-first heading of a group-message intent. Missing or corrupt
+room pictures use the app-icon fallback, never an occupant/contact picture. The mirror
+is read without staging media attachments or consuming its files.
+
+This attributes incoming room alerts to the room in iOS communication metadata;
+Focus filtering can differ from ordinary alerts and needs device qualification.
+Direct-message intents and outgoing group share suggestions remain unchanged.
+Local iOS system room alerts still use `room — nick` (room alone when the nick is
+missing), because the notification plugin has no subtitle field; existing local
+attachments remain.
+
+The main app declares
 `INSendMessageIntent` in `NSUserActivityTypes` and the
 `com.apple.developer.usernotifications.communication` entitlement. Enable
 **Communication Notifications** on the main App ID in Apple Developer, then
 refresh its provisioning profiles (automatic signing refreshes them at the next
-device build). The notification extension constructs and donates an incoming
-message intent and applies it to the notification. A direct message uses the
-contact's image; a group message uses the room name and room image, with the
-occupant's nick as the sender. Missing or invalid images fall back to ordinary
-notification presentation.
+device build). For direct messages, the notification extension constructs and
+donates an incoming message intent and applies it to the notification using the
+contact's image. Missing or invalid images retain the existing fallback behavior.
+
+The native room-image regression runs with
+`FLUUX_ROOM_AVATAR_ADHOC=1 FLUUX_ROOM_AVATAR_RESULTS=/absolute/output /bin/bash scripts/native-tests/NotificationRoomAvatar/run.sh`
+from the project root. It uses production presentation sources, real project images
+and a sandbox-only mirror adapter. The visual journey checks a distinct direct-image
+control and captures settled compact, expanded and Notification Center room views.
+Communication rendering requires the fixture's communication entitlement and temporary
+ad hoc simulator signature (identity `-`); no saved certificate, development team,
+provisioning profile, account or Keychain is used. An unsigned host does not qualify
+the image path. Signature and entitlement metadata are retained with the results.
+This proves the native producer and simulator rendering, not APNs extension execution
+or physical-device behavior. Use `FLUUX_ROOM_AVATAR_ITERATIONS=10` for consecutive runs.
+Set `FLUUX_ROOM_AVATAR_NATIVE_ONLY=1` without `FLUUX_ROOM_AVATAR_ADHOC` for unsigned,
+screen-free metadata checks; these do not replace settled image acceptance.
 
 The dedicated iOS module lives under
 `plugins/push/ios/Sources/NotificationAvatars`; the push plugin compiles it through
@@ -575,33 +682,50 @@ The mirror also carries `roomParticipants`, keyed by the same room bare JID as
 `rooms` and `avatars`. Each entry contains the current user's room nickname and
 the last-known occupant nicknames, without real member JIDs. Joined rooms publish
 their occupancy after self-presence is available. Suspension retains that snapshot;
-room removal, logout and account changes clear it. The incoming communication
-intent supplies the other occupants as recipients, excluding the sender and
-current user as required by Apple's
-[communication notification contract](https://developer.apple.com/documentation/usernotifications/implementing-communication-notifications).
-The room image stays on `speakableGroupName`, never on the occupant sender.
-Legacy mirrors, unknown senders and unavailable occupancy retain the existing
-presentation fallback; a two-person snapshot does not invent a third participant.
+room removal, logout and account changes clear it. The extension still uses the
+own nick to suppress self-sent room messages. Incoming room-origin presentation
+does not depend on recipients or occupancy: two-person rooms and unavailable
+occupancy use the same room-first name and nickname/message rule. Generic
+`NotificationPresentation.intent()` fixtures still cover Apple's recipient and
+group-image contracts separately; they do not describe outgoing share suggestions,
+which use `ShareSuggestions.intent()`.
 
-`npm run test:ios-notifications` uses synthetic native fixtures for lookup,
-resizing, pruning, account isolation, missing images and intent construction.
+`npm run test:ios-notifications` uses native fixtures and real project image bytes for
+lookup, resizing, pruning, account isolation, missing images and intent construction.
 The macOS harness cannot exercise iOS-only group-image assignment or system
 content updates; simulator compilation covers those APIs. Real-device acceptance
-requires remote pushes with fixture identities: direct and room avatars,
-missing-avatar fallback, avatar replacement/removal, logout, and delivery while
-locked after first unlock. Simulator builds and fixtures do not prove APNs
-extension execution or the rendered Notification Center appearance. Local
-notifications posted while the app runs are a separate follow-up.
+requires remote pushes with fixture identities: room above nick, missing nick,
+two-person/unknown occupancy, direct-message avatars, logout, and delivery while
+locked after first unlock. Metadata tests and compilation do not prove rendered
+Notification Center appearance. The separate qualified simulator journey captures
+system views but does not prove APNs extension execution or a signed physical iPhone.
+Room-origin alerts use only the room's cached image; a missing/corrupt image never
+selects an occupant picture. Local attachments are unchanged. Inspect settled compact
+and expanded captures; metadata and animation frames are not rendered-image acceptance.
 
-On a signed iPhone build, check the room-avatar correction manually:
+In-app room toasts on the web and iOS use the room picture (or the shared # fallback),
+with the sender first and the room name and message below. Browser combined-count
+summaries name the room above the count instead of attributing several messages
+to the latest sender; they keep the picture, separate dismiss control and navigation.
+In-app banners do not change generic status toasts or system-notification routing.
+`useSoundNotification` remains the owner of local message audio and its
+enabled/disabled preference.
+
+To qualify room-first presentation on a signed iPhone build:
 
 1. Join a fixture room with an avatar and at least three occupants, then suspend
    Fluux after the mirror settles and receive a message from a known occupant.
-   Verify the room avatar, room name and sender nickname in Notification Center.
-2. Repeat without a room avatar, then in a two-person room; confirm the existing
-   fallback remains readable. Receive a direct message and verify its contact avatar.
-3. Change the room avatar and repeat; remove the room or switch/logout the account
-   and confirm stale room metadata is not shown for the previous account.
+   Verify the room name above the sender nickname on the first message line, followed
+   by the unchanged message text in Notification Center. Verify the room's own image
+   and the app badge in the settled compact card and expanded alert, not an occupant image.
+2. Repeat without a nick, without a room avatar, then in a two-person room;
+   confirm the room-only or room-first presentation. Without a room avatar, verify
+   that neither view substitutes a sender image or shows a stale room image.
+   Receive a direct message and verify its existing communication treatment and
+   contact avatar.
+3. Receive a local room alert and verify `room — nick` and existing attachments.
+   Check taps, grouping, sound and badge. Remove the room or switch/logout the
+   account and confirm stale room metadata is not shown for the previous account.
 
 For grouping in Notification Center, the extension preserves an existing APNs `thread-id`
 (`UNNotificationContent.threadIdentifier`). When it is empty, the extension uses the bare JID from `from`:
@@ -723,9 +847,31 @@ rollback is conservative. A selected original or app notification is reserved be
 handoff: a crash or submission failure may miss a preview, and that claim is never retried.
 Read/revocation checks narrow the final handoff race; OS presentation is not transactional.
 
-Pushes carry no exact event ID. Catch-up can select a later eligible message, and a completed
-archive query cannot identify a transient event or an event not yet visible in MAM. Such empty
-results remain generic. Exact targeting needs the independent push-server change.
+Standard pushes carry no exact event ID. Catch-up can select a later eligible message,
+and a completed archive query cannot identify a transient event or an event not yet visible
+in MAM. Empty, failed or duplicate-only lookups retain the individual push's filtered
+transport body; only encrypted/recognized placeholders remain generic. Matching stays
+best-effort and entirely client-side, with no custom push ID or ejabberd change required.
+Further improvements must work with standard payloads or wait for Apple's notification
+filtering entitlement; an exact server-pairing change is not planned.
+
+Preview workers hold `fast-token.lock` from credential loading through the network lookup
+and recording its FAST successor/refusal. The app never waits on that network lock:
+`preview-state.lock` protects only short capability and credential transactions, including
+app publication/revocation, worker credential loading and the final capability-check/write.
+Revocation and sign-out can therefore clear the capability and credentials while a lookup
+is active; its late result cannot restore them. A queued worker loads the latest credential
+only after taking the sign-in lock, and checks cancellation and capability under the state
+lock before signing in. Missing locks skip the lookup instead of signing in concurrently.
+If the state lock cannot be opened, revoke/purge still delete the published capability,
+and purge also deletes the FAST token. Routine revoke preserves that token. Publication
+remains refused, and the app reports that the remaining cleanup was unavailable.
+The delivery deadline/system expiry still completes independently while a worker waits.
+Settings/preparation time and lock waiting consume the same seven-second lookup budget,
+leaving one second for handoff before the delivery deadline. Workers pass only the
+remaining time to the lookup and skip sign-in below 250 ms instead of starting a fresh
+seven-second request. An already-active server session may finish after local revocation,
+but it cannot restore the revoked capability, credentials or decrypted notification text.
 
 `npm run test:ios-notifications` covers synthetic Swift delivery/ledger paths and locale
 generation; run `cargo test --locked --manifest-path apps/fluux/src-tauri/nse-openpgp/Cargo.toml`

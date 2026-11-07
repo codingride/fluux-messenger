@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { setPlatformForTesting } from '@/platform'
 import type { InvokeFn } from './SequoiaPgpPlugin'
-import { SequoiaPgpPlugin } from './SequoiaPgpPlugin'
+import { resetUncertainImportsForTesting, SequoiaPgpPlugin } from './SequoiaPgpPlugin'
 import { deleteOwnKey } from './deleteOwnKey'
 import { OPENPGP_DESCRIPTOR } from './OpenPGPPluginBase'
 import { legacyNormalizeBackupPassphrase } from './backupPassphrase'
@@ -36,6 +36,9 @@ import { xml } from '@fluux/sdk/xmpp'
 // `npm test`. Timing is not what they assert, and the 5s default left too
 // little headroom on a loaded runner. See WebOpenPGPPlugin.test.ts.
 vi.setConfig({ testTimeout: 30_000 })
+
+beforeEach(resetUncertainImportsForTesting)
+afterEach(resetUncertainImportsForTesting)
 
 /**
  * Wrap a body string in the `<payload xmlns='jabber:client'><body>…</body></payload>`
@@ -5336,7 +5339,10 @@ describe('SequoiaPgpPlugin', () => {
       // keeps the plugin registered and flags recovery so the host routes to
       // the IdentityChoiceDialog, rather than failing registration outright.
       const { ctx } = makeContext('me@example.com')
-      const fakeInvoke: InvokeFn = async (cmd) => {
+      const fakeInvoke: InvokeFn = async <T>(cmd: string) => {
+        // FLM-343: a present-key recovery fixture must answer the existence
+        // probe; an unknown probe no longer grants the generation path.
+        if (cmd === 'openpgp_has_persisted_key') return true as T
         if (cmd === 'openpgp_ensure_key') {
           throw new Error(
             "passphrase for account 'me@example.com' is not in the keychain or on disk — key material cannot be decrypted",
@@ -5643,6 +5649,40 @@ describe('SequoiaPgpPlugin', () => {
       const payloadB64 = stub.slice('OPENPGP-STUB:'.length).split(':')[2]
       return JSON.parse(decodeURIComponent(escape(atob(payloadB64))))
     }
+
+    it.each(['server backup', 'file'] as const)(
+      'imports verified peers after restoring an identity from %s on a fresh device',
+      async (source) => {
+        const { ctx, peerPublish } = makeContext('me@example.com')
+        await plugin.init(ctx)
+        const fp = plugin.getOwnFingerprint()!
+        await plugin.backupSecretKey('shared-pp')
+        const backup = (await plugin.fetchSecretKeyBackup())!
+        await plugin.shutdown()
+        fake.accounts.clear()
+        peerPublish(
+          'me@example.com',
+          VERIFICATIONS_NODE,
+          buildVerificationsPepItem(fp, { 'alice@example.com': 'ALICE_FP' }, 5),
+        )
+        const device = new SequoiaPgpPlugin({ invoke: fake.invoke })
+        try {
+          await device.init(ctx)
+          expect(device.getOwnFingerprint()).toBeNull()
+          if (source === 'server backup') {
+            await device.restoreSecretKey('shared-pp')
+          } else {
+            await device.importKeyFromFile(backup, 'shared-pp')
+          }
+          expect(device.getOwnFingerprint()).toBe(fp)
+          await new Promise((r) => setTimeout(r, 0))
+          const { isPeerVerified } = await import('@/stores/verifiedPeerKeysStore')
+          expect(isPeerVerified('alice@example.com', 'ALICE_FP')).toBe(true)
+        } finally {
+          await device.shutdown()
+        }
+      },
+    )
 
     it('seeds the local verified-peers store from the server node on init', async () => {
       const { ctx, peerPublish } = makeContext('me@example.com')

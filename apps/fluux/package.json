@@ -1,6 +1,6 @@
 {
   "name": "@xmpp/fluux",
-  "version": "0.18.0",
+  "version": "0.18.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -47,8 +47,8 @@
     "@chenglou/pretext": "^1.0.0",
     "@emoji-mart/data": "^1.2.1",
     "@fluux/sdk": "*",
-    "@lexical/history": "^0.52.0",
-    "@lexical/plain-text": "^0.52.0",
+    "@lexical/history": "^0.53.0",
+    "@lexical/plain-text": "^0.53.0",
     "@tanstack/react-virtual": "^3.14.13",
     "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.6.0",
@@ -66,7 +66,7 @@
     "i18next": "^26.0.0",
     "i18next-browser-languagedetector": "^8.2.0",
     "i18next-resources-to-backend": "^1.2.1",
-    "lexical": "^0.52.0",
+    "lexical": "^0.53.0",
     "lucide-react": "^1.0.0",
     "openpgp": "^6.3.0",
     "react": "^19.3.1",
@@ -79,7 +79,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",
-    "@rolldown/plugin-babel": "^0.2.2",
+    "@rolldown/plugin-babel": "^0.3.0",
     "@tailwindcss/container-queries": "^0.1.1",
     "@tauri-apps/api": "^2.9.1",
     "@tauri-apps/cli": "2.12.4",

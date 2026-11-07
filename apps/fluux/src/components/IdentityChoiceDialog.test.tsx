@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import recoveryMeta from '../e2ee/fixtures/sequoia_meta.json'
 import { IdentityChoiceDialog } from './IdentityChoiceDialog'
+import { EscapeModal } from '@/test-utils/escapeModal'
 
 // Surface i18n keys verbatim so assertions can target them without
 // committing to specific translated copy. The real translations live
@@ -279,6 +281,31 @@ describe('IdentityChoiceDialog', () => {
     })
   })
 
+  // FLM-343: cancelling a recovery file picker must not strand the chooser.
+  it('returns to usable choices when the file picker completes without an import', async () => {
+    render(<IdentityChoiceDialog {...baseProps} />)
+    fireEvent.click(screen.getByText('settings.encryption.identityChoice.importFromFileTitle').closest('button')!)
+    await waitFor(() => expect(screen.getByText('settings.encryption.identityChoice.restoreFromServerTitle')).toBeInTheDocument())
+    expect(baseProps.onRestoreFromServer).not.toHaveBeenCalled()
+    expect(baseProps.onReplaceIdentity).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'common.cancel' }))
+    expect(baseProps.onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  // FLM-343: a pending native operation cannot be cancelled or submitted again.
+  it('does not dismiss the choice dialog while its restore is pending', async () => {
+    let finish!: () => void
+    const restore = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+    render(<IdentityChoiceDialog {...baseProps} onRestoreFromServer={restore} />)
+    fireEvent.click(screen.getByText('settings.encryption.identityChoice.restoreFromServerTitle').closest('button')!)
+    fireEvent.change(document.querySelector('input[type="password"]')!, { target: { value: recoveryMeta.backupPassphrase } })
+    fireEvent.click(screen.getByRole('button', { name: 'settings.encryption.identityChoice.restoreAction' }))
+    expect(document.querySelector('[data-modal] > button')).toBeDisabled()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(baseProps.onCancel).not.toHaveBeenCalled()
+    await act(async () => { finish() })
+  })
+
   it('requires confirmation before triggering replace', async () => {
     render(<IdentityChoiceDialog {...baseProps} />)
     // First click: enters the "confirm-replace" phase but does NOT call
@@ -320,6 +347,59 @@ describe('IdentityChoiceDialog', () => {
     ).toBeInTheDocument()
   })
 
+  // Intent FLM-304: a desynced key's last-resort keychain retry sits with the
+  // choices, so it never mixes into a restore or replacement already started.
+  it('shows a caller-supplied advanced recovery only while the user is choosing', () => {
+    render(
+      <IdentityChoiceDialog
+        {...baseProps}
+        reason="local-key-unrecoverable"
+        advanced={() => <button type="button">advanced recovery</button>}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'advanced recovery' })).toBeInTheDocument()
+    fireEvent.click(
+      screen
+        .getByText('settings.encryption.identityChoice.restoreFromServerTitle')
+        .closest('button')!,
+    )
+    expect(screen.queryByRole('button', { name: 'advanced recovery' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'common.back' }))
+    expect(screen.getByRole('button', { name: 'advanced recovery' })).toBeInTheDocument()
+  })
+
+  // Intent FLM-408 R1: while the advanced recovery asks macOS, no restore,
+  // import or replacement may start and nothing may close the choice, or the
+  // retry would report a key another flow has since replaced.
+  it('holds every choice and its Cancel while the advanced recovery runs', () => {
+    let report!: (busy: boolean) => void
+    render(
+      <IdentityChoiceDialog
+        {...baseProps}
+        reason="local-key-unrecoverable"
+        advanced={({ onBusyChange }) => {
+          report = onBusyChange
+          return <button type="button">advanced recovery</button>
+        }}
+      />,
+    )
+    const choices = ['restoreFromServerTitle', 'importFromFileTitle', 'replaceTitle']
+      .map(key => screen.getByText(`settings.encryption.identityChoice.${key}`).closest('button')!)
+    const cancel = screen.getByRole('button', { name: 'common.cancel' })
+    act(() => report(true))
+    for (const choice of choices) expect(choice).toBeDisabled()
+    expect(cancel).toBeDisabled()
+    expect(document.querySelector('[data-modal] > button')).toBeDisabled()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(baseProps.onCancel).not.toHaveBeenCalled()
+
+    act(() => report(false))
+    for (const choice of choices) expect(choice).toBeEnabled()
+    expect(cancel).toBeEnabled()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(baseProps.onCancel).toHaveBeenCalledOnce()
+  })
+
   it('escape during sub-phase returns to chooser without dismissing the dialog', () => {
     render(<IdentityChoiceDialog {...baseProps} />)
     fireEvent.click(
@@ -358,5 +438,80 @@ describe('IdentityChoiceDialog', () => {
     } finally {
       window.removeEventListener('keydown', windowKeydown)
     }
+  })
+})
+
+// The captain's ruling on review R3, applied by review R5: with stacked overlays, Escape
+// closes only the one on top, so closing shortcut help never cancels encryption setup.
+describe('IdentityChoiceDialog with shortcut help opened over it', () => {
+  const closeHelp = vi.fn()
+  const Page = ({ help }: { help: boolean }) => (
+    <>
+      <IdentityChoiceDialog {...baseProps} />
+      {help && <EscapeModal onClose={closeHelp} />}
+    </>
+  )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('closes help first without cancelling, then cancels from the chooser', () => {
+    const { rerender } = render(<Page help={false} />)
+    rerender(<Page help />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(closeHelp).toHaveBeenCalledTimes(1)
+    expect(baseProps.onCancel).not.toHaveBeenCalled()
+    rerender(<Page help={false} />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(baseProps.onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes help first and stays in the restore step', () => {
+    const { rerender } = render(<Page help={false} />)
+    fireEvent.click(
+      screen
+        .getByText('settings.encryption.identityChoice.restoreFromServerTitle')
+        .closest('button')!,
+    )
+    rerender(<Page help />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(closeHelp).toHaveBeenCalledTimes(1)
+    expect(
+      screen.queryByText('settings.encryption.identityChoice.importFromFileTitle'),
+    ).not.toBeInTheDocument()
+    rerender(<Page help={false} />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(
+      screen.getByText('settings.encryption.identityChoice.importFromFileTitle'),
+    ).toBeInTheDocument()
+    expect(baseProps.onCancel).not.toHaveBeenCalled()
+  })
+})
+
+// Review R5: the startup dialog (App.tsx) sits later in the page than shortcut help, so it
+// is drawn over help even when help opened after it. Escape goes to the one drawn on top.
+describe('IdentityChoiceDialog drawn over shortcut help opened after it', () => {
+  const closeHelp = vi.fn()
+  const Page = ({ help, dialog }: { help: boolean; dialog: boolean }) => (
+    <>
+      {help && <EscapeModal onClose={closeHelp} />}
+      {dialog && <IdentityChoiceDialog {...baseProps} />}
+    </>
+  )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('takes Escape first and cancels from the chooser, then help closes', () => {
+    const { rerender } = render(<Page help={false} dialog />)
+    rerender(<Page help dialog />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(baseProps.onCancel).toHaveBeenCalledTimes(1)
+    expect(closeHelp).not.toHaveBeenCalled()
+    rerender(<Page help dialog={false} />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(closeHelp).toHaveBeenCalledTimes(1)
   })
 })

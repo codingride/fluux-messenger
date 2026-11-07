@@ -1,8 +1,17 @@
 #!/bin/bash
 # Test script for validating Debian package build
-# Run this in a Codespace or Ubuntu environment
+# Intended for fresh machines or Codespaces.
+# WARNING: This replaces the root debian/ directory. On an existing working copy,
+# the build's clean step deletes node_modules, the Cargo target directory,
+# packages/fluux-sdk/dist and *.orig/*.rej/*.bak/*~ files.
 
 set -e
+
+# Refuse unrelated directories before installing dependencies or deleting files.
+if [ ! -f packaging/debian/control ]; then
+    echo "Error: Run this script from the Fluux Messenger repository root." >&2
+    exit 1
+fi
 
 echo "=== Debian Package Build Test ==="
 echo
@@ -17,6 +26,8 @@ fi
 echo ">>> Installing build dependencies..."
 sudo apt-get update
 sudo apt-get install -y \
+    ca-certificates \
+    curl \
     debhelper \
     devscripts \
     libwebkit2gtk-4.1-dev \
@@ -31,8 +42,15 @@ sudo apt-get install -y \
 
 # Check for Node.js
 if ! command -v node &> /dev/null; then
-    echo ">>> Installing Node.js..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    # Node.js 26 from NodeSource, the same major as CI and the release .deb build.
+    # Distribution nodejs packages are older than package.json engines.node allows.
+    echo ">>> Installing Node.js 26..."
+    # Download before running: a failed download must stop here instead of
+    # falling back to the distribution's nodejs below.
+    NODESOURCE_SETUP=$(mktemp)
+    curl -fsSL https://deb.nodesource.com/setup_26.x -o "$NODESOURCE_SETUP"
+    sudo -E bash "$NODESOURCE_SETUP"
+    rm -f "$NODESOURCE_SETUP"
     sudo apt-get install -y nodejs
 fi
 
@@ -48,8 +66,14 @@ echo ">>> Building .deb package..."
 echo "This will take several minutes on first build..."
 echo
 
-# Build the package
-dpkg-buildpackage -uc -us -b
+# dpkg-buildpackage requires debian/ at the repository root. Replace the staged
+# copy on every run so removed packaging files cannot survive from an earlier run.
+rm -rf debian
+cp -a packaging/debian debian
+
+# Dependencies are installed above. Rust from rustup is not registered as
+# Debian rustc/cargo packages, so skip dpkg's package-based dependency check.
+dpkg-buildpackage -d -uc -us -b
 
 echo
 echo "=== Build Complete ==="

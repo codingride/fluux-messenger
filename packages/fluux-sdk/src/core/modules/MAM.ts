@@ -61,6 +61,7 @@ import {
   MAM_ROOM_FORWARD_MAX_PAGES,
   MAM_ROOM_FORWARD_MAX_PAGES_MANUAL,
   MAM_BACKWARD_SIGNAL_RETRY_PAGES,
+  MAM_BACKWARD_SCROLL_UP_MAX_PAGES,
   MAM_CATCHUP_FORWARD_BAIL_PAGES,
   MAM_POINTER_STITCH_MAX_PAGES,
   MAM_POINTER_SEED_PROBE_LIMIT,
@@ -559,7 +560,14 @@ export class MAM extends BaseModule {
     // contiguity with the existing record, and the trigger for
     // the floor jump.
     let sawCoverageTop = false
-    const maxAutoPages = isForwardPaginate ? maxAutoPagesOpt : MAM_BACKWARD_SIGNAL_RETRY_PAGES // cap to avoid infinite loops
+    // Backward walks retry past signal-only pages. A fetch-latest gives up after
+    // a few pages and persists its extent (the coverage record) as the resume
+    // point. A scroll-up walk has no such resume point — its caller restarts
+    // from the same resident oldest row — so it keeps walking until displayable
+    // messages or the archive start, bounded only by a runaway backstop; every
+    // modification it collects on the way resolves in the single pass below.
+    const maxAutoPages = isForwardPaginate ? maxAutoPagesOpt
+      : canJumpToFloor ? MAM_BACKWARD_SIGNAL_RETRY_PAGES : MAM_BACKWARD_SCROLL_UP_MAX_PAGES
 
     this.deps.emitSDK('chat:history-loading', { conversationId, requestId, isLoading: true })
 
@@ -711,6 +719,10 @@ export class MAM extends BaseModule {
                 preJumpCursor = pageInfo.first
                 currentBefore = coverageRecord.bottomId
                 jumpedToFloor = true
+              } else if (pageInfo.first === currentBefore) {
+                // The cursor did not advance: a server answering the same page
+                // again would otherwise be walked until the page cap.
+                break
               } else {
                 currentBefore = pageInfo.first
               }
@@ -842,9 +854,13 @@ export class MAM extends BaseModule {
     // User-initiated repair passes a higher cap (maxAutoPagesOpt) so it fills large
     // gaps to completion instead of stopping at the background limit.
     // Backward queries retry past signal-only pages (zero displayable messages)
-    // under the same cap as the 1:1 path — the caller still controls real
-    // pagination (the loop stops as soon as a page yields displayable messages).
-    const maxAutoPages = isForward ? (maxAutoPagesOpt ?? MAM_ROOM_FORWARD_MAX_PAGES) : MAM_BACKWARD_SIGNAL_RETRY_PAGES
+    // under the same caps as the 1:1 path: a fetch-latest gives up after a few
+    // pages (its extent persists as the coverage record), a scroll-up walk keeps
+    // going until displayable messages or the archive start (see
+    // MAM_BACKWARD_SCROLL_UP_MAX_PAGES). The loop stops as soon as a page
+    // yields displayable messages.
+    const maxAutoPages = isForward ? (maxAutoPagesOpt ?? MAM_ROOM_FORWARD_MAX_PAGES)
+      : !before ? MAM_BACKWARD_SIGNAL_RETRY_PAGES : MAM_BACKWARD_SCROLL_UP_MAX_PAGES
     const allMessages: RoomMessage[] = []
     let isComplete = false
     let lastPage: PageInfo = {}
@@ -1067,6 +1083,10 @@ export class MAM extends BaseModule {
                 preJumpCursor = pageInfo.first
                 currentBefore = coverageRecord.bottomId
                 jumpedToFloor = true
+              } else if (pageInfo.first === currentBefore) {
+                // The cursor did not advance: a server answering the same page
+                // again would otherwise be walked until the page cap.
+                break
               } else {
                 currentBefore = pageInfo.first
               }
@@ -1557,11 +1577,12 @@ export class MAM extends BaseModule {
 
     const conversationIds = conversations.map((c) => c.id)
 
+    const endListUpdate = this.deps.stores?.connection?.beginUpdate?.(['messages'])
     await executeWithConcurrency(
       conversationIds,
       (conversationId) => session.isCurrent() ? this.fetchPreviewForConversation(conversationId) : Promise.resolve(),
       concurrency
-    )
+    ).finally(() => endListUpdate?.())
 
     if (!session.isCurrent()) return
     logInfo(`Preview refresh complete for ${conversations.length} conversation(s)`)
@@ -1592,11 +1613,12 @@ export class MAM extends BaseModule {
 
     const conversationIds = archivedConversations.map((c) => c.id)
 
+    const endListUpdate = this.deps.stores?.connection?.beginUpdate?.(['messages'])
     await executeWithConcurrency(
       conversationIds,
       (conversationId) => session.isCurrent() ? this.fetchPreviewForConversation(conversationId) : Promise.resolve(),
       concurrency
-    )
+    ).finally(() => endListUpdate?.())
   }
 
   /**
@@ -1630,9 +1652,11 @@ export class MAM extends BaseModule {
       category: 'sm',
     })
 
+    const endListUpdate = this.deps.stores?.connection?.beginUpdate?.(['messages'])
     await executeWithConcurrency(
       conversations,
       async (conv) => {
+        const endUpdate = this.deps.stores?.connection?.beginUpdate?.([`chat:${conv.id}`, 'messages'])
         try {
           // Skip if disconnected (avoid queuing doomed queries)
           if (this.deps.stores?.connection.getStatus() !== 'online') return
@@ -1652,10 +1676,12 @@ export class MAM extends BaseModule {
           await this.catchUpConversationHistory(conv.id, messages, { sessionStartTime, stitchReadPointer: true })
         } catch (_error) {
           // Silently ignore — individual failures shouldn't affect others
+        } finally {
+          endUpdate?.()
         }
       },
       concurrency
-    )
+    ).finally(() => endListUpdate?.())
 
     logInfo(`Background catch-up for ${conversations.length} conversation(s) — complete`)
   }
@@ -1694,6 +1720,7 @@ export class MAM extends BaseModule {
     messages: Array<{ timestamp?: Date; stanzaId?: string }>,
     options: { sessionStartTime?: number; stitchReadPointer?: boolean } = {},
   ): Promise<void> {
+    const endUpdate = this.deps.stores?.connection?.beginUpdate?.([`chat:${conversationId}`, 'messages'])
     await this.runCatchUpHistory(messages, options, {
       label: `...@${getDomain(conversationId) || '*'}`,
       getGaps: () => this.deps.stores?.chat.getConversationGaps?.(conversationId) ?? [],
@@ -1717,7 +1744,7 @@ export class MAM extends BaseModule {
           oldest: true,
         })) ?? []) as Array<{ timestamp?: Date; stanzaId?: string }>,
       query: (opts) => this.queryArchive({ with: conversationId, ...opts }),
-    })
+    }).finally(() => endUpdate?.())
   }
 
   /**
@@ -1758,9 +1785,11 @@ export class MAM extends BaseModule {
       category: 'sm',
     })
 
+    const endListUpdate = this.deps.stores?.connection?.beginUpdate?.(['messages'])
     await executeWithConcurrency(
       newContacts,
       async (contact) => {
+        const endUpdate = this.deps.stores?.connection?.beginUpdate?.([`chat:${contact.jid}`, 'messages'])
         try {
           if (this.deps.stores?.connection.getStatus() !== 'online') {
             interrupted = true
@@ -1790,10 +1819,12 @@ export class MAM extends BaseModule {
           }
         } catch (_error) {
           // Silently ignore — individual failures shouldn't affect others
+        } finally {
+          endUpdate?.()
         }
       },
       concurrency
-    )
+    ).finally(() => endListUpdate?.())
 
     logInfo(`Roster discovery complete for ${newContacts.length} contact(s)`)
     return !interrupted
@@ -1811,18 +1842,23 @@ export class MAM extends BaseModule {
    *   excludes messages received this session (see `selectCatchUpQuery`).
    */
   async catchUpRoom(roomJid: string, sessionStartTime?: number): Promise<void> {
-    if (this.deps.stores?.connection.getStatus() !== 'online') return
+    const endUpdate = this.deps.stores?.connection?.beginUpdate?.([`room:${roomJid}`, 'rooms'])
+    try {
+      if (this.deps.stores?.connection.getStatus() !== 'online') return
 
-    // Read the newest cached messages to compute a proper forward cursor — a PURE
-    // read (`peek`) that does NOT populate the store. Background catch-up runs only
-    // for NON-active rooms (the active room is excluded), and the invariant is that
-    // only the active room is resident in RAM; mergeRoomMAMMessages persists the
-    // fetched history to IndexedDB. Without `peek`, every synced room would hold
-    // ~MAM_CACHE_LOAD_LIMIT messages in RAM. We still need the cached messages (not
-    // just the persisted preview timestamp) so the cursor lands on the newest
-    // PRE-session message and the forward query fills the whole offline gap.
-    const messages = (await this.deps.stores?.room.loadMessagesFromCache(roomJid, { limit: MAM_CACHE_LOAD_LIMIT, peek: true })) || []
-    await this.catchUpRoomHistory(roomJid, messages, { sessionStartTime, stitchReadPointer: true })
+      // Read the newest cached messages to compute a proper forward cursor — a PURE
+      // read (`peek`) that does NOT populate the store. Background catch-up runs only
+      // for NON-active rooms (the active room is excluded), and the invariant is that
+      // only the active room is resident in RAM; mergeRoomMAMMessages persists the
+      // fetched history to IndexedDB. Without `peek`, every synced room would hold
+      // ~MAM_CACHE_LOAD_LIMIT messages in RAM. We still need the cached messages (not
+      // just the persisted preview timestamp) so the cursor lands on the newest
+      // PRE-session message and the forward query fills the whole offline gap.
+      const messages = (await this.deps.stores?.room.loadMessagesFromCache(roomJid, { limit: MAM_CACHE_LOAD_LIMIT, peek: true })) || []
+      await this.catchUpRoomHistory(roomJid, messages, { sessionStartTime, stitchReadPointer: true })
+    } finally {
+      endUpdate?.()
+    }
   }
 
   /** Room twin of {@link catchUpConversationHistory} — same Phase A/B over queryRoomArchive. */
@@ -1831,6 +1867,7 @@ export class MAM extends BaseModule {
     messages: Array<{ timestamp?: Date; stanzaId?: string }>,
     options: { sessionStartTime?: number; stitchReadPointer?: boolean } = {},
   ): Promise<void> {
+    const endUpdate = this.deps.stores?.connection?.beginUpdate?.([`room:${roomJid}`, 'rooms'])
     await this.runCatchUpHistory(messages, options, {
       label: roomJid,
       getGaps: () => this.deps.stores?.room.getRoomGaps?.(roomJid) ?? [],
@@ -1854,7 +1891,7 @@ export class MAM extends BaseModule {
           oldest: true,
         })) ?? []) as Array<{ timestamp?: Date; stanzaId?: string }>,
       query: (opts) => this.queryRoomArchive({ roomJid, ...opts }),
-    })
+    }).finally(() => endUpdate?.())
   }
 
   /**
@@ -2198,6 +2235,7 @@ export class MAM extends BaseModule {
    */
   private async fetchPreviewForConversation(conversationId: string): Promise<void> {
     const session = this.captureQuery()
+    const endUpdate = this.deps.stores?.connection?.beginUpdate?.(['messages'])
     try {
       const queryId = `preview_${generateUUID()}`
 
@@ -2258,6 +2296,8 @@ export class MAM extends BaseModule {
     } catch (_error) {
       // Silently ignore errors - preview refresh is best-effort
       // Individual conversation failures shouldn't affect others
+    } finally {
+      endUpdate?.()
     }
   }
 
@@ -2288,21 +2328,26 @@ export class MAM extends BaseModule {
       category: 'sm',
     })
 
-    // For MAM rooms: fetch preview via MAM query
-    const mamRoomJids = mamRooms.map((r) => r.jid)
-    await executeWithConcurrency(
-      mamRoomJids,
-      (roomJid) => session.isCurrent() ? this.fetchPreviewForRoom(roomJid) : Promise.resolve(),
-      concurrency
-    )
+    const endListUpdate = this.deps.stores?.connection?.beginUpdate?.(['rooms'])
+    try {
+      // For MAM rooms: fetch preview via MAM query
+      const mamRoomJids = mamRooms.map((r) => r.jid)
+      await executeWithConcurrency(
+        mamRoomJids,
+        (roomJid) => session.isCurrent() ? this.fetchPreviewForRoom(roomJid) : Promise.resolve(),
+        concurrency
+      )
 
-    // For non-MAM rooms: load preview from cache to populate lastMessage
-    // This only updates lastMessage without modifying the messages array
-    for (const room of nonMamRooms) {
-      if (!session.isCurrent()) return
-      if (!room.lastMessage) {
-        await this.deps.stores?.room.loadPreviewFromCache(room.jid)
+      // For non-MAM rooms: load preview from cache to populate lastMessage
+      // This only updates lastMessage without modifying the messages array
+      for (const room of nonMamRooms) {
+        if (!session.isCurrent()) return
+        if (!room.lastMessage) {
+          await this.deps.stores?.room.loadPreviewFromCache(room.jid)
+        }
       }
+    } finally {
+      endListUpdate?.()
     }
   }
 
@@ -2317,6 +2362,7 @@ export class MAM extends BaseModule {
    */
   async fetchPreviewForRoom(roomJid: string): Promise<void> {
     const session = this.captureQuery()
+    const endUpdate = this.deps.stores?.connection?.beginUpdate?.(['rooms'])
     try {
       // Cache-first: try loading preview from IndexedDB before making a network query.
       // The delayed background room catch-up will correct the preview later if stale.
@@ -2366,6 +2412,8 @@ export class MAM extends BaseModule {
       }
     } catch (_error) {
       // Silently ignore errors - preview refresh is best-effort
+    } finally {
+      endUpdate?.()
     }
   }
 
@@ -2956,9 +3004,15 @@ export class MAM extends BaseModule {
         return true
       }
     }
-    if (archiveId && !encrypted && chat?.rememberArchiveSignal && parseReactionsSignal(messageEl)?.targetId) {
+    // A plaintext reaction or correction is journaled like a decrypted one.
+    // The journal applies the effect when its target row is saved, so an
+    // edit whose target only loads on a later history page (or in a later
+    // session) is never lost, and nothing is held in memory between walks.
+    const plaintextEffect = !encrypted && (parseReactionsSignal(messageEl)?.targetId ? 'reactions'
+      : parseCorrectionSignal(messageEl)?.targetId && messageEl.getChildText('body') ? 'update' : undefined)
+    if (archiveId && plaintextEffect && chat?.rememberArchiveSignal) {
       const signal = this.archiveSignal(messageEl, peer, archiveId, archiveTimestamp)
-      if (signal?.effect.type === 'reactions') {
+      if (signal?.effect.type === plaintextEffect) {
         await chat.rememberArchiveSignal(signal, scope.jid)
         session.assertCurrent()
         const persisted = await chat.getArchiveSignal?.(peer, archiveId, from)

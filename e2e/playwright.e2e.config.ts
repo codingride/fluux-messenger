@@ -15,7 +15,14 @@ import { defineConfig, devices } from '@playwright/test'
  * so a local run and a CI run exercise the same artefact.
  */
 const useDevServer = process.env.FLUUX_E2E_DEV_SERVER === '1'
-const BASE_URL = useDevServer ? 'http://localhost:5173' : 'http://localhost:4173'
+// A fleet working copy can reserve its own preview instead of reusing another task's app.
+const isolatedPort = process.env.FLUUX_E2E_PORT ? Number(process.env.FLUUX_E2E_PORT) : null
+if (isolatedPort !== null && (!Number.isInteger(isolatedPort) || isolatedPort < 1 || isolatedPort > 65535)) {
+  throw new Error('FLUUX_E2E_PORT must be a valid local port')
+}
+const BASE_URL = isolatedPort !== null
+  ? `http://127.0.0.1:${isolatedPort}`
+  : useDevServer ? 'http://localhost:5173' : 'http://localhost:4173'
 
 /**
  * Browser-level invariant gates for the suites listed in SUITES. The shared
@@ -36,6 +43,7 @@ const BASE_URL = useDevServer ? 'http://localhost:5173' : 'http://localhost:4173
  */
 
 const SUITES = [
+  { name: 'backup-recovery', testMatch: 'backup-recovery.ts' },
   { name: 'archiving', testMatch: 'archiving-preferences.ts' },
   { name: 'message-updates', testMatch: 'message-updates.ts' },
   { name: 'mobile-members', testMatch: 'mobile-members.ts' },
@@ -44,13 +52,20 @@ const SUITES = [
   { name: 'scroll-reading', testMatch: 'scroll-reading.ts' },
   { name: 'scroll-live-edge', testMatch: 'scroll-live-edge.ts' },
   { name: 'scroll-message-surface', testMatch: 'scroll-message-surface.ts' },
+  { name: 'scroll-media-boxes', testMatch: 'scroll-media-boxes.ts' },
+  { name: 'scroll-touch-start', testMatch: 'scroll-touch-start.ts' },
   { name: 'message-hover', testMatch: 'message-hover.ts' },
   { name: 'reply-quote', testMatch: 'reply-quote.ts' },
+  { name: 'message-code-wrap', testMatch: 'message-code-wrap.ts' },
   { name: 'composer', testMatch: 'composer-geometry.ts' },
+  { name: 'composer-send', testMatch: 'composer-send.ts' },
   { name: 'popover', testMatch: 'popover-geometry.ts' },
   { name: 'history-loading', testMatch: 'history-loading.ts' },
+  { name: 'room-joining', testMatch: 'room-joining.ts' },
   { name: 'presence-burst', testMatch: 'presence-burst.ts' },
   { name: 'connection-step', testMatch: 'connection-step.ts' },
+  { name: 'hinge-layout', testMatch: 'hinge-layout.ts' },
+  { name: 'harness-activate-chat', testMatch: 'harness-activate-chat.ts' },
 ] as const
 
 /**
@@ -121,6 +136,13 @@ export default defineConfig({
   },
 
   projects: [
+    // Chromium implements native middle-click autoscroll; WebKit does not. This enables the
+    // actual browser input path rather than simulating its movement with scrollTop assignments.
+    {
+      name: 'scroll-native-pan-chromium',
+      testMatch: 'scroll-native-pan.ts',
+      use: { ...devices['Desktop Chrome'], launchOptions: { args: ['--enable-blink-features=MiddleClickAutoscroll'] } },
+    },
     ...SUITES.flatMap(suite =>
       ENGINES.map(engine => ({
         name: `${suite.name}-${engine.name}`,
@@ -143,7 +165,11 @@ export default defineConfig({
     // Playwright spawns the server from the config's directory; the npm scripts live at the root.
     cwd: '..',
     // build:e2e builds the SDK too, so this is the only build the e2e job needs.
-    command: useDevServer ? 'npm run dev' : 'npm run build:e2e && npm run preview:e2e',
+    command: isolatedPort !== null
+      ? useDevServer
+        ? `npm run dev -w @xmpp/fluux -- --host 127.0.0.1 --port ${isolatedPort} --strictPort`
+        : `npm run build:e2e && npm run preview -w @xmpp/fluux -- --host 127.0.0.1 --port ${isolatedPort} --strictPort`
+      : useDevServer ? 'npm run dev' : 'npm run build:e2e && npm run preview:e2e',
     url: BASE_URL,
     // CI always starts a fresh server; locally reuse a running one if present.
     reuseExistingServer: !process.env.CI,

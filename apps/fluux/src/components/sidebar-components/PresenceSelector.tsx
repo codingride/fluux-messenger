@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useClickOutside, useAnchoredMenu } from '@/hooks'
+import { useCloseOnEscape } from '@/hooks/useCloseOnEscape'
 import { usePresence, useXMPP, type PresenceStatus } from '@fluux/sdk'
 import { useConnectionStore, useEventsStore } from '@fluux/sdk/react'
 import { ChevronDown, Check, RefreshCw, X } from 'lucide-react'
@@ -55,6 +56,10 @@ export function PresenceSelector({ isOpen: isOpenProp, onOpenChange }: PresenceS
   const closeMenu = () => setIsOpen(false)
   useClickOutside(menuRef, closeMenu, isOpen)
 
+  // Escape closes the menu when it is the overlay on top, and goes no further. Shortcut
+  // help opened over the menu closes first and the menu stays (see useCloseOnEscape).
+  useCloseOnEscape(closeMenu, isOpen)
+
   // Handle keyboard navigation - use capture phase to intercept before sidebar list
   useEffect(() => {
     if (!isOpen) return
@@ -64,11 +69,7 @@ export function PresenceSelector({ isOpen: isOpenProp, onOpenChange }: PresenceS
       const target = e.target as HTMLElement
       const isInStatusInput = inputRef.current && target === inputRef.current
 
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        setIsOpen(false)
-      } else if (e.key === 'ArrowDown' && !isInStatusInput) {
+      if (e.key === 'ArrowDown' && !isInStatusInput) {
         e.preventDefault()
         e.stopPropagation()
         // Focus dropdown to prevent focus moving to other elements
@@ -287,13 +288,6 @@ export function StatusDisplay({ status }: StatusDisplayProps) {
         <span className="truncate">{t('status.verifying')}</span>
       </p>
     )
-  } else if (status === 'updating') {
-    statusLine = (
-      <p className="text-xs text-fluux-yellow truncate flex items-center gap-1">
-        <RefreshCw className="size-3 animate-spin flex-shrink-0" />
-        <span className="truncate">{t('status.updating')}</span>
-      </p>
-    )
   } else if (status === 'connecting') {
     statusLine = (
       <p className="text-xs text-fluux-yellow truncate flex items-center gap-1">
@@ -330,7 +324,7 @@ interface StatusOrPresenceProps {
  *
  * Owns the connection-state subscriptions (status, isVerifying) so the
  * Sidebar itself never re-renders on connection churn. Transient degraded
- * states ('reconnecting'/'connecting'/'verifying'/'updating', or the post-wake
+ * states ('reconnecting'/'connecting'/'verifying', or the post-wake
  * `online + isVerifying` machine sub-state) only surface after a grace
  * delay — until then the presence selector stays, swapping one fixed-height
  * line for another, so nothing in the layout ever moves.

@@ -71,6 +71,8 @@ let mockEncryptionState: { kind: string; fingerprint?: string; trust?: string } 
 
 // Mock SDK hooks
 vi.mock('@fluux/sdk', () => ({
+  // FLM-256: draft recovery keys by stable store identity, not per-render action wrappers.
+  chatStore: {},
   messageRowRef: (message: { id: string; stanzaId?: string; originId?: string }) => ({
     id: message.id,
     ...(message.stanzaId ? { stanzaId: message.stanzaId } : message.originId ? { originId: message.originId } : {}),
@@ -773,7 +775,8 @@ describe('ChatView', () => {
       expect(container).toMatchSnapshot()
     })
 
-    it('should match snapshot with messages', () => {
+    // FLM-168: ordinary displayed messages must not claim retrieval is running.
+    it('keeps the ready header and messages without a retrieval signal', () => {
       mockActiveConversation = {
         id: 'alice@example.com',
         name: 'Alice Smith',
@@ -797,10 +800,14 @@ describe('ChatView', () => {
       ]
 
       const { container } = render(<ChatView />)
-      expect(container).toMatchSnapshot()
+      expect(within(container.querySelector('header')!).getByRole('heading', { name: mockActiveConversation.name })).toBeInTheDocument()
+      for (const message of mockActiveMessages) expect(screen.getByText(message.body)).toBeInTheDocument()
+      expect(screen.queryByTestId('update-text')).toBeNull()
+      expect(screen.queryByTestId('update-icon')).toBeNull()
     })
 
-    it('should match snapshot with typing indicator', () => {
+    // FLM-168: normal typing is not a message retrieval episode.
+    it('keeps the ready header while a contact is typing', () => {
       mockActiveConversation = {
         id: 'alice@example.com',
         name: 'Alice Smith',
@@ -811,7 +818,9 @@ describe('ChatView', () => {
       mockTypingUsers = ['alice@example.com']
 
       const { container } = render(<ChatView />)
-      expect(container).toMatchSnapshot()
+      expect(within(container.querySelector('header')!).getByRole('heading', { name: mockActiveConversation.name })).toBeInTheDocument()
+      expect(screen.queryByTestId('update-text')).toBeNull()
+      expect(screen.queryByTestId('update-icon')).toBeNull()
     })
   })
 

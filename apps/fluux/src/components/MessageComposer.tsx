@@ -16,6 +16,7 @@ const emojiPickerImport = () => import('./EmojiPicker').then(m => ({ default: m.
 const EmojiPicker = lazy(emojiPickerImport)
 import type { FileAttachment } from '@fluux/sdk'
 import { useConnectionStore } from '@fluux/sdk/react'
+import { mergeFailedDraft } from '@/utils/mergeFailedDraft'
 import { encryptionSendErrorKey } from '@/e2ee/encryptionSendError'
 import type { ConversationEncryptionState } from '@/hooks/useConversationEncryptionState'
 import { trustVisual } from '@/e2ee/trustVisual'
@@ -43,13 +44,23 @@ const COMPOSING_THROTTLE_MS = 2000
 const PAUSED_TIMEOUT_MS = 5000
 const COMPOSING_UI_TIMEOUT_MS = 1500
 
+/**
+ * Focuses the input and puts the caret at `position` in `text` once the new text
+ * has rendered. `position` only means something for `text`: when the person typed
+ * before this runs (a busy page handles queued keystrokes before timers), their
+ * caret already sits after what they typed, and moving it would pull it back.
+ */
 function restoreTextareaCursor(
   inputRef: RefObject<ComposerInputElement | null>,
+  text: string,
   position: number,
 ) {
+  // The text may not have rendered yet when this is scheduled.
+  const scheduledOver = inputRef.current?.value
   setTimeout(() => {
     const input = inputRef.current
     if (!input) return
+    if (input.value !== text && input.value !== scheduledOver) return
     input.focus()
     input.setSelectionRange(position, position)
   }, 0)
@@ -156,6 +167,8 @@ interface MessageComposerProps {
   onComposingChange?: (isComposing: boolean) => void
   /** Send message callback - returns true if handled */
   onSend: (text: string) => Promise<boolean>
+  /** Consume the persisted draft at submission; return a rollback for a failed send. */
+  onConsumeDraft?: () => () => void
   /** Send easter egg animation */
   onSendEasterEgg?: (animation: string) => void
   /** Callback to open poll creator — when set, shows a poll button in the toolbar */
@@ -252,6 +265,7 @@ export function MessageComposer({
   onInputResize,
   onComposingChange,
   onSend,
+  onConsumeDraft,
   onCreatePoll,
   onSendTypingState,
   typingNotificationsEnabled = true,
@@ -294,8 +308,16 @@ export function MessageComposer({
   // Internal state for uncontrolled mode
   const [internalText, setInternalText] = useState('')
   const text = controlledValue !== undefined ? controlledValue : internalText
+  const textRef = useRef(text)
+  textRef.current = text
+  const mounted = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const setTextRef = useRef((_t: string) => {})
   setTextRef.current = (t: string) => {
+    textRef.current = t
     if (controlledValue !== undefined) {
       onValueChange?.(t)
     } else {
@@ -307,6 +329,7 @@ export function MessageComposer({
   }, [])
 
   const [sending, setSending] = useState(false)
+  const submitting = useRef(false)
   // A large photo still being prepared, failed, or too large for the server cannot be sent yet.
   const photoBlocked = !editingMessage && photoBlocksSend(pendingAttachment, encryptionState?.kind === 'encrypted')
   const sendDisabled = sendGated || photoBlocked
@@ -400,11 +423,11 @@ export function MessageComposer({
   // Expose imperative handle
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
-    getText: () => text,
+    getText: () => textRef.current,
     setText: (t: string) => setText(t),
     placeCaret: (t: string, position: number) => {
       updateCaret(t, position)
-      restoreTextareaCursor(inputRef, position)
+      restoreTextareaCursor(inputRef, t, position)
     },
   }), [text, setText, updateCaret])
 
@@ -457,7 +480,7 @@ export function MessageComposer({
       setText(editingMessage.body)
       setEditAttachmentRemoved(false) // Reset attachment removal state
       // Focus and move cursor to end
-      restoreTextareaCursor(inputRef, editingMessage.body.length)
+      restoreTextareaCursor(inputRef, editingMessage.body, editingMessage.body.length)
     } else if (!editingMessage) {
       // Reset when editing is cancelled
       lastEditedRowIdRef.current = null
@@ -621,7 +644,7 @@ export function MessageComposer({
     if (closedShortcode) {
       setText(closedShortcode.newText)
       updateCaret(closedShortcode.newText, closedShortcode.newCursorPosition)
-      restoreTextareaCursor(inputRef, closedShortcode.newCursorPosition)
+      restoreTextareaCursor(inputRef, closedShortcode.newText, closedShortcode.newCursorPosition)
     } else {
       setText(e.target.value)
       updateCaret(e.target.value, e.target.selectionStart)
@@ -684,43 +707,49 @@ export function MessageComposer({
 
     // For normal messages, require text OR pending attachment. For edits, allow empty to trigger retraction or attachment-only.
     if (!trimmed && !isEmptyEdit && !hasAttachmentOnly && !pendingAttachment) return
-    if (sending || photoBlocked) return
+    if (submitting.current || photoBlocked) return
 
-    // Slash commands (never while editing, replying, or in a disabled mode such
-    // as whisper). resolveInput returns the text to send, or 'consumed' when the
-    // input triggered a command. When commands are off, the raw text is sent.
-    let outgoingText = trimmed
-    if (commandsEnabled !== false && !replyingTo && !editingMessage && trimmed && resolveInput) {
-      const outcome = await resolveInput(trimmed)
-      if (outcome === 'consumed') {
-        setText('')
-        inputRef.current?.focus()
-        return
-      }
-      outgoingText = outcome
-    }
-
-    // Clear paused timeout
-    if (pausedTimeoutRef.current) {
-      clearTimeout(pausedTimeoutRef.current)
-      pausedTimeoutRef.current = null
-    }
-    lastComposingSentRef.current = 0
-
+    // Transfer ownership out of the draft before any asynchronous work. Otherwise
+    // unmounting can save this pending message as a fresh, sendable draft.
+    submitting.current = true
     setSending(true)
+    const submittedText = text
+    const rollbackDraft = !editingMessage ? onConsumeDraft?.() : undefined
+    if (!editingMessage) setText('')
+    const restore = () => {
+      if (rollbackDraft) rollbackDraft()
+      else if (mounted.current) setText(mergeFailedDraft(textRef.current, submittedText))
+    }
+
+    let failureKey = 'chat.failedToSendMessage'
     try {
-      let handled: boolean
+      let outgoingText = trimmed
+      if (commandsEnabled !== false && !replyingTo && !editingMessage && trimmed && resolveInput) {
+        const outcome = await resolveInput(trimmed)
+        if (outcome === 'consumed') {
+          inputRef.current?.focus()
+          return
+        }
+        outgoingText = outcome
+      }
+
+      if (pausedTimeoutRef.current) {
+        clearTimeout(pausedTimeoutRef.current)
+        pausedTimeoutRef.current = null
+      }
+      lastComposingSentRef.current = 0
 
       if (editingMessage && isEmptyEdit && onRetractMessage) {
         // Edit resulted in empty message - retract it instead
+        failureKey = 'chat.failedToDeleteMessage'
         await onRetractMessage(editingMessage.id)
         setText('')
         onCancelEdit?.()
         inputRef.current?.focus()
       } else if (editingMessage && onSendCorrection) {
-        // Handle edit mode - send correction
-        // Pass attachment if it exists and wasn't removed, otherwise undefined to remove it
-        handled = await onSendCorrection(editingMessage.id, trimmed, attachmentToKeep)
+        // Pass the kept attachment, or undefined to remove it.
+        failureKey = 'chat.failedToEditMessage'
+        const handled = await onSendCorrection(editingMessage.id, trimmed, attachmentToKeep)
         if (handled) {
           setText('')
           setLaunching(true)
@@ -728,23 +757,23 @@ export function MessageComposer({
           inputRef.current?.focus()
         }
       } else {
-        // Normal message send
-        handled = await onSend(outgoingText)
+        const handled = await onSend(outgoingText)
         if (handled) {
-          setText('')
+          // Do not clear again: the user may have started their next draft.
           setLaunching(true)
           onCancelReply?.()
           inputRef.current?.focus()
+        } else {
+          restore()
         }
       }
     } catch (err) {
+      if (!editingMessage) restore()
       const toastKey = encryptionSendErrorKey(err)
-      if (toastKey) {
-        addToast('error', t(toastKey))
-      } else {
-        console.error('Failed to send message:', err)
-      }
+      addToast('error', t(toastKey ?? failureKey))
+      if (!toastKey) console.error('Failed to send message:', err)
     } finally {
+      submitting.current = false
       setSending(false)
     }
   }
@@ -754,7 +783,7 @@ export function MessageComposer({
     setText(newText)
     updateCaret(newText, newCursorPosition)
     emojiAutocomplete.dismiss()
-    restoreTextareaCursor(inputRef, newCursorPosition)
+    restoreTextareaCursor(inputRef, newText, newCursorPosition)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<ComposerInputElement>) => {
@@ -904,7 +933,7 @@ export function MessageComposer({
     // Restore focus and set cursor after emoji
     const newCursorPos = cursorPos + emoji.length
     updateCaret(newText, newCursorPos)
-    restoreTextareaCursor(inputRef, newCursorPos)
+    restoreTextareaCursor(inputRef, newText, newCursorPos)
   }
 
   // Default input renderer (simple textarea)

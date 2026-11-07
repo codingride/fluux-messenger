@@ -79,6 +79,7 @@ try {
   for (const [bundle, target] of [
     [join(archivedApp, 'PlugIns/FluuxNotification.appex'), 'FluuxNotification'],
     [join(archivedApp, 'PlugIns/FluuxShare.appex'), 'FluuxShare'],
+    [join(archivedApp, 'PlugIns/FluuxWidgets.appex'), 'FluuxWidgets'],
     [archivedApp, 'fluux_iOS'],
   ]) {
     const entitlements = join(exportDir, `${target}.entitlements`)
@@ -129,8 +130,16 @@ try {
   if (value('ITSAppUsesNonExemptEncryption') !== 'false') throw new Error('The export compliance declaration is missing.')
   const plugIns = join(app, 'PlugIns')
   const extensions = existsSync(plugIns) ? readdirSync(plugIns).filter((name) => name.endsWith('.appex')) : []
-  for (const name of ['FluuxNotification.appex', 'FluuxShare.appex']) {
+  for (const name of ['FluuxNotification.appex', 'FluuxShare.appex', 'FluuxWidgets.appex']) {
     if (!extensions.includes(name)) throw new Error(`The IPA is missing ${name}.`)
+  }
+  // App Store Connect accepts a mismatch with warning 90473; refusing here catches a stale generated project.
+  const appVersion = value('CFBundleShortVersionString')
+  for (const name of extensions) {
+    const extensionVersion = read('plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', join(plugIns, name, 'Info.plist')])
+    if (extensionVersion !== appVersion) {
+      throw new Error(`${name} has version ${extensionVersion}, not the app's ${appVersion}. Regenerate the project with npm run tauri:ios:init.`)
+    }
   }
   const entitlementsOf = (bundle) => read('codesign', ['-d', '--entitlements', '-', '--xml', bundle])
   const grants = (entitlements, key, value) =>

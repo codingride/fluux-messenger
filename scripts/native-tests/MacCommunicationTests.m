@@ -1,4 +1,4 @@
-// Source intent: issue #1386, development-only local communication prototype.
+// Source intent: issue #1386, macOS communication notification delivery and cleanup.
 #import "../../apps/fluux/src-tauri/macos/CommunicationNotification.h"
 #import <AppKit/AppKit.h>
 
@@ -45,15 +45,17 @@ static FluuxCommunicationNotifications *fixture(NSMutableArray *requests) {
 int main(int argc, const char **argv) {
     @autoreleasepool {
         if (@available(macOS 12.0, *)) {
-            // Accepted standard-profile mode: runtime identity + generated flag, never ordinary Dev.
+            // Accepted Dev capability: exact runtime identities + generated flag, never ordinary hot reload.
             NSDictionary *standardConfig = [NSJSONSerialization JSONObjectWithData:
                 [NSData dataWithContentsOfFile:@"apps/fluux/src-tauri/tauri.conf.json"] options:0 error:nil];
             NSDictionary *devConfig = [NSJSONSerialization JSONObjectWithData:
                 [NSData dataWithContentsOfFile:@"apps/fluux/src-tauri/tauri.dev.conf.json"] options:0 error:nil];
             CHECK(standardConfig && devConfig);
-            CHECK([FluuxCommunicationNotifications enabledForIdentifier:standardConfig[@"identifier"] info:@{@"FluuxCommunicationTest":@YES}]);
+            CHECK([FluuxCommunicationNotifications enabledForIdentifier:standardConfig[@"identifier"] info:@{@"FluuxCommunication":@YES}]);
             CHECK(![FluuxCommunicationNotifications enabledForIdentifier:standardConfig[@"identifier"] info:@{}]);
-            CHECK(![FluuxCommunicationNotifications enabledForIdentifier:devConfig[@"identifier"] info:@{@"FluuxCommunicationTest":@YES}]);
+            CHECK([FluuxCommunicationNotifications enabledForIdentifier:devConfig[@"identifier"] info:@{@"FluuxCommunication":@YES}]);
+            CHECK(![FluuxCommunicationNotifications enabledForIdentifier:devConfig[@"identifier"] info:@{}]);
+            CHECK(![FluuxCommunicationNotifications enabledForIdentifier:@"net.processone.other" info:@{@"FluuxCommunication":@YES}]);
             NSMutableArray *requests = [NSMutableArray array];
             FluuxCommunicationNotifications *engine = fixture(requests);
             // Captain's F5 choice: retransform current names after the existing donation, schedule once, preserve content/identity.

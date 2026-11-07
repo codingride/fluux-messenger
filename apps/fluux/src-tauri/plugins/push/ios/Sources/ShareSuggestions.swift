@@ -1,5 +1,8 @@
 import Foundation
 import Intents
+#if os(iOS) && canImport(WidgetKit)
+import WidgetKit
+#endif
 
 /// Serializes donation and deletion so a late system callback cannot resurrect removed suggestions.
 enum ShareSuggestions {
@@ -17,14 +20,24 @@ enum ShareSuggestions {
         work { queue.async { running = false; next() } }
     }
 
+    /// The widget redraws once the names confirm a new account.
+    static func reloadWidgets() {
+        #if os(iOS) && canImport(WidgetKit)
+        if #available(iOS 14.0, *) { WidgetCenter.shared.reloadAllTimelines() }
+        #endif
+    }
+
     static func update(_ input: SharedNames, root: URL,
                        deleteAll: @escaping (@escaping (Error?) -> Void) -> Void = INInteraction.deleteAll,
                        delete: @escaping (String, @escaping (Error?) -> Void) -> Void = { INInteraction.delete(with: $0, completion: $1) },
+                       accountChanged: @escaping () -> Void = ShareSuggestions.reloadWidgets,
                        completion: @escaping (Error?) -> Void) {
         let old = SharedNames.load(root: root)
         // App Group ownership must change before any potentially stalled system callback.
         do { try NotificationMirror.writeNames(input, root: root) }
         catch { completion(error); return }
+        // The home-screen widget shows its list only for the account these names confirm.
+        if old.account != input.account { accountChanged() }
         enqueue { finished in
             let retained = input.preserveIfEmpty && old.account == input.account && input.contacts.isEmpty && input.rooms.isEmpty
                 ? old : input
@@ -61,29 +74,39 @@ enum ShareSuggestions {
 
     static func donate(_ destination: ConversationDestination, root: URL, completion: @escaping (Error?) -> Void) {
         enqueue { finished in
-            let names = SharedNames.load(root: root)
-            guard destination.belongs(to: names), let id = destination.identifier else {
+            guard let intent = intent(for: destination, names: SharedNames.load(root: root), root: root) else {
                 completion(nil); finished(); return
             }
-            let room = destination.type == "groupchat"
-            let name = (room ? names.rooms : names.contacts)[destination.jid] ?? destination.jid
-            let recipient = INPerson(personHandle: INPersonHandle(value: destination.jid, type: .unknown),
-                                     nameComponents: nil, displayName: name, image: nil,
-                                     contactIdentifier: nil, customIdentifier: id)
-            let intent = INSendMessageIntent(recipients: [recipient], outgoingMessageType: .outgoingMessageText,
-                                             content: nil, speakableGroupName: room ? INSpeakableString(spokenPhrase: name) : nil,
-                                             conversationIdentifier: id, serviceName: nil, sender: nil, attachments: nil)
-            #if os(iOS)
-            if let url = NotificationMirror.imageURL(for: destination.jid, names: names, root: root),
-               let data = try? Data(contentsOf: url) {
-                if room { intent.setImage(INImage(imageData: data), forParameterNamed: \.speakableGroupName) }
-                else { intent.setImage(INImage(imageData: data), forParameterNamed: \.recipients) }
-            }
-            #endif
             let interaction = INInteraction(intent: intent, response: nil)
             interaction.direction = .outgoing
-            interaction.groupIdentifier = id
+            interaction.groupIdentifier = intent.conversationIdentifier
             interaction.donate { error in completion(error); finished() }
         }
+    }
+
+    /// The suggestion iOS shows for a conversation of the signed-in account.
+    static func intent(for destination: ConversationDestination, names: SharedNames, root: URL) -> INSendMessageIntent? {
+        guard destination.belongs(to: names), let id = destination.identifier else { return nil }
+        let room = destination.type == "groupchat"
+        let name = (room ? names.rooms : names.contacts)[destination.jid] ?? destination.jid
+        let recipient = INPerson(personHandle: INPersonHandle(value: destination.jid, type: .unknown),
+                                 nameComponents: nil, displayName: name, image: nil,
+                                 contactIdentifier: nil, customIdentifier: id)
+        let intent = INSendMessageIntent(recipients: [recipient], outgoingMessageType: .outgoingMessageText,
+                                         content: nil, speakableGroupName: room ? INSpeakableString(spokenPhrase: name) : nil,
+                                         conversationIdentifier: id, serviceName: nil, sender: nil, attachments: nil)
+        #if os(iOS)
+        if let url = NotificationMirror.imageURL(for: destination.jid, names: names, root: root),
+           let data = try? Data(contentsOf: url) {
+            if room { intent.setImage(INImage(imageData: data), forParameterNamed: \.speakableGroupName) }
+            else { intent.setImage(INImage(imageData: data), forParameterNamed: \.recipients) }
+        }
+        #endif
+        return intent
+    }
+
+    /// The conversation a tapped suggestion stands for, or nil for any other intent.
+    static func destination(of intent: INIntent?) -> ConversationDestination? {
+        ConversationDestination.decode((intent as? INSendMessageIntent)?.conversationIdentifier)
     }
 }

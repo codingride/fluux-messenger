@@ -23,7 +23,7 @@ No executable formatter is shared between Swift and TypeScript.
 | Plain body | SDK preview text | Transport body | Transport body, or selected archived plain body |
 | Decrypted and accepted body | SDK preview text | Already-rendered transport body only | Verified, opted-in OX archive body |
 | Pending decryption/verification, failed or rejected content | Silent; the existing arrival may be reconsidered once on recovery | Generic `New message` when marked encrypted | Generic localized `New activity` unless an opted-in preview succeeds |
-| Unsupported encryption | Localized named or unnamed unsupported-method notice; never the sender's fallback | Keep an already-rendered notice when supplied as plain content | Keep an already-rendered plain notice; an unknown archive event yields generic activity |
+| Unsupported encryption | Localized named or unnamed unsupported-method notice; never the sender's fallback | Keep an already-rendered notice when supplied as plain content | Keep an already-rendered plain notice even when the archive lookup is unknown |
 | Empty/whitespace body without another previewable feature | Silent | Generic `New message` | Generic `New activity`; a blank archive body is not a candidate |
 | Attachment or poll | SDK preview emoji and caption/name/title | Server-rendered text only | Archive body only; the NSE does not synthesize attachment or poll labels |
 | Correction | Current resolved message preview; eligibility/dedup belong to the SDK, not the builder | Server-rendered text only | Ledger replaces a unique verified candidate, or formats the existing localized edit notice |
@@ -48,7 +48,11 @@ whitespace): `This message is encrypted`, `[OpenPGP-encrypted message]`, and
 literal nonblank plaintext, including those same words. Arbitrary sender-selected
 fallbacks cannot be recognized without encryption metadata; an unmarked,
 nonblank body remains opaque server text. Neither remote path decrypts the push
-body itself. No push-server schema change is required.
+body itself. No push-server schema change is required. When the signed-in account's
+preview snapshot publishes app wording, the NSE uses its `words.activity` for generic
+transport fallback, even if the device language differs. Without matching published
+wording, it falls back to the extension's device-localized wording; readable transport text
+is never replaced solely to localize an alert.
 
 The web SW cannot inspect SDK message state or keys. It must surface an alert for
 a received push; lookup/show failures retain its existing generic fallback.
@@ -60,8 +64,12 @@ remains compatible with signed-in legacy pushes. Only covered direct senders wit
 a current opted-in snapshot may use OX previews; rooms and explicitly unencrypted
 pushes bypass that work. Preview opt-out, hidden previews, expiry, unavailable keys,
 incomplete/unknown results, duplicate/read messages or revoked capability cannot
-reveal a decrypted body. Generic activity remains a nonempty stage-1 alert;
-suppression requires Apple's notification-filtering entitlement.
+reveal a decrypted body. These outcomes retain the individual push's transport-safe
+body: readable unmarked server text stays readable, while an encrypted or recognized
+placeholder remains generic activity. This includes duplicate-only results after an
+earlier lookup claimed every message in a burst. The extension does not infer an exact
+push-to-message identity from a standard push. Suppression requires Apple's
+notification-filtering entitlement.
 
 When the server has no archive, the transport-safe push is the only content
 source: apply the transport fallback rules above. The catch-up ledger still owns identity, read/notification claims,
@@ -74,12 +82,26 @@ bounded query/deadline/memory rules.
 | Context | Title | Body with several unread/new candidates |
 | --- | --- | --- |
 | App native chat | Contact name or sender local part; append formatted unread count | Latest resolved preview |
-| App native room | `nick @ room name` | Latest resolved preview |
+| App ordinary iOS/macOS system room | `room name — nick`; room alone without a nick | Latest resolved preview |
+| App other native room | `nick @ room name` | Latest resolved preview |
 | App web chat | Contact name or sender local part | Localized `N new messages` |
 | App web room | `nick @ room name` for one, room name for several | Localized `N new messages` |
 | Web push | Payload title, else `from`, else `Fluux Messenger` | Localized `N new messages`; count displayed notifications for the same tag |
 | iOS remote chat | Mirrored contact name, else sender local part | Localized `nickname: N new messages` for fresh ledger candidates |
-| iOS remote room | Mirrored room name with nick as subtitle | Transport-safe body; OX room preview is not supported |
+| iOS remote room | Mirrored room name, attributed to the room's bare identity with its cached room picture | Nick on the first message line, then the unchanged transport-safe body; no prefix without a nick; OX room preview is not supported |
+
+Room-first order is a system-presentation policy, not a change to the shared
+local formatter or in-app banners. iOS remote rooms use communication enrichment
+with the room as the notification origin, never an occupant with a room picture.
+Missing or corrupt room pictures never select a contact picture. The nickname
+starts the message instead of becoming an occupant-first group heading. This room
+attribution can change Focus filtering and needs physical-device qualification.
+Direct messages and outgoing share suggestions retain their existing communication
+behavior. Local iOS room alerts keep their attachments and use one headline because
+the plugin has no subtitle field. Ordinary macOS uses the same headline, including
+ordinary fallbacks in its disabled-by-default communication experiment. Successful
+macOS communication enrichment still uses the system-controlled layout; its sender
+and group metadata are unchanged.
 
 Counts intentionally have different sources: the app's unread count, the SW's
 still-displayed notification count, and the NSE's fresh claimed archive candidates.
@@ -97,8 +119,12 @@ npm run test:ios-notifications
 
 On macOS, the native runner compiles the actual Swift service/presentation,
 completion gate and SQLite ledger with `swiftc`, a synthetic engine, synthetic
-account names and isolated temporary storage. It requires no device, signing,
-installed app or network. The project template has no extension test target or
+account names and isolated temporary storage. For room rows it compares the iOS
+contract against the real incoming intent and separately checks the ordinary
+fallback, since macOS cannot apply iOS content enrichment. The qualified simulator
+journey in [iOS development](IOS_DEVELOPMENT.md#remote-push-notifications) covers rendered
+room alerts separately. The macOS runner requires no device, signing, installed
+app or network. The project template has no extension test target or
 XCTest scheme; these standalone Swift checks provide device-free coverage.
 They do not prove APNs delivery, real archive fetching/decryption, system preview
 presentation or physical-device resource limits.

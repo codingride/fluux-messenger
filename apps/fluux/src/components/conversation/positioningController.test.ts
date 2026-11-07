@@ -430,6 +430,28 @@ describe('positioning controller resident-top ownership', () => {
     expect(controller.snapshot().active?.phase).toEqual({ kind: 'settled' })
   })
 
+  // FLM-252: Home owns a released fling's leftover movement until it settles or the reader takes over.
+  it('reports pending navigation while Home is current', () => {
+    const harness = residentTopHarness()
+    const controller = new PositioningController()
+    observeLiveEntry(controller)
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+    controller.beginResidentTopNavigation({ conversationId, executor: harness.executor })
+    expect(controller.hasPendingNavigation(conversationId)).toBe(true)
+    expect(controller.hasPendingNavigation('another-room')).toBe(false)
+    for (const scrollTop of [640, 100, 1, 0]) {
+      harness.setScrollTop(scrollTop)
+      harness.runFrame()
+    }
+    expect(controller.snapshot().active?.phase).toEqual({ kind: 'settled' })
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+
+    controller.beginResidentTopNavigation({ conversationId, executor: harness.executor })
+    expect(controller.hasPendingNavigation(conversationId)).toBe(true)
+    controller.observeUserInput(conversationId)
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+  })
+
   it('does not treat follow-live rearming from measured movement as an explicit command', () => {
     const accepted = vi.fn()
     const controller = new PositioningController(undefined, accepted)
@@ -751,6 +773,59 @@ describe('positioning controller live-edge ownership', () => {
     staleFrame()
     expect(first.positionFrame).toHaveBeenCalledTimes(1)
     expect(second.positionFrame).toHaveBeenCalledTimes(1)
+  })
+
+  // FLM-252: return-to-latest owns a released fling's leftover movement until it first settles.
+  // Entry, follow-live re-pins and other live-edge requests are maintenance and never do.
+  it('reports pending navigation only for return-to-latest before its first settle', () => {
+    const harness = liveEdgeHarness()
+    const controller = new PositioningController()
+    controller.beginLiveEdgeEntry({ conversationId, entryFacts: liveEntryFacts(), executor: harness.executor })
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+
+    const navigationFacts = { unreadMarkerNeedsVisit: false, unreadMarkerAlign: 'start' } as const
+    controller.beginLiveEdgeNavigation({ conversationId, navigationFacts, executor: harness.executor })
+    expect(controller.hasPendingNavigation(conversationId)).toBe(true)
+    expect(controller.hasPendingNavigation('another-room')).toBe(false)
+    expect(controller.reconcileLiveEdge({ conversationId, executor: harness.executor, rearmEligibleFromGeometry: true }))
+      .toBe(true)
+    expect(controller.hasPendingNavigation(conversationId), 'a restart before landing is still the navigation').toBe(true)
+
+    while (harness.callbacks.length) harness.runFrame()
+    expect(controller.snapshot().active?.phase).toEqual({ kind: 'settled' })
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+    expect(controller.reconcileLiveEdge({ conversationId, executor: harness.executor, rearmEligibleFromGeometry: true }))
+      .toBe(true)
+    expect(harness.callbacks.length, 'the follow-live re-pin owns the pixels').toBeGreaterThan(0)
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+
+    controller.beginLiveEdgeRequest({
+      conversationId, source: { kind: 'live-update', reason: 'outgoing-message' }, executor: harness.executor,
+    })
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+
+    controller.beginLiveEdgeNavigation({ conversationId, navigationFacts, executor: harness.executor })
+    expect(controller.hasPendingNavigation(conversationId)).toBe(true)
+    controller.observeUserInput(conversationId)
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+  })
+
+  it('does not report follow re-armed by reader movement as pending navigation', () => {
+    const harness = liveEdgeHarness()
+    const controller = new PositioningController()
+    observeLiveEntry(controller)
+    const navigation = controller.beginLiveEdgeNavigation({
+      conversationId,
+      navigationFacts: { unreadMarkerNeedsVisit: false, unreadMarkerAlign: 'start' },
+      executor: harness.executor,
+    })!
+    controller.observeUserScroll(conversationId, -10, true)
+    expect(controller.snapshot().active?.request.source, 'the re-armed follow shares the navigation source')
+      .toEqual(navigation.source)
+    expect(controller.reconcileLiveEdge({ conversationId, executor: harness.executor, rearmEligibleFromGeometry: true }))
+      .toBe(true)
+    expect(harness.callbacks.length).toBeGreaterThan(0)
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
   })
 
   it('cancels immediately for user input and cannot be revived by a queued frame', () => {
@@ -1510,6 +1585,108 @@ describe('positioning controller directional-history ownership', () => {
     })).toBe(true)
     expect(first.positionFrame).not.toHaveBeenCalled()
     expect(second.positionFrame).toHaveBeenCalledTimes(1)
+  })
+
+  // FLM-204: at the resident bound an interior arrival shifts the window and spends this restore
+  // before the load's own batch lands. That batch may be restored again only while the reader
+  // still reads where the restore put them; otherwise it would pull them back to the old anchor.
+  describe('holding a settled restore for its in-flight load', () => {
+    function settledRestore(controller: PositioningController) {
+      const history = directionalHarness()
+      observeLiveEntry(controller)
+      const request = beginDirectional(controller, history.executor)
+      // Boundary input while the batch is pending is not a move: nothing has been written yet.
+      controller.observeUserInput(conversationId)
+      controller.reconcileDirectionalHistory({
+        conversationId,
+        generation: request.generation,
+        executor: history.executor,
+      })
+      for (let frame = 0; frame <= 60; frame += 1) history.runFrame()
+      expect(controller.snapshot().active?.phase).toEqual({ kind: 'settled' })
+      return request
+    }
+
+    it('holds through ambient corrections and stops at the reader\'s own input', () => {
+      const controller = new PositioningController()
+      const request = settledRestore(controller)
+      expect(controller.holdsDirectionalReading(conversationId, request.generation)).toBe(true)
+      expect(controller.holdsDirectionalReading('other@example.test', request.generation)).toBe(false)
+
+      const media: AnchorPreservationExecutor = {
+        observeGeometry: () => {},
+        reachability: () => ({ kind: 'available', index: 5, mounted: true, placement: 'viable' }),
+        beginLoop: () => ({ schedule: () => {}, recordFrame: () => {}, finish: () => {} }),
+        positionFrame: () => ({ kind: 'positioned', scrollTop: 400, reassert: true }),
+        complete: () => {},
+      }
+      expect(controller.beginMediaPreservation({
+        conversationId,
+        desired: {
+          kind: 'anchor',
+          messageId: 'media-row',
+          placement: { kind: 'bottom-fraction', fraction: messageFraction(0.5) },
+        },
+        executor: media,
+      })).not.toBeNull()
+      expect(controller.holdsDirectionalReading(conversationId, request.generation)).toBe(true)
+
+      controller.observeUserInput(conversationId)
+      expect(controller.holdsDirectionalReading(conversationId, request.generation)).toBe(false)
+    })
+
+    it('stops holding once the reader sends a message', () => {
+      const controller = new PositioningController()
+      const request = settledRestore(controller)
+
+      expect(controller.beginLiveEdgeRequest({
+        conversationId,
+        source: { kind: 'live-update', reason: 'outgoing-message' },
+        executor: inertLiveEdgeExecutor(),
+      })).not.toBeNull()
+      expect(controller.holdsDirectionalReading(conversationId, request.generation)).toBe(false)
+    })
+  })
+
+  // FLM-210 (CI, chromium and webkit): the pointer rested on a row as a load-older began, so a hover
+  // hold refused the load's request. The coordinator hands a shift to the load only while its own
+  // request is still pending here; otherwise ambient insertion handling must hold the reader.
+  it('reports a load pending only for its own accepted request, until a hover hold supersedes it', () => {
+    const history = directionalHarness()
+    const controller = new PositioningController()
+    observeLiveEntry(controller)
+    const request = beginDirectional(controller, history.executor)
+    expect(controller.isDirectionalHistoryPending(conversationId, request.generation)).toBe(true)
+    expect(controller.isDirectionalHistoryPending(conversationId, request.generation + 1)).toBe(false)
+    expect(controller.isDirectionalHistoryPending('other@example.test', request.generation)).toBe(false)
+
+    const hovered: AnchorPreservationExecutor = {
+      observeGeometry: () => {},
+      reachability: () => ({ kind: 'available', index: 5, mounted: true, placement: 'viable' }),
+      beginLoop: () => null,
+      positionFrame: () => ({ kind: 'positioned', scrollTop: 400, reassert: false }),
+      complete: () => {},
+    }
+    const hold = controller.beginInteractionHold({
+      conversationId,
+      desired: {
+        kind: 'anchor',
+        messageId: 'hovered-row',
+        placement: { kind: 'top-offset', offsetPx: pixelOffset(120) },
+      },
+      executor: hovered,
+    })
+    expect(hold).not.toBeNull()
+    expect(controller.isDirectionalHistoryPending(conversationId, request.generation)).toBe(false)
+
+    // While the hold lasts, the controller refuses the next load's request outright.
+    expect(controller.beginDirectionalHistory({
+      conversationId,
+      desired: request.desired,
+      distanceFromBottom: pixelOffset(640),
+      executor: history.executor,
+    })).toBeNull()
+    expect(controller.isDirectionalHistoryPending(conversationId)).toBe(false)
   })
 
   it('drops a pending anchor when a forward load reaches the live edge without shifting', () => {
@@ -2627,6 +2804,25 @@ describe('positioning controller explicit-target ownership', () => {
       },
     }
   }
+
+  // FLM-186's old-fling attribution must never exempt settled-target visibility maintenance.
+  it('reports pending navigation only for the initial current message-jump execution', () => {
+    const harness = targetHarness()
+    const controller = new PositioningController()
+    observeLiveEntry(controller)
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+    harness.setFrameResult({ kind: 'positioned', scrollTop: 400, wrote: true })
+    controller.beginExplicitTarget({ conversationId, messageId: 'target-a', executor: harness.executor })
+    expect(controller.hasPendingNavigation(conversationId)).toBe(true)
+    expect(controller.hasPendingNavigation('another-room')).toBe(false)
+
+    while (harness.callbacks.length) harness.runFrame()
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+    expect(controller.reconcileMessageTargetAfterResize({ conversationId, executor: harness.executor })).toBe(true)
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+    controller.observeUserInput(conversationId)
+    expect(controller.hasPendingNavigation(conversationId)).toBe(false)
+  })
 
   it('reconciles a settled message target after resize without acquiring follow-live', () => {
     const harness = targetHarness()

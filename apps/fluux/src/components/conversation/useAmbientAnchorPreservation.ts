@@ -37,7 +37,7 @@ import {
   type ScrollGeometrySample,
 } from './ambientAnchorDecisions'
 import { runScrollShadowSafely } from './scrollPositionShadow'
-import { messageFraction, type AnchorPreservationRequest } from './scrollPositionModel'
+import { messageFraction, type LayoutPreservationRequest } from './scrollPositionModel'
 import type { AnchorPreservationExecutor } from './positioningController'
 
 type AmbientReason = 'divider-mutation' | 'message-insertion'
@@ -48,11 +48,17 @@ export interface AmbientAnchorPorts {
   /** The viewport session's own bottom anchor, preferred over a locally captured one. */
   getSessionBottomAnchor: (conversationId: string) => ScrollAnchor | null | undefined
   recordBottomAnchor: (conversationId: string, anchor: ScrollAnchor | null) => void
-  /** True while a directional load's snapshot is landing in THIS commit. */
-  isDirectionalLoadLanding: (conversationId: string, firstMessageId: string) => boolean
+  /**
+   * True while a directional load's snapshot is landing in THIS commit: its batch, or an arrival
+   * that moved the rows while the load was pending, which that load's own restore then holds.
+   */
+  isDirectionalLoadLanding: (
+    conversationId: string,
+    window: { firstMessageId: string; interiorPlacementVersion: number },
+  ) => boolean
   beginLayoutPreservation: (input: {
     conversationId: string
-    desired: AnchorPreservationRequest['desired']
+    desired: LayoutPreservationRequest['desired']
     reason: AmbientReason
     executor: AnchorPreservationExecutor
   }) => void
@@ -170,7 +176,7 @@ export function useAmbientAnchorPreservation({
         conversationId: activeConversationId,
         fallback: undefined,
         observe: () => {
-          const desired: AnchorPreservationRequest['desired'] = {
+          const desired: LayoutPreservationRequest['desired'] = {
             kind: 'anchor',
             messageId: anchor.messageId,
             placement: {
@@ -287,7 +293,7 @@ export function useAmbientAnchorPreservation({
       next,
       directionalLoadLanding: portsRef.current.isDirectionalLoadLanding(
         conversationId,
-        firstMessageId ?? '',
+        { firstMessageId: firstMessageId ?? '', interiorPlacementVersion },
       ),
       hasAnchor: Boolean(insertionAnchorRef.current),
     })

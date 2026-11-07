@@ -13,6 +13,8 @@ mod ios_keychain;
 #[path = "ios/notification_previews.rs"]
 mod ios_notification_previews;
 #[cfg(target_os = "ios")]
+mod keychain_refusal;
+#[cfg(target_os = "ios")]
 mod link_preview;
 #[cfg(target_os = "ios")]
 mod native_storage;
@@ -102,6 +104,7 @@ pub fn run() {
         .plugin(tauri_plugin_share_sheet::init())
         .plugin(tauri_plugin_background_task::init())
         .plugin(tauri_plugin_ios_feedback::init())
+        .plugin(tauri_plugin_widgets::init())
         .setup(|app| {
             setup_native_storage(app);
             setup_openpgp(app);
@@ -129,6 +132,8 @@ pub fn run() {
             openpgp::openpgp_validate_cert,
             openpgp::openpgp_forget_account,
             openpgp::openpgp_has_persisted_key,
+            openpgp::openpgp_keychain_retry_available,
+            openpgp::openpgp_retry_keychain_access,
             openpgp::openpgp_backup_encrypt,
             openpgp::openpgp_backup_import,
             openpgp::openpgp_backup_import_all,

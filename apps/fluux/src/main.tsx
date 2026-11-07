@@ -25,9 +25,9 @@ import { getReconnectIntent } from './utils/reconnectIntent'
 import { captureWebLoginPrefill } from './utils/loginPrefillSources'
 import { useLoginPrefillStore } from './stores/loginPrefillStore'
 import { platform } from './platform'
+import { streamManagementMaxSeconds } from './platform/capabilities'
 import { detectWindowChrome } from './platform/windowChrome'
 import { installMobileViewport } from './utils/mobileViewport'
-import { installMobilePageZoom } from './utils/mobilePageZoom'
 import { installKeychainFastTokens } from './utils/keychainFastTokenStorage'
 
 
@@ -42,7 +42,6 @@ import { installKeychainFastTokens } from './utils/keychainFastTokenStorage'
 if (platform().shell === 'desktop') document.documentElement.dataset.tauri = 'true'
 void detectWindowChrome()
 installMobileViewport()
-installMobilePageZoom()
 
 // Enable native TCP/TLS proxy in Tauri unless explicitly disabled
 const disableTcpProxy = localStorage.getItem('fluux:disable-tcp-proxy') === 'true'
@@ -177,6 +176,7 @@ const renderApp = () => ReactDOM.createRoot(document.getElementById('root')!).re
       <XMPPProvider
         debug={import.meta.env.DEV}
         proxyAdapter={proxyAdapter}
+        streamManagementMaxSeconds={streamManagementMaxSeconds(platform())}
         shouldAutoReconnect={() => getReconnectIntent() === 'active'}
         e2eePlugins={E2EE_PLUGIN_IDS}
       >

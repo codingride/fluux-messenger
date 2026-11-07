@@ -94,7 +94,7 @@ export function createPlan(changes, cwd = root) {
     if (!step.reasons.includes(reason)) step.reasons.push(reason)
   }
   const npm = (name, reason, extra = {}) => add(name, 'npm', ['run', name], reason, extra)
-  const nodeTest = (path, reason, args = []) => add(`node:${path}:${args.join(' ')}`, 'node', ['--test', '--test-concurrency=1', ...args, path], reason)
+  const nodeTest = (path, reason, args = [], extra = {}) => add(`node:${path}:${args.join(' ')}`, 'node', ['--test', '--test-concurrency=1', ...args, path], reason, extra)
   const fullJs = reason => {
     full.add('sdk'); full.add('app')
     npm('test:tauri-features', reason)
@@ -119,9 +119,11 @@ export function createPlan(changes, cwd = root) {
   }
   const communication = reason => {
     nodeTest('scripts/macos-communication.test.mjs', reason)
+    nodeTest('scripts/macos-release.test.mjs', reason)
+    nodeTest('scripts/macos-dev-communication.test.mjs', reason)
     npm('check:tls-build', reason)
     add('cargo:communication-test', 'cargo', ['test', '--locked', '--manifest-path', mainManifest,
-      '--features', 'macos-communication-test'], reason, { requires: 'mac' })
+      '--features', 'macos-communication'], reason, { requires: 'mac' })
   }
   const nativeConfig = reason => {
     communication(reason)
@@ -168,6 +170,22 @@ export function createPlan(changes, cwd = root) {
       nodeTest('scripts/test-local-related.test.mjs', reason)
       if (/^(package|patches\/)/.test(path)) { packageContract(reason); nativeConfig(reason) }
       if (path.startsWith('.cargo/')) nativeConfig(reason)
+      continue
+    }
+    if (path === 'scripts/macos-signature-read.test.mjs' || path === 'scripts/verify-macos-release.mjs') {
+      nodeTest('scripts/macos-signature-read.test.mjs', reason, [], { requires: 'macos-reference' })
+    }
+    if (path === `${app}/scripts/tauri-build.sh` || path === `${app}/scripts/tauri-install.sh`) {
+      communication(reason)
+      gate(reason)
+      continue
+    }
+    if (path === `${app}/scripts/macos-communication-profile.mjs` || path === 'scripts/verify-macos-release.mjs'
+        || path === 'scripts/macos-signature-read.test.mjs'
+        || path === `${app}/scripts/tauri-dev-communication.mjs`
+        || path === 'scripts/macos-dev-communication.test.mjs'
+        || path === 'scripts/macos-release.test.mjs' || path === `${native}/macos/net.processone.fluux.provisionprofile`) {
+      communication(reason)
       continue
     }
     if (path === `${app}/scripts/tauri-macos-share.mjs`) {
@@ -233,6 +251,9 @@ export function createPlan(changes, cwd = root) {
     if (/PhotoPreparation\.swift$|ShareInboxPlugin\.swift$|scripts\/ios-photo-reduction\.test\.mjs$|scripts\/native-tests\/PhotoPreparationTests\.swift$/.test(path)) {
       photos(reason); platform(reason); continue
     }
+    if (/HingeLayout\.swift$|scripts\/ios-hinge-layout\.test\.mjs$|scripts\/native-tests\/HingeLayoutTests\.swift$/.test(path)) {
+      npm('test:ios-hinge', reason, { requires: 'mac' }); platform(reason); continue
+    }
     if (/ShareViewController\.swift$|scripts\/native-tests\/(ios-share\/|SharedURLTests\.swift$)|scripts\/(macos-share|ios-extension-identifiers|ios-share-schemes)\.test\.mjs$/.test(path)) {
       share(reason); platform(reason); continue
     }
@@ -240,7 +261,7 @@ export function createPlan(changes, cwd = root) {
       npm('test:ios-diagnostic', reason, { requires: 'diagnostic' })
       notification(reason); platform(reason); continue
     }
-    if (path.startsWith(`${native}/plugins/push/`) || /Notification(Service|PreviewEngine)\.swift$|scripts\/ios-(notifications|notification-previews|notification-diagnostic|quick-wins|app-intents)\.test\.mjs$|scripts\/native-tests\/(Notification|Preview|IOSQuickWins|IOSAppIntents|preview-identity|sdk-ts-loader)/.test(path)) {
+    if (path.startsWith(`${native}/plugins/push/`) || path.startsWith(`${native}/plugins/widgets/ios/`) || /Notification(Service|PreviewEngine)\.swift$|scripts\/ios-(notifications|notification-previews|notification-diagnostic|quick-wins|app-intents)\.test\.mjs$|scripts\/native-tests\/(Notification|Preview|UnreadList|IOSQuickWins|IOSAppIntents|preview-identity|sdk-ts-loader)/.test(path)) {
       notification(reason); platform(reason); continue
     }
     if (/mobile-share-resources\.mjs$/.test(path)) {
@@ -324,6 +345,13 @@ function run(command, args, cwd, capture = false) {
 export function checkRequirement(requirement, cwd, env = process.env, host = process.platform) {
   if (!requirement) return
   if (host !== 'darwin') throw new Error(`Missing native evidence: ${requirement} requires macOS/Xcode; do not count a skipped native test as passing`)
+  if (requirement === 'macos-reference') {
+    const app = env.FLUUX_MACOS_REFERENCE_APP
+    if (!app || !isAbsolute(app) || !existsSync(app) || !statSync(app).isDirectory()
+        || !existsSync(resolve(app, 'Contents/Info.plist'))) {
+      throw new Error('Missing public signature evidence: set FLUUX_MACOS_REFERENCE_APP to an absolute extracted public 0.18.1 app path before running the local gate')
+    }
+  }
   if (requirement === 'photos' && (!env.FLUUX_PHOTO_FIXTURES || !existsSync(env.FLUUX_PHOTO_FIXTURES) || !statSync(env.FLUUX_PHOTO_FIXTURES).isDirectory())) {
     throw new Error('Missing photo evidence: set FLUUX_PHOTO_FIXTURES to real JPEG/HEIC fixtures; a skipped test is not validation')
   }

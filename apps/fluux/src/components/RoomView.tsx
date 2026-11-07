@@ -17,7 +17,7 @@ import { FindOnPageBar } from './conversation/FindOnPageBar'
 import { useFindOnPage, type FindOnPageHandle } from '@/hooks/useFindOnPage'
 import { usePendingAttachment } from '@/hooks/usePendingAttachment'
 import { selectSelfOccupant, stableNickSet, resolveRoomSender, resolveReplyAvatar, resolveRoomAvatar, resolveSenderColor, rememberRoomNickIdentities, resolveRoomMentionColors, type RoomNickIdentity } from './conversation/roomSenderResolution'
-import { selectRoomInitialLoading } from './conversation/roomLoadingState'
+import { selectRoomInitialLoading, selectRoomMembershipPhase } from './conversation/roomLoadingState'
 import type { ReactorDetails } from './conversation/MessageReactorsSheet'
 import { format } from 'date-fns'
 import type { CopyMessageMeta } from '@/utils/buildCopyText'
@@ -31,7 +31,7 @@ import { RoomComposerEditor } from './composer/RoomComposerEditor'
 import { useMentionReferences } from './composer/useMentionReferences'
 import { composerAutocompleteAriaProps } from './composer/autocompleteAria'
 import { usesMobileEnterKey } from './composer/mobileEnter'
-import { ConversationColumn } from './conversation/ConversationColumn'
+import { ConversationColumn, ConversationTail } from './conversation/ConversationColumn'
 import { RoomHeader } from './RoomHeader'
 import { RoomVoiceControls } from './RoomVoiceControls'
 import { OccupantPanel } from './OccupantPanel'
@@ -374,6 +374,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
       prev.jid !== activeRoom.jid ||
       prev.nickname !== activeRoom.nickname ||
       prev.joined !== activeRoom.joined ||
+      prev.isJoining !== activeRoom.isJoining ||
       prev.supportsReactions !== activeRoom.supportsReactions ||
       prev.isIrcGateway !== activeRoom.isIrcGateway ||
       prev.occupants !== activeRoom.occupants ||
@@ -492,7 +493,8 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
   // REAL viewport-at-live-edge signal instead of `isActive && windowVisible`
   // alone — see ChatView's twin for the full rationale. `setActiveRoom` is the
   // SOLE caller of `beginViewportGeneration`; this view only reads the current
-  // generation and reports measured geometry against it.
+  // generation and reports measured geometry, or conservatively revokes follow-edge
+  // evidence while an interaction owns the view.
   //
   // Memoized on roomJid only — the KEY itself has no time-varying data, unlike
   // `viewportGeneration` below, which is read fresh on EVERY render (never
@@ -532,11 +534,21 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
     lastSentTimerRef.current = setTimeout(() => setLastSentMessageId(null), 400)
   }, [])
 
+  // Drop the pending send-animation timer before the view is torn down.
+  useEffect(() => () => {
+    if (lastSentTimerRef.current) {
+      clearTimeout(lastSentTimerRef.current)
+      lastSentTimerRef.current = null
+    }
+  }, [])
+
   // Stable callback to clear whisper target (name avoids clash with the
   // composer-internal handleClearWhisper defined inside RoomMessageInput).
   const handleClearWhisperTarget = useCallback(() => setWhisperTarget(null), [])
 
   if (!activeRoom) return null
+
+  const membershipPhase = selectRoomMembershipPhase(activeRoom)
 
   // Room media trust: open rooms are public; members-only/hidden are private.
   // A room whose disco hasn't resolved has isPrivate falsy → treated as public
@@ -566,6 +578,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
           {/* Header */}
           <RoomHeader
             room={activeRoom}
+            covered={covered}
             onBack={onBack}
             showOccupants={showOccupants}
             onToggleOccupants={() => setShowOccupants(!showOccupants)}
@@ -673,7 +686,7 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
               clearTargetMessageId={clearTargetMessageId}
               clearFirstNewMessageId={handleClearFirstNewMessageId}
               onMessageSeen={handleMessageSeen}
-              isJoined={activeRoom.joined}
+              membershipPhase={membershipPhase}
               isDarkMode={resolvedMode === 'dark'}
               onScrollToTop={fetchOlderHistory}
               onLoadAround={loadMessagesAround}
@@ -697,62 +710,66 @@ export function RoomView({ onBack, mainContentRef, composerRef, showOccupants = 
             </MediaAutoloadProvider>
           </div>
 
-          {/* Reaction mention pills — pinned above the composer */}
-          <ReactionMentions conversationId={activeRoom.jid} onSee={(id) => roomStore.getState().setTargetMessageId(id)} />
-          <EasterEggMentions conversationId={activeRoom.jid} onReplay={(animation, senderName) => roomStore.getState().triggerAnimation(activeRoom.jid, animation, senderName)} />
+          <ConversationTail>
+            {/* Reaction mention pills — pinned above the composer */}
+            <ReactionMentions conversationId={activeRoom.jid} onSee={(id) => roomStore.getState().setTargetMessageId(id)} />
+            <EasterEggMentions conversationId={activeRoom.jid} onReplay={(animation, senderName) => roomStore.getState().triggerAnimation(activeRoom.jid, animation, senderName)} />
 
-          {/* Input - show composer if joined, join prompt if not */}
-          {activeRoom.joined ? (
-            <RoomVoiceControls room={activeRoom} isConnected={isConnected} allowWhisper={!!whisperTarget}>
-              <RoomMessageInput
-                key={activeRoom.jid}
-                ref={composerHandleRef}
-                roomJid={activeRoom.jid}
-                textareaRef={composerRef as React.RefObject<ComposerInputElement | null>}
-                sendMessage={sendMessage}
-                sendCorrection={sendCorrection}
-                retractMessage={retractMessage}
-                sendChatState={sendChatState}
-                sendWhisperChatState={sendWhisperChatState}
-                sendEasterEgg={sendEasterEgg}
-                sendPoll={sendPoll}
-                replyingTo={replyingTo}
-                onCancelReply={handleCancelReply}
-                editingMessage={editingMessage}
-                onCancelEdit={handleCancelEdit}
-                onEditLastMessage={handleEditLastMessage}
-                onComposingChange={setIsComposing}
-                uploadState={uploadStateObj}
-                isUploadSupported={isSupported}
-                onFileSelect={handleFileDrop}
-                uploadFile={uploadFile}
-                pendingAttachment={pendingAttachment}
-                onRemovePendingAttachment={handleRemovePendingAttachment}
-                onChoosePhoto={choosePhoto}
-                processLinkPreview={processMessageForLinkPreview}
-                isConnected={isConnected}
-                onMessageIdSent={handleMessageIdSent}
-                whisperTarget={whisperTarget}
-                onClearWhisper={handleClearWhisperTarget}
-                sendWhisper={sendWhisper}
-                isDarkMode={resolvedMode === 'dark'}
-              />
-            </RoomVoiceControls>
-          ) : (
-            <RoomJoinPrompt
-              onJoin={async () => {
-                // Issue #37: warn before joining a room that would expose the user's real JID.
-                if (await confirmJoin(activeRoom.jid)) {
-                  try {
-                    // Prompts for the room password when the server asks for one.
-                    await joinRoomWithPassword(activeRoom.jid, activeRoom.nickname)
-                  } catch (err) {
-                    addToast('error', getRoomJoinErrorMessage(t, err))
+            {/* Membership owns the footer; joining never replaces the reading area. */}
+            {membershipPhase === 'joined' ? (
+              <RoomVoiceControls room={activeRoom} isConnected={isConnected} allowWhisper={!!whisperTarget}>
+                <RoomMessageInput
+                  key={activeRoom.jid}
+                  ref={composerHandleRef}
+                  roomJid={activeRoom.jid}
+                  textareaRef={composerRef as React.RefObject<ComposerInputElement | null>}
+                  sendMessage={sendMessage}
+                  sendCorrection={sendCorrection}
+                  retractMessage={retractMessage}
+                  sendChatState={sendChatState}
+                  sendWhisperChatState={sendWhisperChatState}
+                  sendEasterEgg={sendEasterEgg}
+                  sendPoll={sendPoll}
+                  replyingTo={replyingTo}
+                  onCancelReply={handleCancelReply}
+                  editingMessage={editingMessage}
+                  onCancelEdit={handleCancelEdit}
+                  onEditLastMessage={handleEditLastMessage}
+                  onComposingChange={setIsComposing}
+                  uploadState={uploadStateObj}
+                  isUploadSupported={isSupported}
+                  onFileSelect={handleFileDrop}
+                  uploadFile={uploadFile}
+                  pendingAttachment={pendingAttachment}
+                  onRemovePendingAttachment={handleRemovePendingAttachment}
+                  onChoosePhoto={choosePhoto}
+                  processLinkPreview={processMessageForLinkPreview}
+                  isConnected={isConnected}
+                  onMessageIdSent={handleMessageIdSent}
+                  whisperTarget={whisperTarget}
+                  onClearWhisper={handleClearWhisperTarget}
+                  sendWhisper={sendWhisper}
+                  isDarkMode={resolvedMode === 'dark'}
+                />
+              </RoomVoiceControls>
+            ) : membershipPhase === 'joining' ? (
+              <RoomJoiningPanel />
+            ) : (
+              <RoomJoinPrompt
+                onJoin={async () => {
+                  // Issue #37: warn before joining a room that would expose the user's real JID.
+                  if (await confirmJoin(activeRoom.jid)) {
+                    try {
+                      // Prompts for the room password when the server asks for one.
+                      await joinRoomWithPassword(activeRoom.jid, activeRoom.nickname)
+                    } catch (err) {
+                      addToast('error', getRoomJoinErrorMessage(t, err))
+                    }
                   }
-                }
-              }}
-            />
-          )}
+                }}
+              />
+            )}
+          </ConversationTail>
         </ConversationColumn>
         {warningDialog}
         {passwordDialog}
@@ -996,7 +1013,7 @@ export const RoomMessageList = memo(function RoomMessageList({
   clearTargetMessageId,
   clearFirstNewMessageId,
   onMessageSeen,
-  isJoined,
+  membershipPhase,
   isDarkMode,
   onScrollToTop,
   onLoadAround,
@@ -1059,7 +1076,7 @@ export const RoomMessageList = memo(function RoomMessageList({
   clearTargetMessageId?: () => void
   clearFirstNewMessageId: () => void
   onMessageSeen?: (messageId: string) => void
-  isJoined?: boolean
+  membershipPhase: ReturnType<typeof selectRoomMembershipPhase>
   isDarkMode?: boolean
   onScrollToTop?: () => void
   onLoadAround?: (anchorRow: MessageRowRef) => Promise<unknown> | void
@@ -1137,29 +1154,23 @@ export const RoomMessageList = memo(function RoomMessageList({
     [room.occupants, room.nickname],
   )
 
-  // Loading state covers two phases: joining (waiting for self-presence) and the
-  // first MAM catch-up after join when nothing is cached yet. Without the second
-  // phase the spinner vanished on join and the view showed "No messages" while
-  // history was still loading (see selectRoomInitialLoading).
+  // Only an uncached first history fetch replaces the reading area.
   const isInitialLoading = selectRoomInitialLoading({
-    isJoining: room.isJoining ?? false,
-    joined: room.joined ?? false,
+    joined: membershipPhase === 'joined',
     isCatchingUp: isCatchingUp ?? false,
     messageCount: loadedMessageCount,
   })
-  // Label matches the phase: still joining vs. joined and loading history.
-  const isJoiningPhase = (room.isJoining ?? false) && !(room.joined ?? false)
   const loadingState = isInitialLoading ? (
     <div className="flex-1 flex flex-col items-center justify-center gap-3 text-fluux-muted">
       <Loader2 className="size-8 animate-spin text-fluux-brand" />
-      <p>{isJoiningPhase ? t('rooms.joining') : t('chat.loadingMessages')}</p>
+      <p>{t('chat.loadingMessages')}</p>
     </div>
   ) : null
 
   // Empty state: different for joined vs not joined
   const emptyState = (
     <div className="flex-1 flex flex-col items-center justify-center text-fluux-muted gap-3">
-      {!isJoined && (
+      {membershipPhase === 'not-joined' && (
         <div className="flex items-center gap-2 text-fluux-yellow mb-1">
           <AlertCircle className="size-4" />
           <span className="text-sm">{t('rooms.notJoinedNoHistory')}</span>
@@ -1168,8 +1179,8 @@ export const RoomMessageList = memo(function RoomMessageList({
       <div className="size-16 rounded-full bg-fluux-brand/10 border border-fluux-brand/25 flex items-center justify-center">
         <Hash className="size-7 text-fluux-brand" />
       </div>
-      <p className="text-sm">{isJoined ? t('chat.noMessages') : t('rooms.joinToLoadHistory')}</p>
-      {isJoined && !isHistoryComplete && onScrollToTop && (
+      <p className="text-sm">{membershipPhase === 'joined' ? t('chat.noMessages') : membershipPhase === 'joining' ? t('rooms.noHistoryYet') : t('rooms.joinToLoadHistory')}</p>
+      {membershipPhase === 'joined' && !isHistoryComplete && onScrollToTop && (
         <button
           type="button"
           onClick={() => onScrollToTop()}
@@ -1183,7 +1194,7 @@ export const RoomMessageList = memo(function RoomMessageList({
   )
 
   // Extra content: cached history warning banner when not joined
-  const extraContent = !isJoined && messages.length > 0 ? (
+  const extraContent = membershipPhase === 'not-joined' && messages.length > 0 ? (
     <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-700 dark:text-amber-400">
       <AlertCircle className="size-4 flex-shrink-0" />
       <span className="text-sm">
@@ -1977,6 +1988,9 @@ export const RoomMessageInput = memo(function RoomMessageInput({
   const [attachmentWarning, setAttachmentWarning] = useState(false)
   const warningResolve = useRef<((confirmed: boolean) => void) | null>(null)
   const whisperSendGeneration = useRef(0)
+  // Private draft recovery expires on route exit, not attachment changes.
+  const whisperDraftGeneration = useRef(0)
+  useEffect(() => () => { whisperDraftGeneration.current += 1 }, [roomJid, whisperTarget])
   const currentWhisper = useRef(whisperTarget)
   currentWhisper.current = whisperTarget
   const currentAttachment = useRef(pendingAttachment)
@@ -2010,15 +2024,24 @@ export const RoomMessageInput = memo(function RoomMessageInput({
   const clearReferencesRef = useRef<() => void>(() => {})
   const handleDraftRestored = useCallback(() => clearReferencesRef.current(), [])
 
-  // Draft persistence - saves on room change, restores on load, clears references
-  const [text, setText] = useConversationDraft({
+  const mentionRecovery = useRef<{
+    references: MentionReference[]
+    restore: (text: string, references: MentionReference[]) => void
+  }>({ references: [], restore: () => {} })
+
+  // The current mounted room owns both recovered text and its mention metadata.
+  const [text, setText, consumeDraft, discardDraft] = useConversationDraft({
     conversationId: roomJid,
-    draftOperations: { getDraft, setDraft, clearDraft },
+    draftOperations: { owner: roomStore, getDraft, setDraft, clearDraft },
     composerRef,
     onDraftRestored: handleDraftRestored,
+    editingConversationId: editingMessage?.roomJid,
+    getReferences: () => mentionRecovery.current.references,
+    onDraftRecovered: (text, references) => mentionRecovery.current.restore(text, references),
   })
 
-  const { references, setReferences, handleEditorEdit, handleValueChange, insertMention } = useMentionReferences(setText)
+  const { references, setReferences, handleEditorEdit, handleValueChange, insertMention, restoreReferences } = useMentionReferences(setText)
+  mentionRecovery.current = { references, restore: restoreReferences }
   clearReferencesRef.current = () => setReferences([])
 
   // Exit whisper mode AND discard the typed text. The composer draft is keyed only
@@ -2026,8 +2049,8 @@ export const RoomMessageInput = memo(function RoomMessageInput({
   // composer and could be sent to the whole room. Discarding upholds the invariant:
   // private text is never converted into a public message (XEP-0045 §7.5).
   const handleClearWhisper = () => {
-    setText('')
-    clearDraft(roomJid)
+    whisperDraftGeneration.current += 1
+    discardDraft()
     onClearWhisper?.()
   }
 
@@ -2109,7 +2132,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
     : null
 
   // Convert RoomMessage to EditInfo for the composer
-  const editInfo: EditInfo | null = editingMessage
+  const editInfo: EditInfo | null = editingMessage?.roomJid === roomJid
     ? {
         id: editingMessage.id,
         body: editingMessage.body,
@@ -2213,7 +2236,6 @@ export const RoomMessageInput = memo(function RoomMessageInput({
         onRemovePendingAttachment?.()
       }
       onMessageIdSent?.(messageId)
-      clearDraft(roomJid)
       setTimeout(() => clearFirstNewMessageId(roomJid), 500)
       return true
     }
@@ -2247,7 +2269,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
     const body = sendText || attachment?.url || ''
     const messageId = await sendMessage(roomJid, body, { replyTo, references: references.length > 0 ? references : undefined, attachment: attachment ?? undefined })
     void donateIOSConversation(sendingAccount, roomJid, 'groupchat')
-    setReferences([])
+    // The composer cleared the submitted references with the text.
 
     // Notify parent of sent message ID for animation
     onMessageIdSent?.(messageId)
@@ -2257,8 +2279,7 @@ export const RoomMessageInput = memo(function RoomMessageInput({
       onRemovePendingAttachment?.()
     }
 
-    // Clear draft immediately so sidebar updates
-    clearDraft(roomJid)
+    // The composer consumed this draft before sending; do not clear a newer draft.
 
     // Whisper sends return early above, so a private URL never reaches link-preview generation (no room broadcast).
     // Process link preview in background (don't block on it)
@@ -2284,12 +2305,8 @@ export const RoomMessageInput = memo(function RoomMessageInput({
     else if (route.target === 'room') void sendChatState(roomJid, state)
   }
 
-  // Clear references when text is cleared
-  useEffect(() => {
-    if (text === '') {
-      setReferences([])
-    }
-  }, [text, setReferences])
+  // handleValueChange and draft recovery update text and references together.
+  // An empty-text effect here would erase metadata restored during mounting.
 
   // Mention autocomplete dropdown
   const isMentionListboxOpen = mentionState.isActive && mentionState.matches.length > 0
@@ -2493,6 +2510,11 @@ export const RoomMessageInput = memo(function RoomMessageInput({
         onSendCorrection={handleCorrection}
         onRetractMessage={handleRetract}
         onComposingChange={onComposingChange}
+        onConsumeDraft={() => {
+          const privateGeneration = whisperDraftGeneration.current
+          // Validate again when a held failure is applied after an edit/remount.
+          return consumeDraft(() => !whisperTarget || whisperDraftGeneration.current === privateGeneration)
+        }}
         onSend={(sendText) => trackSend(handleSend(sendText))}
         onSendEasterEgg={(animation) => sendEasterEgg(roomJid, animation)}
         onCreatePoll={() => setShowPollCreator(true)}
@@ -2523,6 +2545,19 @@ export const RoomMessageInput = memo(function RoomMessageInput({
     </div>
   )
 })
+
+/** Noninteractive replacement for the composer until membership is confirmed. */
+function RoomJoiningPanel() {
+  const { t } = useTranslation()
+  return (
+    <div className="p-4 pb-safe border-t border-fluux-hover">
+      <div role="status" aria-live="polite" aria-atomic="true" className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-fluux-bg/50 border border-fluux-hover text-fluux-muted text-sm">
+        <Loader2 aria-hidden="true" className="size-4 text-fluux-brand animate-spin motion-reduce:animate-none" />
+        <span>{t('rooms.joining')}</span>
+      </div>
+    </div>
+  )
+}
 
 /**
  * Join prompt shown when viewing a bookmarked room that is not joined.

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-function compileNotificationTests(scratch, main, ios = false) {
+function compileNotificationTests(scratch, main, ios = false, realEngine = false) {
   const binary = join(scratch, ios ? 'notification-test.dylib' : 'notification-test')
   const target = ios ? ['-emit-library', '-sdk', execFileSync('xcrun', ['--sdk', 'iphonesimulator', '--show-sdk-path'], { encoding: 'utf8' }).trim(),
     '-target', `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-ios15.0-simulator`] : []
@@ -17,9 +17,10 @@ function compileNotificationTests(scratch, main, ios = false) {
     ...['SharedNotificationStore.swift', 'SharedBadge.swift', 'NotificationPresentation.swift', 'ConversationDestination.swift', 'NotificationSoundSettings.swift'].map(name =>
       fileURLToPath(new URL(`../apps/fluux/src-tauri/plugins/push/ios/Sources/NotificationAvatars/${name}`, import.meta.url))),
     fileURLToPath(new URL('../apps/fluux/src-tauri/plugins/push/ios/Sources/ShareSuggestions.swift', import.meta.url)),
+    fileURLToPath(new URL('../apps/fluux/src-tauri/plugins/widgets/ios/Sources/UnreadList.swift', import.meta.url)),
     ...['PreviewKeychain.swift', 'PreviewDelivery.swift', 'PreviewLedger.swift', 'PreviewResult.swift', 'PreviewTrace.swift'].map(name =>
       fileURLToPath(new URL(`../apps/fluux/src-tauri/plugins/push/ios/Sources/NotificationPreviews/${name}`, import.meta.url))),
-    fileURLToPath(new URL('./native-tests/NotificationPreviewEngineStub.swift', import.meta.url)),
+    fileURLToPath(new URL(realEngine ? '../apps/fluux/src-tauri/mobile/ios/NotificationPreviewEngine.swift' : './native-tests/NotificationPreviewEngineStub.swift', import.meta.url)),
     fileURLToPath(new URL(`./native-tests/${main}`, import.meta.url)),
     '-lsqlite3', '-o', binary], { timeout: 120000 })
   return binary
@@ -103,13 +104,29 @@ test('iOS notification conversation grouping', { skip: process.platform !== 'dar
   const scratch = mkdtempSync(join(tmpdir(), 'fluux-notification-test-'))
   try {
     const binary = compileNotificationTests(scratch, 'NotificationServiceTests.swift')
-    for (const scenario of ['room-participants', 'signed-out', 'account-guard', 'stalled-mirror-cleanup', 'uncovered-body', 'server-plaintext', 'direct', 'room', 'existing', 'missing', 'mirror', 'intents', 'conversations']) {
+    for (const scenario of ['room-first', 'room-participants', 'signed-out', 'account-guard', 'stalled-mirror-cleanup', 'widget-reload', 'uncovered-body', 'server-plaintext', 'direct', 'room', 'existing', 'missing', 'mirror', 'intents', 'suggestion-launch', 'conversations', 'muc-nick']) {
       await t.test(scenario, () => {
-        assert.match(execFileSync(binary, [scenario]).toString(), /passed/)
+        const output = execFileSync(binary, [scenario]).toString()
+        assert.match(output, /passed/)
+        if (scenario === 'room-first') console.log(output.trim())
       })
     }
     // Type-check the iOS-only group-image assertions without launching a simulator or installed app.
     compileNotificationTests(scratch, 'NotificationServiceTests.swift', true)
+  } finally { rmSync(scratch, { recursive: true, force: true }) }
+})
+
+test('iOS unread widget list follows the badge and holds no message text', { skip: process.platform !== 'darwin' }, async (t) => {
+  // Intent: the widget lists the conversations the badge counts; a push adds its conversation by the
+  // badge's rule; signing out empties the list (FLM-414 accepted plan, piece 1).
+  const scratch = mkdtempSync(join(tmpdir(), 'fluux-unread-widget-'))
+  try {
+    const binary = compileNotificationTests(scratch, 'UnreadListTests.swift')
+    for (const scenario of ['round-trip', 'no-message-text', 'push-adds-row', 'room-rule', 'other-account', 'cap', 'concurrent-pushes', 'latest-total-wins', 'labels-follow-entry-date', 'mismatched-owner', 'midnights', 'clear-wins', 'clear']) {
+      await t.test(scenario, () => {
+        assert.match(execFileSync(binary, [scenario]).toString(), /passed/)
+      })
+    }
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 })
 
@@ -120,10 +137,28 @@ test('notification extension FAST token store', { skip: process.platform !== 'da
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 })
 
+test('notification extension serializes FAST sign-ins without a keychain', { skip: process.platform !== 'darwin' }, () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'fluux-signin-test-'))
+  try {
+    const binary = compileNotificationTests(scratch, 'NotificationPreviewEngineTests.swift', false, true)
+    const output = execFileSync(binary, { encoding: 'utf8', timeout: 30000 })
+    assert.match(output, /passed/)
+    console.log(output.trim())
+    compileNotificationTests(scratch, 'NotificationPreviewEngineTests.swift', true, true)
+  } finally { rmSync(scratch, { recursive: true, force: true }) }
+})
+
 test('shared notification content contract on native iOS paths', { skip: process.platform !== 'darwin' }, () => {
   const scratch = mkdtempSync(join(tmpdir(), 'fluux-content-test-'))
   try {
+    const corpus = JSON.parse(readFileSync(new URL('../tests/fixtures/notification-content.json', import.meta.url), 'utf8'))
+    const frenchWords = JSON.parse(readFileSync(new URL('../apps/fluux/src/i18n/locales/fr.json', import.meta.url), 'utf8')).notificationPreview
+    for (const fixture of corpus.cases) {
+      if (fixture.ios?.words) assert.deepEqual(fixture.ios.words, frenchWords, `${fixture.id}: app wording must come from its translation source`)
+    }
     const binary = compileNotificationTests(scratch, 'NotificationContentTests.swift')
-    assert.match(execFileSync(binary, [fileURLToPath(new URL('../tests/fixtures/notification-content.json', import.meta.url))], { encoding: 'utf8' }), /passed/)
+    const output = execFileSync(binary, [fileURLToPath(new URL('../tests/fixtures/notification-content.json', import.meta.url))], { encoding: 'utf8' })
+    assert.match(output, /passed/)
+    console.log(output.trim())
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 })

@@ -235,6 +235,25 @@ export interface KeyBundle {
   createdAt?: string
 }
 
+/** Explicit consent to recover only this account; never inferred from an error. */
+export interface BackupRecoveryMode {
+  accountJid: string
+}
+
+/** Selected-key installs carry the typed code independently of its working form.
+ * Supplying accountJid explicitly opts into account-bound recovery. */
+export interface KeyInstallOptions {
+  accountJid?: string
+  typedPassphrase?: string
+}
+
+export interface BackupContext {
+  message: string
+  /** Code form that decrypted this source, possibly the legacy encoding. */
+  passphrase: string
+  typedPassphrase?: string
+}
+
 /**
  * Discriminated union returned by {@link restoreSecretKey} /
  * {@link importKeyFromFile}. When the backup contains a single key
@@ -246,8 +265,9 @@ export type RestoreResult =
   | IdentityInfo
   | {
       needsPicker: true
+      recommendedFingerprint?: string
       candidates: KeyBundle[]
-      backupContext: { message: string; passphrase: string }
+      backupContext: BackupContext
     }
 
 /** Decryption result returned by the crypto backend. */
@@ -362,6 +382,18 @@ const INACTIVE_ARCHIVE_TOLERANCE_MS = 5 * 60 * 1000
 export function classifyBoundaryError(err: unknown): { kind: E2EEErrorKind; code: string } {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase()
 
+  if (msg.includes('openpgp-storage-unavailable:')) {
+    return { kind: 'permanent', code: 'key-storage-unavailable' }
+  }
+  // FLM-304: answers of the explicit keychain retry. A new refusal keeps
+  // the earlier recovery state; "unavailable" means there is nothing to retry.
+  if (msg.includes('openpgp-keychain-refused:')) {
+    return { kind: 'permanent', code: 'keychain-refused' }
+  }
+  if (msg.includes('openpgp-keychain-retry-unavailable:')) {
+    return { kind: 'permanent', code: 'keychain-retry-unavailable' }
+  }
+
   if (msg.includes('no skesk matched') || msg.includes('session key decryption failed') || msg.includes('incorrect key passphrase')) {
     return { kind: 'permanent', code: 'wrong-passphrase' }
   }
@@ -460,6 +492,24 @@ export const OPENPGP_DESCRIPTOR: E2EEProtocolDescriptor = {
  */
 export type BackupProbeResult = 'present' | 'absent' | 'unknown'
 
+/**
+ * What the native store's cached answers say about the keychain items that
+ * unlock our key: `held` while it keeps the user's refusal of them, `pending`
+ * while a keychain read is under way, such as an earlier retry still waiting
+ * on the user's answer, and `unlocked` once the native store has the key
+ * unlocked, for example by such a retry the user allowed after it timed out.
+ */
+export type KeychainRetryAvailability = 'held' | 'not-held' | 'pending' | 'unlocked'
+
+/**
+ * What the keychain retry panel offers (FLM-304). `offered`: asking the
+ * keychain again. `ready`: using the key the native store already unlocked,
+ * which reads nothing (FLM-408 R5). `unconfirmed` while no answer holds yet:
+ * a keychain read is under way, such as a retry whose prompt outlived its
+ * time limit, or a probe failed. Only `none` confirms that nothing is left.
+ */
+export type KeychainRetryState = 'offered' | 'ready' | 'unconfirmed' | 'none'
+
 /** What a check of our published key found, or `outdated` when our key changed meanwhile. */
 type OwnKeyCheckVerdict = 'consistent' | 'conflict' | 'outdated'
 
@@ -555,22 +605,123 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
 
   /**
    * Set by {@link init} when {@link ensureIdentity} fails with a
-   * `key-unrecoverable` error — a local key exists but cannot be unlocked
+   * `key-unrecoverable` or `key-storage-unavailable` error — a local key
+   * cannot be unlocked
    * (keychain/key desync, a corrupted secret-key packet, or a passphrase
    * that has gone missing). The plugin stays REGISTERED (init swallows the
    * error) so the host can read this flag and route the user to recovery
-   * via the IdentityChoiceDialog (restore from server backup / import file /
-   * replace identity), instead of dead-ending on an opaque registration
-   * failure. Cleared the moment a usable identity is established.
+   * through the appropriate storage-refusal or desync decision, instead of
+   * dead-ending on an opaque registration failure. Cleared the moment a usable identity is established.
    */
-  protected _keyRecoveryNeeded = false
+  protected _keyRecoveryReason: 'key-unrecoverable' | 'key-storage-unavailable' | null = null
 
   /**
    * True when a local key exists but could not be unlocked, so the host
-   * should route the user through recovery. @see {@link _keyRecoveryNeeded}.
+   * should route the user through recovery. @see {@link _keyRecoveryReason}.
    */
   isKeyRecoveryNeeded(): boolean {
-    return this._keyRecoveryNeeded
+    return this._keyRecoveryReason !== null
+  }
+
+  /** Only a refused native secret-store read selects guided macOS recovery. */
+  isKeyStorageUnavailable(): boolean {
+    return this._keyRecoveryReason === 'key-storage-unavailable'
+  }
+
+  /** Native adapters override this when a restore must be reconciled on restart. */
+  isBackupRestoreUncertain(): boolean {
+    return false
+  }
+
+  /**
+   * FLM-304, the captain's words on FLM-298: "Never, but maybe an explicit
+   * retry try could be proposed in a advanced panel, in case there is no
+   * other way to recover the key". The retry is offered only while this
+   * account's key is locked by a keychain refusal the native store still
+   * holds, no restore awaits reconciliation, and the server confirms it has
+   * no backup. Asking never retries anything, and a request still waiting on
+   * the user's answer is `unconfirmed`, never `none` (FLM-408 R4). A locked
+   * key the native store has since unlocked, as when the user allowed a
+   * retry's prompt after it timed out, is `ready`: using it reads nothing,
+   * as the next normal start would (FLM-408 R5).
+   */
+  async keychainRetryState(): Promise<KeychainRetryState> {
+    const ctx = this.ctx
+    if (!ctx || !this.isKeyRecoveryNeeded() || this.isBackupRestoreUncertain()) return 'none'
+    let availability: KeychainRetryAvailability
+    try {
+      availability = await this.keychainRetryAvailability(ctx.account.jid)
+    } catch (err) {
+      ctx.logger.debug(`${this.pluginName()}: keychain retry probe failed: ${formatError(err)}`)
+      return 'unconfirmed'
+    }
+    if (this.ctx !== ctx) return 'none'
+    if (availability === 'unlocked') return 'ready'
+    if (availability !== 'held') return availability === 'pending' ? 'unconfirmed' : 'none'
+    const backup = await this.probeSecretKeyBackup()
+    if (this.ctx !== ctx) return 'none'
+    // A backup that exists recovers the key instead; an unknown answer decides nothing.
+    return backup === 'absent' ? 'offered' : backup === 'present' ? 'none' : 'unconfirmed'
+  }
+
+  /**
+   * The user's explicit request to read the refused keychain items once more.
+   * On success the same key is in use again, as after a normal start; it never
+   * generates, restores or deletes a key. A key the native store already
+   * unlocked is used without a read. A new refusal throws `keychain-refused`
+   * and leaves the recovery state as it was.
+   */
+  async retryKeychainAccess(): Promise<IdentityInfo> {
+    const ctx = this.requireCtx()
+    if (!this.isKeyRecoveryNeeded()) {
+      throw new E2EEPluginError('permanent', 'keychain-retry-unavailable', `${this.pluginName()}: the key is not locked`)
+    }
+    // A restore that may have written fresh items is reconciled on restart first.
+    if (this.isBackupRestoreUncertain()) throw new E2EEPluginError('permanent', 'restore-outcome-uncertain', '')
+    if (this.runningOwnKeyOperations) throw new E2EEPluginError('transient', 'identity-change-pending', 'An identity change is already in progress')
+    // The operation lasts until the unlocked key is published, so no restore or
+    // replacement starts before the retry reports which key is in use.
+    const identity = await this.ownKeyOperation(async () => {
+      let unlocked: KeyBundle
+      try {
+        unlocked = await this.retryRefusedKeychainAccess(ctx.account.jid)
+      } catch (err) {
+        const error = this.toPluginError('retryKeychainAccess', err)
+        // A read that now succeeds can still fail to unlock the key.
+        if (this.ctx === ctx && (error.code === 'key-unrecoverable' || error.code === 'key-storage-unavailable')) {
+          this._keyRecoveryReason = error.code
+        }
+        throw error
+      }
+      if (this.ctx !== ctx) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Keychain retry account changed')
+      this.ownBundle = unlocked
+      this._keyRecoveryReason = null
+      notifyPeerKeysetChanged(ctx.account.jid)
+      // What a normal start does with an unlocked key. Publication stays best
+      // effort, and stops once a log out or another key outdates it.
+      const current = () => this.ctx === ctx && this.ownBundle === unlocked
+      await this.publishOwnIdentity(unlocked, current).catch((err: unknown) => {
+        ctx.logger.warn(`${this.pluginName()}: public key publish after keychain retry failed: ${formatError(err)}`)
+      })
+      if (!current()) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Keychain retry account changed')
+      // Messages that waited for the key decrypt now.
+      ctx.notifyKeyUnlocked?.()
+      return { fingerprint: unlocked.fingerprint }
+    })
+    // Subscription activation fetches verified peers. Start it after the key
+    // operation ends so its own freshness guard accepts the unlocked identity.
+    this.reverifyTrustStateAfterKeyChange()
+    return identity
+  }
+
+  /** Native adapters report a keychain refusal held this launch, or a key unlocked since; never a new read. */
+  protected async keychainRetryAvailability(_accountJid: string): Promise<KeychainRetryAvailability> {
+    return 'not-held'
+  }
+
+  /** Native adapters ask the OS once more for the refused items and unlock the existing key. */
+  protected async retryRefusedKeychainAccess(_accountJid: string): Promise<KeyBundle> {
+    throw new E2EEPluginError('permanent', 'keychain-retry-unavailable', `${this.pluginName()}: no keychain retry on this platform`)
   }
 
   // ---------------------------------------------------------------------------
@@ -646,12 +797,14 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
   /**
    * Decrypt a backup message and return metadata for ALL TSKs found
    * inside. Does NOT persist anything — the caller picks one and
-   * then calls {@link backupImportSelected} to install it.
+   * then calls {@link backupImportSelected} to install it. When
+   * `stageForInstall` is false, inspect without changing a staged selection.
    */
   protected abstract backupImportAll(
     accountJid: string,
     backupMessage: string,
     passphrase: string,
+    stageForInstall?: boolean,
   ): Promise<KeyBundle[]>
 
   /**
@@ -663,6 +816,7 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
     backupMessage: string,
     passphrase: string,
     selectedFingerprint: string,
+    recovery?: BackupRecoveryMode,
   ): Promise<KeyBundle>
 
   /**
@@ -703,6 +857,7 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
 
   async init(ctx: PluginContext): Promise<void> {
     this.ctx = ctx
+    this._keyRecoveryReason = null
     if (!ctx.account.jid) {
       throw new Error(`${this.pluginName()}: requires a logged-in account JID`)
     }
@@ -733,14 +888,14 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
         // retire the published identity.
         return
       }
-      if (err instanceof E2EEPluginError && err.code === 'key-unrecoverable') {
+      if (err instanceof E2EEPluginError && (err.code === 'key-unrecoverable' || err.code === 'key-storage-unavailable')) {
         // A local key exists but cannot be unlocked (keychain/key desync,
         // corrupted secret packet, or a missing passphrase). Keep the
         // plugin registered and flag the condition so the host can route
-        // the user to recovery (restore / import / replace) via the
-        // IdentityChoiceDialog, instead of failing registration with an
+        // the user to its platform's recovery flow, instead of failing
+        // registration with an
         // opaque error the UI can only render as "(unknown)".
-        this._keyRecoveryNeeded = true
+        this._keyRecoveryReason = err.code
         return
       }
       throw err
@@ -978,7 +1133,7 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
     if (this.ctx) notifyPeerKeysetChanged(this.ctx.account.jid)
     // A usable identity is established — clear any prior recovery flag so a
     // successful restore/import/replace lifts the host's recovery routing.
-    this._keyRecoveryNeeded = false
+    this._keyRecoveryReason = null
 
     await this.publishOwnIdentity(bundle)
     return { fingerprint: bundle.fingerprint }
@@ -990,12 +1145,15 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
    * best effort: a failure is logged, and the next reconnect tries again
    * (see {@link onReconnected}).
    */
-  private async publishOwnIdentity(bundle: KeyBundle): Promise<void> {
-    const ctx = this.requireCtx()
+  private async publishOwnIdentity(
+    bundle: KeyBundle,
     // Every write below, the publication's healing retries included, stops
     // once a change of our key outdates this work; that change publishes
-    // what it needs.
-    const current = this.ownKeyFreshness(bundle)
+    // what it needs. An own-key operation that publishes its own key passes
+    // the check that it is still current instead.
+    current: OwnKeyFreshness = this.ownKeyFreshness(bundle),
+  ): Promise<void> {
+    const ctx = this.requireCtx()
     const verdict = await this.checkOwnPublishedKeyConsistency(bundle, current)
     if (verdict === 'outdated') return
     if (verdict === 'conflict') {
@@ -1131,7 +1289,9 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
    */
   async retireAndGenerateIdentity(): Promise<IdentityInfo> {
     const ctx = this.requireCtx()
-    return this.ownKeyOperation(async () => {
+    // A restore, import or keychain retry under way decides which key is ours first.
+    if (this.runningOwnKeyOperations) throw new E2EEPluginError('transient', 'identity-change-pending', 'An identity change is already in progress')
+    const identity = await this.ownKeyOperation(async () => {
       let publishedFingerprints: string[] = []
       try {
         publishedFingerprints = await probeRemotePublishedFingerprints(
@@ -1186,10 +1346,11 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
       // locally so history stays decryptable. Re-run deferred decrypts so any
       // still-stashed messages are recovered immediately.
       ctx.notifyKeyUnlocked?.()
-      this.reverifyTrustStateAfterKeyChange()
 
       return { fingerprint: bundle.fingerprint }
     })
+    this.reverifyTrustStateAfterKeyChange()
+    return identity
   }
 
   /**
@@ -1369,9 +1530,11 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
     }
   }
 
-  async restoreSecretKey(passphrase: string): Promise<RestoreResult> {
+  async restoreSecretKey(passphrase: string, recovery?: BackupRecoveryMode): Promise<RestoreResult> {
     const ctx = this.requireCtx()
+    this.assertRecoveryAccount(recovery)
     const armoredMessage = await this.fetchSecretKeyBackup()
+    if (this.ctx !== ctx) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
     if (!armoredMessage) {
       throw new E2EEPluginError(
         'permanent',
@@ -1388,6 +1551,7 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
         'restoreSecretKey',
       )
 
+    if (this.ctx !== ctx) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
     const selection = await this.selectKeyFromBackup(bundles)
     if (!selection) {
       throw new E2EEPluginError(
@@ -1397,11 +1561,14 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
       )
     }
 
-    if (!selection.needsPicker) {
+    if (this.ctx !== ctx) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
+    this.assertRecoveryAccount(recovery)
+    if (!selection.needsPicker && !recovery) {
       const info = await this.doInstallKey(
         armoredMessage,
         workingPassphrase,
         selection.selected.fingerprint,
+        { fromServer: true },
       )
       if (usedLegacyPassphrase) {
         await this.healLegacyBackupEncoding(passphrase)
@@ -1411,8 +1578,10 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
 
     return {
       needsPicker: true,
+      ...(recovery ? { recommendedFingerprint: selection.selected.fingerprint } : {}),
       candidates: bundles,
-      backupContext: { message: armoredMessage, passphrase: workingPassphrase },
+      backupContext: { message: armoredMessage, passphrase: workingPassphrase,
+        ...(workingPassphrase !== passphrase ? { typedPassphrase: passphrase } : {}) },
     }
   }
 
@@ -1432,9 +1601,10 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
     armoredMessage: string,
     passphrase: string,
     op: string,
+    stageForInstall = true,
   ): Promise<{ bundles: KeyBundle[]; workingPassphrase: string; usedLegacyPassphrase: boolean }> {
     try {
-      const bundles = await this.backupImportAll(accountJid, armoredMessage, passphrase)
+      const bundles = await this.backupImportAll(accountJid, armoredMessage, passphrase, stageForInstall)
       return { bundles, workingPassphrase: passphrase, usedLegacyPassphrase: false }
     } catch (originalErr) {
       const legacy = legacyNormalizeBackupPassphrase(passphrase)
@@ -1443,7 +1613,7 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
         throw this.toPluginError(op, originalErr)
       }
       try {
-        const bundles = await this.backupImportAll(accountJid, armoredMessage, legacy)
+        const bundles = await this.backupImportAll(accountJid, armoredMessage, legacy, stageForInstall)
         this.requireCtx().logger.info(
           `${this.pluginName()}: backup opened with the legacy-normalized passphrase — pre-0.17.2 encoding detected`,
         )
@@ -1482,8 +1652,9 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
     }
   }
 
-  async importKeyFromFile(armoredMessage: string, passphrase: string): Promise<RestoreResult> {
+  async importKeyFromFile(armoredMessage: string, passphrase: string, recovery?: BackupRecoveryMode): Promise<RestoreResult> {
     const ctx = this.requireCtx()
+    this.assertRecoveryAccount(recovery)
 
     // Files exported by Fluux ≤0.17.1 are encrypted with the legacy
     // normalized passphrase (#1021) — same fallback as the server restore.
@@ -1496,6 +1667,7 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
       'importKeyFromFile',
     )
 
+    if (this.ctx !== ctx) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
     const selection = await this.selectKeyFromBackup(bundles)
     if (!selection) {
       throw new E2EEPluginError(
@@ -1505,14 +1677,18 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
       )
     }
 
-    if (!selection.needsPicker) {
-      return this.doInstallKey(armoredMessage, workingPassphrase, selection.selected.fingerprint)
+    if (this.ctx !== ctx) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
+    this.assertRecoveryAccount(recovery)
+    if (!selection.needsPicker && !recovery) {
+      return this.doInstallKey(armoredMessage, workingPassphrase, selection.selected.fingerprint, { typedPassphrase: passphrase })
     }
 
     return {
       needsPicker: true,
+      ...(recovery ? { recommendedFingerprint: selection.selected.fingerprint } : {}),
       candidates: bundles,
-      backupContext: { message: armoredMessage, passphrase: workingPassphrase },
+      backupContext: { message: armoredMessage, passphrase: workingPassphrase,
+        ...(workingPassphrase !== passphrase ? { typedPassphrase: passphrase } : {}) },
     }
   }
 
@@ -1520,8 +1696,10 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
     backupMessage: string,
     passphrase: string,
     fingerprint: string,
+    options?: KeyInstallOptions,
   ): Promise<IdentityInfo> {
-    return this.doInstallKey(backupMessage, passphrase, fingerprint)
+    const recovery = options?.accountJid !== undefined ? { accountJid: options.accountJid } : undefined
+    return this.doInstallKey(backupMessage, passphrase, fingerprint, { recovery, typedPassphrase: options?.typedPassphrase })
   }
 
   protected async selectKeyFromBackup(
@@ -1550,14 +1728,24 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
     return { selected: sorted[0], needsPicker: true }
   }
 
+  private assertRecoveryAccount(recovery?: BackupRecoveryMode): void {
+    if (recovery && recovery.accountJid !== this.requireCtx().account.jid) {
+      throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
+    }
+  }
+
   private async doInstallKey(
     backupMessage: string,
     passphrase: string,
     fingerprint: string,
+    options: { recovery?: BackupRecoveryMode; fromServer?: boolean; typedPassphrase?: string } = {},
   ): Promise<IdentityInfo> {
+    const { recovery, fromServer = false, typedPassphrase = passphrase } = options
     const ctx = this.requireCtx()
+    this.assertRecoveryAccount(recovery)
+    if (this.runningOwnKeyOperations) throw new E2EEPluginError('transient', 'identity-change-pending', 'An identity change is already in progress')
     const previousFingerprint = this.ownBundle?.fingerprint
-    return this.ownKeyOperation(async () => {
+    const identity = await this.ownKeyOperation(async () => {
       let bundle: KeyBundle
       try {
         bundle = await this.backupImportSelected(
@@ -1565,22 +1753,60 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
           backupMessage,
           passphrase,
           fingerprint,
+          recovery,
         )
       } catch (err) {
         throw this.toPluginError('installKey', err)
       }
+      if (this.ctx !== ctx) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
       this.ownBundle = bundle
+      this._keyRecoveryReason = null
       if (this.ctx) notifyPeerKeysetChanged(this.ctx.account.jid)
-      writeBackedUpFingerprint(ctx.account.jid, bundle.fingerprint)
 
+      // Direct server restores already read their source. File and generic
+      // picker installs must check the server, without publishing a backup.
+      // An export re-encrypts the key, so different packet bytes need a
+      // read-only decryption/fingerprint check, not an assumption of mismatch.
+      let backedUp = fromServer
+      if (!fromServer) {
+        try {
+          const serverBackup = await this.fetchSecretKeyBackup()
+          if (serverBackup) {
+            backedUp = openPgpBlocksEqual(serverBackup, backupMessage)
+            if (!backedUp) {
+              const inspect = (code: string) => this.backupImportAllWithLegacyFallback(
+                ctx.account.jid, serverBackup, code, 'confirmInstalledKeyBackup', false,
+              )
+              const bundles = await inspect(passphrase).then(result => result.bundles).catch(error => {
+                // The working form already exhausted the legacy candidate.
+                // Try the distinct typed code once, without repeating it.
+                if (typedPassphrase === passphrase) throw error
+                return this.backupImportAll(ctx.account.jid, serverBackup, typedPassphrase, false)
+              })
+              backedUp = bundles.some(key => fingerprintsEqual(key.fingerprint, bundle.fingerprint))
+            }
+          }
+        } catch (err) {
+          // A missing code, failed read or unreadable backup cannot prove a new
+          // marker. The local install succeeded; retain prior confirmed state.
+          ctx.logger.debug(`${this.pluginName()}: could not confirm installed key's server backup: ${formatError(err)}`)
+        }
+      }
+      if (this.ctx !== ctx) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
+      if (backedUp) writeBackedUpFingerprint(ctx.account.jid, bundle.fingerprint)
+
+      const current = () => this.ctx === ctx && this.ownBundle === bundle
       try {
-        await this.publishOwnPublicKeyData(bundle)
+        await this.publishOwnPublicKeyData(bundle, current)
+        if (this.ctx !== ctx) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
         // The key we just replaced is no longer ours to decrypt with, so it must
         // not stay advertised — but any SIBLING device's entry has to survive.
         await this.publishOwnPublicKeyMetadata(
           bundle,
           previousFingerprint ? [previousFingerprint] : [],
+          current,
         )
+        if (this.ctx !== ctx) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
         if (previousFingerprint) {
           await this.retractStalePublicKeyDataNode(previousFingerprint, bundle.fingerprint)
         }
@@ -1594,11 +1820,15 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
       // host so it re-runs deferred decrypts immediately — otherwise messages
       // stashed while the key was absent stay "could not be decrypted" until an
       // unrelated trigger (reconnect, app restart) re-registers the plugin.
+      if (!current()) throw new E2EEPluginError('permanent', 'recovery-account-changed', 'Backup restore account changed')
       ctx.notifyKeyUnlocked?.()
-      this.reverifyTrustStateAfterKeyChange()
 
       return { fingerprint: bundle.fingerprint }
     })
+    // Subscription activation fetches verified peers. Start it after the key
+    // operation ends so its own freshness guard accepts the restored identity.
+    this.reverifyTrustStateAfterKeyChange()
+    return identity
   }
 
   async resolveOwnKeyConflict_overwriteServer(): Promise<void> {
@@ -1630,6 +1860,7 @@ export abstract class OpenPGPPluginBase implements E2EEPlugin {
         result.backupContext.message,
         result.backupContext.passphrase,
         sorted[0].fingerprint,
+        { fromServer: true },
       )
       clearOwnKeyConflict()
       return info

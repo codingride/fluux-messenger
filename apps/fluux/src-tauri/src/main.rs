@@ -13,12 +13,18 @@ mod share_inbox_tests;
 // Shared credential operations; macOS stores their logical accounts in one item.
 #[cfg(any(target_os = "macos", test))]
 mod credentials;
+// Refusals of keychain items, answered on every platform for the OpenPGP key storage.
+mod keychain_refusal;
 #[cfg(any(target_os = "macos", test))]
 mod macos_secrets;
 
 // The iOS localStorage file format, tested in the native host test suite.
 #[cfg(test)]
 mod native_storage;
+
+// Native startup policy is independent of React, XMPP and storage.
+#[cfg(any(target_os = "macos", test))]
+mod startup_recovery;
 
 // Linux: Apply WebKitGTK GPU workaround env vars BEFORE main() runs.
 // This uses ctor to run a static constructor before any other code,
@@ -1265,16 +1271,37 @@ fn print_startup_diagnostics() {
     eprintln!("---");
 }
 
-// An explicit standard-identity communication test must not update over itself.
-fn communication_test_for_build(identifier: &str, enabled: bool) -> bool {
-    cfg!(target_os = "macos") && enabled && identifier == "net.processone.fluux"
+// Exact production and Dev identities opt in through their bundled macOS configuration.
+fn communication_for_build(identifier: &str, enabled: bool) -> bool {
+    cfg!(target_os = "macos")
+        && enabled
+        && matches!(identifier, "net.processone.fluux" | "net.processone.fluux.dev")
 }
 
-fn communication_test_available(identifier: &str) -> bool {
-    communication_test_for_build(identifier, cfg!(feature = "macos-communication-test"))
+fn communication_available(identifier: &str) -> bool {
+    communication_for_build(identifier, cfg!(feature = "macos-communication"))
+}
+
+fn with_updates<R: tauri::Runtime>(app: tauri::Builder<R>) -> tauri::Builder<R> {
+    app.plugin(tauri_plugin_updater::Builder::new().build())
+}
+
+fn with_communication<R: tauri::Runtime>(
+    app: tauri::Builder<R>,
+    identifier: &str,
+) -> tauri::Builder<R> {
+    if communication_available(identifier) {
+        app.append_invoke_initialization_script(include_str!("communication-init.js"))
+    } else {
+        app
+    }
 }
 
 fn main() {
+    // The silent cleanup helper must exit before directory migration, tracing,
+    // single-instance handling, plugins or a webview can open personal state.
+    #[cfg(target_os = "macos")]
+    macos_secrets::run_cleanup_worker();
     tls::init_crypto_provider();
 
     // Keep the loopback hop to the local XMPP bridge off any system-wide proxy.
@@ -1284,6 +1311,8 @@ fn main() {
 
     let context = tauri::generate_context!();
     let identifier = context.config().identifier.clone();
+    #[cfg(all(target_os = "macos", feature = "startup-recovery-lab"))]
+    startup_recovery::lab::assert_identity(&identifier);
     // Must run before anything opens the app's directories: the log file
     // below, the plugins, and the webview's storage.
     let identity_migration = identity_migration::migrate_platform_dirs(&identifier);
@@ -1506,12 +1535,12 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init());
-    let app = if communication_test_available(&identifier) {
-        // One immutable startup marker drives both communication and updater capabilities.
-        // The updater plugin is absent too, so direct calls cannot check or install.
-        app.append_invoke_initialization_script(include_str!("communication-test-init.js"))
+    let app = if cfg!(feature = "startup-recovery-lab") {
+        // The disposable lab never checks or installs updates.
+        app
     } else {
-        app.plugin(tauri_plugin_updater::Builder::new().build())
+        let app = with_updates(app);
+        with_communication(app, &identifier)
     };
     let app = app
         .manage(window_behavior::WindowBehavior::default())
@@ -1553,6 +1582,8 @@ fn main() {
             openpgp::openpgp_validate_cert,
             openpgp::openpgp_forget_account,
             openpgp::openpgp_has_persisted_key,
+            openpgp::openpgp_keychain_retry_available,
+            openpgp::openpgp_retry_keychain_access,
             openpgp::openpgp_backup_encrypt,
             openpgp::openpgp_backup_import,
             openpgp::openpgp_backup_import_all,
@@ -1568,9 +1599,19 @@ fn main() {
             notifications::request_notification_permission,
             notifications::take_pending_notification_target,
             notifications::set_notification_listener_ready,
-            notifications::dismiss_notifications
+            notifications::dismiss_notifications,
+            #[cfg(target_os = "macos")]
+            startup_recovery::macos::startup_attempt,
+            #[cfg(target_os = "macos")]
+            startup_recovery::macos::startup_shell_ready,
+            #[cfg(target_os = "macos")]
+            startup_recovery::macos::startup_cleanup_complete
         ])
         .on_page_load(move |webview, payload| {
+            #[cfg(target_os = "macos")]
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                startup_recovery::macos::page_started(webview.label());
+            }
             // Always inject console-forwarding script so SDK diagnostic logs
             // (prefixed with [Fluux]) reach the Rust file log for troubleshooting.
             // When --verbose is not active, this is the only way JS logs reach the file.
@@ -1657,6 +1698,11 @@ fn main() {
             }
         })
         .setup(move |app| {
+            // Install the native cover before notification/credential setup.
+            #[cfg(target_os = "macos")]
+            startup_recovery::macos::install(app.handle())?;
+            #[cfg(target_os = "macos")]
+            macos_secrets::register_access_observer(startup_recovery::macos::credential_access_changed);
             #[cfg(target_os = "macos")]
             app.handle().plugin(tauri_plugin_share_inbox::init())?;
             // Wire up native notification backends (macOS: request auth now;
@@ -1850,6 +1896,7 @@ fn main() {
 
             // Check if window is off-screen (e.g., monitor was disconnected) and reset if needed
             if let Some(window) = app.get_webview_window("main") {
+                window_behavior::reset_unusable_window_size(&window);
                 ensure_window_visible(&window);
                 // Ensure window has keyboard focus on launch
                 let _ = window.set_focus();
@@ -2264,6 +2311,11 @@ fn main() {
                             window_hidden_to_tray_for_events.load(Ordering::Relaxed),
                         ) {
                             window_hidden_to_tray_for_events.store(true, Ordering::Relaxed);
+                            // Show desktop minimizes without WM_SYSCOMMAND, so tao
+                            // has not recorded the window as minimized. Hiding then
+                            // rewrites its style without WS_MINIMIZE and the window
+                            // comes back as a sliver (#1820). minimize() records it.
+                            let _ = window.minimize();
                             let _ = window.hide();
                         }
                     }
@@ -2366,8 +2418,27 @@ mod tests {
     const LOOPBACK: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 
     #[test]
-    fn standard_identity_test_mode_preserves_ordinary_and_dev_builds() {
-        // Accepted standard-profile test: only net.processone.fluux + explicit mode on macOS.
+    fn communication_build_retains_registered_updater() {
+        // #1386: exercise the same plugin builder as main, without a native window or network.
+        use tauri_plugin_updater::UpdaterExt;
+        let standard: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        for identifier in ["net.processone.fluux", "net.processone.fluux.dev"] {
+            let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+            context.config_mut().identifier = identifier.into();
+            context.config_mut().plugins =
+                serde_json::from_value(standard["plugins"].clone()).unwrap();
+            let app = with_communication(with_updates(tauri::test::mock_builder()), identifier)
+                .build(context)
+                .unwrap();
+            // Accessing the registered updater state would panic if the plugin were absent.
+            let _builder = app.updater_builder();
+        }
+    }
+
+    #[test]
+    fn standard_identity_communication_preserves_ordinary_and_dev_builds() {
+        // Accepted Dev capability: exact production and Dev identities + explicit mode on macOS.
         let standard: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         let dev: serde_json::Value =
@@ -2376,32 +2447,29 @@ mod tests {
             let standard_id = standard["identifier"].as_str().unwrap();
             let dev_id = dev["identifier"].as_str().unwrap();
             assert_eq!(
-                communication_test_for_build(standard_id, enabled),
+                communication_for_build(standard_id, enabled),
                 cfg!(target_os = "macos") && enabled
             );
-            assert!(!communication_test_for_build(dev_id, enabled));
-            assert!(!communication_test_for_build(
-                "net.processone.other",
-                enabled
-            ));
+            assert_eq!(
+                communication_for_build(dev_id, enabled),
+                cfg!(target_os = "macos") && enabled
+            );
+            assert!(!communication_for_build("net.processone.other", enabled));
         }
         assert_eq!(
-            communication_test_available(standard["identifier"].as_str().unwrap()),
-            cfg!(all(
-                target_os = "macos",
-                feature = "macos-communication-test"
-            ))
+            communication_available(standard["identifier"].as_str().unwrap()),
+            cfg!(all(target_os = "macos", feature = "macos-communication"))
         );
         assert!(!standard["build"]["features"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v == "macos-communication-test"));
+            .any(|v| v == "macos-communication"));
         assert!(!dev["build"]["features"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v == "macos-communication-test"));
+            .any(|v| v == "macos-communication"));
     }
 
     #[test]

@@ -7,8 +7,9 @@ import { TARGET_HIGHLIGHT_MS } from './explicitTargetBrowserAdapter'
 import { MEDIA_LOAD_DEBOUNCE_MS } from './useMediaGrowthPreservation'
 import { resetScrollShadowDiagnostics, getScrollShadowSnapshot } from './scrollPositionShadow'
 import { scrollStateManager } from '@/utils/scrollStateManager'
-import type { MessageVirtualizer } from './messageVirtualizer'
+import type { MessageVirtualizer, ScrollWrite, ScrollWriteOwner } from './messageVirtualizer'
 import { useMessageListScroll, type UseMessageListScrollResult } from './useMessageListScroll'
+import { appliedWrite } from './scrollWriteTestDoubles'
 
 const conversationId = 'room-a'
 let frames: Map<number, FrameRequestCallback>
@@ -86,9 +87,26 @@ function harness(virtualized: boolean, contentHeight = 1000, targetInset = 0, hi
   }
   const retained = vi.fn()
   let automaticAdjustmentEnabled = true
+  let pendingFling = false
+  // Off by default: writes land at once, as without iOS momentum. On, a navigation write made
+  // while a released fling is pending is held, as the iOS library holds it, until the fling ends;
+  // cancelPendingScroll drops it, as the real adapter does when the reader takes over.
+  let holdWritesDuringFling = false
+  let heldWrite: { top: number; owner?: ScrollWriteOwner } | null = null
+  const droppedHeldWrites: number[] = []
+  const navigationWrite = (top: number, owner: ScrollWriteOwner | undefined, applied: () => ScrollWrite): ScrollWrite => {
+    if (!pendingFling || !holdWritesDuringFling) return applied()
+    heldWrite = { top, owner }
+    return { id: 0, outcome: () => ({ status: 'queued' }) }
+  }
   let writeObserver: Parameters<NonNullable<MessageVirtualizer['setScrollWriteObserver']>>[0]
   const virtualizer: MessageVirtualizer | undefined = virtualized ? {
     retainMessage: retained,
+    hasPendingFling: () => pendingFling,
+    cancelPendingScroll: () => {
+      if (heldWrite) droppedHeldWrites.push(heldWrite.top)
+      heldWrite = null
+    },
     setScrollWriteObserver: observer => { writeObserver = observer },
     setAutomaticScrollAdjustmentEnabled: enabled => { automaticAdjustmentEnabled = enabled },
     getVirtualItems: () => [{ index: 19, start: geometry.targetTop, size: geometry.targetHeight, key: 'selected' }],
@@ -98,12 +116,19 @@ function harness(virtualized: boolean, contentHeight = 1000, targetInset = 0, hi
     getIndexForMessageId: (id) => id === 'selected' ? 19 : null,
     ensureMessageMounted: vi.fn(async () => {}),
     measureElement: vi.fn(),
-    scrollToOffset: (top) => { scroller.scrollTop = top },
+    scrollToOffset: (top, options) => navigationWrite(top, options?.owner, () => {
+      scroller.scrollTop = top
+      return appliedWrite(top)
+    }),
     scrollToIndex: (index, options) => {
-      if (options?.align === 'end') scroller.scrollTop = (index === 19
-        ? geometry.targetTop + geometry.targetHeight
-        : geometry.height) - geometry.client
-      else center()
+      const top = options?.align === 'end'
+        ? (index === 19 ? geometry.targetTop + geometry.targetHeight : geometry.height) - geometry.client
+        : geometry.targetTop + geometry.targetHeight / 2 - geometry.client / 2
+      return navigationWrite(top, options?.owner, () => {
+        if (options?.align === 'end') scroller.scrollTop = top
+        else center()
+        return appliedWrite(scroller.scrollTop)
+      })
     },
     beginAnimatedScrollToOffset: (top) => { scroller.scrollTo({ top, behavior: 'smooth' }) },
   } : undefined
@@ -217,6 +242,27 @@ function harness(virtualized: boolean, contentHeight = 1000, targetInset = 0, hi
       return detached!
     },
     setScrollDelivery: (enabled: boolean) => { deliverScrollEvents = enabled },
+    setPendingFling: (pending: boolean) => { pendingFling = pending },
+    holdWritesDuringFling: () => {
+      pendingFling = true
+      holdWritesDuringFling = true
+    },
+    // The fling ends: a held write still owned by the current request lands through the write
+    // observer, as the library flushes it; a superseded one is refused.
+    releaseFling: () => {
+      pendingFling = false
+      const held = heldWrite
+      heldWrite = null
+      if (!held || held.owner?.isCurrent() === false) return
+      act(() => {
+        if (writeObserver?.({ phase: 'before', source: 'navigation' }) === false) return
+        scroller.scrollTop = held.top
+        writeObserver?.({ phase: 'after', source: 'navigation' })
+      })
+    },
+    droppedHeldWrites,
+    top: () => act(() => api.scrollToTop()),
+    beforeMeasure: () => act(() => { writeObserver?.({ phase: 'before-measure', source: 'measurement' }) }),
     search: () => act(() => setSearchTarget('selected')),
     nativeScroll: (top: number) => {
       scrollTop = Math.max(0, Math.min(top, geometry.height - geometry.client))
@@ -280,6 +326,167 @@ function harness(virtualized: boolean, contentHeight = 1000, targetInset = 0, hi
     },
   }
 }
+
+// Captain's reopened FLM-186 failure: the old fling moved 4469 -> 4439 at height 9878/client
+// 646 before the target write, without another touch. Replay those readings through the actual
+// scroll hook, session and controller. The virtualizer is a writer fixture, not device proof.
+describe('new message-jump handoff from a released fling', () => {
+  it.each([
+    { pendingFling: true, observation: 'frame', newInput: false },
+    { pendingFling: true, observation: 'measurement', newInput: false },
+    { pendingFling: true, observation: 'native', newInput: false },
+    { pendingFling: false, observation: 'frame', newInput: false },
+    { pendingFling: false, observation: 'measurement', newInput: false },
+    { pendingFling: false, observation: 'native', newInput: false },
+    { pendingFling: true, observation: 'measurement', newInput: true },
+  ] as const)('preserves the reader veto (fling: $pendingFling, sample: $observation, new input: $newInput)', test => {
+    const scope = harness(true, 9878, 0, true)
+    scope.geometry.client = 646
+    scope.geometry.targetTop = 2114
+    scope.geometry.targetHeight = 68
+    scope.setScrollDelivery(false)
+    scope.nativeScroll(4469)
+    scope.setPendingFling(test.pendingFling)
+    const decisions: Array<Record<string, unknown>> = []
+    const original = PositioningController.prototype.observeUserScroll
+    const observe = vi.spyOn(PositioningController.prototype, 'observeUserScroll')
+      .mockImplementation(function (this: PositioningController, id, delta, atLiveEdge) {
+        decisions.push({ event: 'user-scroll', delta, before: this.snapshot().active?.phase })
+        original.call(this, id, delta, atLiveEdge)
+        decisions.push({ event: 'after-user-scroll', active: this.snapshot().active })
+      })
+    try {
+      scope.search()
+      scope.scroller.scrollTop = 4439
+      scope.writes.length = 0
+      if (test.newInput) scope.wheel(-20)
+      if (test.observation === 'measurement') scope.beforeMeasure()
+      if (test.observation === 'native') scope.nativeScroll(4439)
+      runFrame()
+
+      const shouldPosition = test.pendingFling && !test.newInput
+      const expected = shouldPosition
+        ? scope.geometry.targetTop + scope.geometry.targetHeight / 2 - scope.geometry.client / 2
+        : 4439
+      expect(scope.scroller.scrollTop, JSON.stringify({ decisions, writes: scope.writes })).toBe(expected)
+      if (shouldPosition) expect(scope.writes.length).toBeGreaterThan(0)
+      else expect(scope.writes).toEqual([])
+      settle()
+    } finally {
+      observe.mockRestore()
+    }
+  })
+})
+
+// FLM-252, the captain's choice on the FLM-186 review (finding N1): the released-fling exemption
+// covered message jumps only, so the earlier fling's leftover movement after the request still
+// cancelled return-to-latest and Home. Same recorded readings as above (4469 -> 4439, client 646).
+// The fixture holds writes during the fling and drops them on takeover, as the iOS library and
+// adapter do. Not device proof.
+describe('return-to-latest and Home handoff from a released fling', () => {
+  type Observation = 'frame' | 'measurement' | 'native'
+  const flingMoves = (scope: ReturnType<typeof harness>, top: number, observation: Observation) => {
+    scope.scroller.scrollTop = top
+    scope.writes.length = 0
+    if (observation === 'measurement') scope.beforeMeasure()
+    if (observation === 'native') scope.nativeScroll(top)
+    runFrame()
+  }
+  const readerAt = (top: number) => {
+    const scope = harness(true, 9878)
+    scope.geometry.client = 646
+    scope.setScrollDelivery(false)
+    scope.nativeScroll(top)
+    settle()
+    return scope
+  }
+  const latest = 9878 - 646
+
+  it.each([
+    { navigation: 'latest', observation: 'frame' },
+    { navigation: 'latest', observation: 'measurement' },
+    { navigation: 'latest', observation: 'native' },
+    { navigation: 'top', observation: 'frame' },
+    { navigation: 'top', observation: 'measurement' },
+    { navigation: 'top', observation: 'native' },
+  ] as const)('lands $navigation when the old fling moves after the request (sample: $observation)', test => {
+    const scope = readerAt(4469)
+    scope.holdWritesDuringFling()
+    if (test.navigation === 'latest') scope.follow()
+    else scope.top()
+    flingMoves(scope, 4439, test.observation)
+    const dropped = [...scope.droppedHeldWrites]
+    scope.releaseFling()
+    settle()
+    expect({ dropped, top: scope.scroller.scrollTop })
+      .toEqual({ dropped: [], top: test.navigation === 'latest' ? latest : 0 })
+  })
+
+  it.each([
+    { navigation: 'latest', observation: 'frame' },
+    { navigation: 'latest', observation: 'measurement' },
+    { navigation: 'latest', observation: 'native' },
+    { navigation: 'top', observation: 'frame' },
+    { navigation: 'top', observation: 'measurement' },
+    { navigation: 'top', observation: 'native' },
+  ] as const)('keeps a new wheel input as the reader\'s during $navigation (sample: $observation)', test => {
+    const scope = readerAt(4469)
+    scope.holdWritesDuringFling()
+    if (test.navigation === 'latest') scope.follow()
+    else scope.top()
+    scope.wheel(-20)
+    flingMoves(scope, 4439, test.observation)
+    scope.releaseFling()
+    settle()
+    expect(scope.scroller.scrollTop).toBe(4439)
+    expect(scope.writes).toEqual([])
+  })
+
+  it.each([
+    { navigation: 'latest', observation: 'frame' },
+    { navigation: 'latest', observation: 'measurement' },
+    { navigation: 'latest', observation: 'native' },
+    { navigation: 'top', observation: 'frame' },
+    { navigation: 'top', observation: 'measurement' },
+    { navigation: 'top', observation: 'native' },
+  ] as const)('keeps movement as the reader\'s without a pending fling during $navigation (sample: $observation)', test => {
+    const scope = readerAt(4469)
+    if (test.navigation === 'latest') scope.follow()
+    else scope.top()
+    const moved = scope.scroller.scrollTop + (test.navigation === 'latest' ? -300 : 300)
+    flingMoves(scope, moved, test.observation)
+    settle()
+    expect(scope.scroller.scrollTop).toBe(moved)
+  })
+
+  // Follow-live maintenance is not the reader's navigation: a fling released at the live edge
+  // stays the reader's while an arrival re-pins, whether follow was kept by return-to-latest or
+  // re-armed by the reader's own movement at the edge.
+  it.each([
+    { follow: 'kept', observation: 'frame' },
+    { follow: 'kept', observation: 'measurement' },
+    { follow: 'kept', observation: 'native' },
+    { follow: 'rearmed', observation: 'frame' },
+    { follow: 'rearmed', observation: 'measurement' },
+    { follow: 'rearmed', observation: 'native' },
+  ] as const)('keeps the reader veto over $follow follow-live maintenance (sample: $observation)', test => {
+    const scope = readerAt(4469)
+    scope.follow()
+    settle()
+    expect(scope.scroller.scrollTop).toBe(latest)
+    if (test.follow === 'rearmed') {
+      scope.nativeScroll(latest - 10)
+      settle()
+    }
+    const releasedAt = scope.scroller.scrollTop
+    scope.holdWritesDuringFling()
+    scope.append(60)
+    flingMoves(scope, releasedAt - 300, test.observation)
+    scope.releaseFling()
+    settle()
+    expect(scope.scroller.scrollTop).toBe(releasedAt - 300)
+  })
+})
 
 function startInput(scroller: HTMLDivElement, kind: 'touch' | 'keyboard' | 'scrollbar') {
   switch (kind) {

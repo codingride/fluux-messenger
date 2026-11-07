@@ -975,8 +975,13 @@ html, body {
 }
 
 @media (any-pointer: coarse) {
-  body {
-    /* Allow scrolling in either direction without browser pinch zoom. */
+  /* Allow scrolling in either direction without browser pinch zoom. WebKit starts touch-action
+     afresh at every scroll container, so the rule names each element, not only body. Pinch is
+     kept out here rather than by page listeners: iOS holds every scroll that starts over a
+     non-passive touchmove or gesture listener until the page has handled the touch, so a busy
+     page would freeze the message list at the start of a swipe and then jump it. */
+  body,
+  body * {
     touch-action: pan-x pan-y;
   }
 }
@@ -1009,6 +1014,33 @@ html, body {
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
   }
+}
+
+/* A half-open foldable iPhone in landscape (useHingePosture): the rail and the
+   conversation list end at the hinge, and the chat starts there. The sidebar
+   starts at #root's content edge, which the safe-area padding above sets, and
+   the hinge is measured from the window's left edge. Both sides keep their
+   content the hinge margin away from the fold, where UIKit asks buttons to stay
+   clear; the chat is the pane right after the sidebar's. */
+.hinge-aside {
+  width: calc(var(--fluux-hinge-x) - env(safe-area-inset-left, 0px));
+  padding-inline-end: var(--fluux-hinge-margin, 0px);
+}
+
+[dir="rtl"] .hinge-aside {
+  width: calc(100vw - env(safe-area-inset-right, 0px) - var(--fluux-hinge-x));
+}
+
+:has(> .hinge-aside) + main {
+  padding-inline-start: var(--fluux-hinge-margin, 0px);
+}
+
+/* The same iPhone in portrait (ConversationColumn): the pills and the composer
+   fill the screen below the hinge. The messages end the hinge margin above the
+   fold, and the pills and the composer start the margin below it. */
+[data-hinge-rows] [data-conversation-tail] {
+  min-height: calc(var(--fluux-hinge-tail-height) + var(--fluux-hinge-margin, 0px));
+  padding-top: calc(2 * var(--fluux-hinge-margin, 0px));
 }
 
 /* Utility: extend padding-bottom by the iOS/Android safe-area inset. */

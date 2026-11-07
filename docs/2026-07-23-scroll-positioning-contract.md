@@ -49,8 +49,25 @@ kinetic-scroll cancellation, 2px target-shift correction, 5px clamp recovery, an
 distance-from-bottom fallback. Boundary input while the load is still pending retains the captured
 anchor because no pixel owner exists yet; takeover becomes cancellable after the initial
 positioning write, matching the former loop's timing. Explicit competing requests still supersede
-pending directional history.
-All seven authoritative slices share the same controller-owned
+pending directional history. At the resident bound an interior arrival evicts the oldest row, so
+the first resident ID can change before the load's own batch lands and spend that restore early.
+Until the load settles, a later first-ID change restores the same anchor to the same place again
+with a fresh request in the same pre-paint pass, however long the 60-frame loop has been over. It
+does so only while the reader still reads where the last restore put them: the controller answers
+that from whether their own input, or any accepted request other than layout, media or history
+preservation, has come since that restore's generation. Once the reader moved on, the shift is
+left to ambient handling.
+Under the resident bound an interior arrival keeps the first resident ID, yet it moves every row
+below it, and the pending directional request makes the controller refuse the ambient layout
+request that would otherwise hold them. The directional window therefore also carries the store's
+interior placement version: while the load is pending, a new interior placement counts as a window
+shift, so the load restores its own anchor at the arrival exactly as it does after an eviction at
+the bound, and restores again when its batch lands under the same reader-held rule. Ambient
+insertion handling stands aside for any shift the load restores. A load whose request the controller
+refused, as it does under a hover interaction hold, or has superseded since, holds nothing: the
+coordinator drops it at its first shift, and ambient insertion handling keeps that shift and the
+batch's.
+All authoritative slices share the same controller-owned
 `PositionFrameLoop` shape. The saved executor retains the existing fractional-anchor
 measurement write, 90-frame budget, 8-frame stability window, and 8px tolerance; only scheduling,
 convergence state, and lifecycle ownership moved out of the hook-local loop. Unlike unread-marker
@@ -79,6 +96,37 @@ event to consume once; a later layout or application destination cannot replace 
 A released keyboard input retains ownership of its matching later native scroll event until an
 independently observed layout change ends that causal chain.
 
+Native upward panning retains visible progress when a previously measured row entirely above
+the viewport shrinks. The virtualizer compensates that shrink even during backward scrolling,
+using the existing measurement writer and live-offset rebasing. Other library fold/direction rules
+remain unchanged: backward growth and remeasurements spanning the viewport top are not compensated.
+Explicit adjustment suppression and held-anchor rules still take precedence. One stable predicate
+reads those current refs; a row's end uses its latest measured size even before the lazy layout
+cache rebuilds. This adapter explicitly mirrors the library's ordinary fold/direction policy apart
+from backward shrink, so dependency upgrades must review that override. Ordinary-row metric
+sampling excludes whisper cards, whose borders and padding otherwise alternate the sampled width
+and chrome as rows enter the window, re-estimating unrelated offscreen rows without a resize.
+`e2e/scroll-native-pan.ts` exercises actual Chromium middle-click autoscroll in direct chats and
+rooms, with held, jitter-latched and middle-stopped journeys. Each case enlarges a measured
+overscan wrapper by the captured defect's delta and establishes the live edge before native input.
+The pointer then stays outside the dead zone and continues backward. A shallow, invisible fixture
+element uses real ResizeObserver delivery to schedule removal of the deeper row's constraint only
+when backward motion and a matching live offset are observed, away from the live-edge clamp region.
+The virtualizer's own real observer measures the resulting row shrink; neither its callback nor
+library state is fabricated. A forwarding probe separately verifies backward direction at the actual
+measurement call and records its cached key/size and resize-local visible geometry. The comparison
+must belong to that row's layout update, within two observed frames and without intervening
+unrelated size changes. A later unrelated shrink cannot supply that result. Continuous frame checks
+also retain stable message identity, order and viewport-relative placement rather than treating
+raw scroll offsets as reading progress. The wrapper constraint leaves ordinary text/chrome
+sampling alone. A paused shrink is not a substitute: the library can already compensate it, so it
+does not by itself demonstrate the backward-measurement defect.
+WebKit has no equivalent middle-click mode. The compensation also applies to other inputs and
+engines, but dedicated WebKit upward-wheel/momentum proof with a measured row shrinking above the
+reader is an explicitly accepted proof gap for this change. Existing shared WebKit measurement and
+reading regression coverage does not qualify that specific timing case. Broader estimate refresh
+from own-only width fallback or further chrome calibration remains separate from this correction.
+
 Automatic older/newer pagination requires that independently observed movement geometry reach
 the relevant boundary, subject to the directional coordinator's eligibility checks. Layout-only
 resize, typing, media growth, clamping, and delayed correction events supply no such evidence.
@@ -97,11 +145,31 @@ Directional history windowing is mediated by a value-only
 eligibility, monotonic load identity, anchor/distance facts, loader invocation, no-shift completion,
 and false-to-true live-window cleanup. A loader promise bounds only the snapshot that invoked it:
 settlement from an older superseded load cannot release the current request, while an in-flight
-load keeps its snapshot until its own first-id shift can reconcile. Conversation entry drops the
+load keeps its snapshot until its own first-id shift can reconcile. A restored snapshot stays until
+its load settles, not only for its cooldown, so a batch that lands after an eviction-driven restore
+is restored again (see above). Conversation entry drops the
 departed conversation's snapshot, and delayed settlement or window observation from that snapshot
 cannot mutate the active conversation. A dedicated `DirectionalHistoryBrowserAdapter` owns visual
 anchor capture, the one-frame settlement scheduler, reachability probes, WebKit kinetic-scroll
-cancellation, and anchor/fallback pixel writes under the controller lease.
+cancellation, and anchor/fallback pixel writes under the controller lease. Between capture and the
+batch landing it follows the reader on every scroll event, so the restore's first frame places the
+anchor where the reader last saw it rather than at its capture-time `offsetPx` (an iOS bounce past
+the top keeps moving the rows after capture, and the landing commit clamps `scrollTop` to 0).
+While rendered rows cover the top of the view, the followed anchor becomes the row the reader now
+sees there, chosen as at capture: a reader who scrolled on while the load waited no longer reads
+the capture row, which an arrival between it and the view would move without moving theirs. Only a
+row in view qualifies, so an arrival outside the view moves no row the reader reads. A row mostly
+scrolled past the top gives way to the next row only when that row starts in the top half of the
+view: a message taller than the view that fills it stays the anchor, rather than the row below the
+view. With virtualization off the adapter captures and follows the rendered message rows the same
+way. Past the top, or with a stale window, the anchor stays and only its offset follows. The
+followed anchor stops changing once rows land before it, since only the restore may place it from
+then on. The load's snapshot records the row the restore held and its placement, and a restart of
+the same load requests them instead of the capture row and offset, so the rows stay where the first
+restore put them. From its first
+write until its execution ends, the restore holds that anchor in the virtualizer: every row before
+the anchor that resizes is compensated, including rows between the viewport top and the anchor,
+which the library alone leaves to move it.
 `useDirectionalHistoryLoads` invokes the adapter and supplies lifecycle completion callbacks; the
 orchestration hook only wires its ports and consumes its triggers. The coordinator imports no DOM,
 virtualizer, frame scheduler, positioning controller, or pixel-write capability.
@@ -117,6 +185,16 @@ reading-layout corrections.
 
 Explicit target navigation uses immediate center writes: restarting a smooth animation while
 remeasurement moves the target makes convergence samples unreliable and recreates scroll fighting.
+Before settlement, the accepted navigation can own motion from the released iOS fling that preceded
+it. The same holds for return-to-latest until its first settle and for Home while it is current:
+the library holds their write until that fling ends, and the leftover movement must not cancel it.
+The shared viewport observer requires both the current positioning lease and the virtualizer's
+actual pending-fling state; it applies the same attribution to native events and measurement/frame
+observations. New input still takes over, and a new finger ends the old fling. Settled maintenance,
+follow-live re-pins (including a follow re-armed by the reader's own movement, which shares the
+return-to-latest request source, so the live-edge execution carries the distinction), missing
+gesture state and ordinary unobserved reader movement keep their existing vetoes. The writer
+still publishes actual post-write offsets and runs its unchanged before-write authority check.
 After settlement, layout changes maintain only the selected row's visibility. Correction moves the
 viewport only far enough to expose a clipped edge; an already-visible row, or a tall row spanning
 the viewport, is not recentered. This maintenance keeps the existing generation, requires a mounted
@@ -228,9 +306,10 @@ WebKit paint correctness.
     for divider movement or delayed insertion. The fraction is validated in
     `[0, 1]`, where `0` is the row top and `1` its bottom. The exact equation is
     `rowTop + fraction * rowHeight = scrollTop + viewportHeight`;
-  - `top-offset`: directional history preservation. The equation is
+  - `top-offset`: directional history preservation and deliberate message interaction. The equation is
     `rowTop - scrollTop = offsetPx`; negative offsets are valid when the top-visible row begins
-    above the viewport.
+    above the viewport. The directional executor replaces the captured `offsetPx` with the
+    anchor's offset at the reader's last scroll before the batch landed.
 - **Message target:** place a message at start, top-third, center, or end for
   unread/reply/search/activity navigation.
 - **Resident top:** move to the top of the currently loaded window; ordinary history loading may
@@ -245,6 +324,73 @@ A saved content anchor remains authoritative. Its raw pixel value is a source-sp
 when that anchor is unavailable. An old saved state containing only the raw value selects the
 transitional legacy-offset position and still outranks unread/live-edge entry, preserving current
 behavior.
+
+## Message interaction holds
+
+Desktop direct conversations and rooms hold a message only after deliberate mouse movement,
+a click, keyboard action focus, or an open More/reaction panel. Row entry alone is not intent:
+content scrolling under a resting pointer must continue following latest. Toolbar visibility
+retains its existing hover delay and text-selection suppression. Only keyboard focus matching
+`:focus-visible` forces the toolbar visible; mouse-created focus follows the ordinary hover lifetime.
+A keyboard-visible control remains interactive through a physical mouse activation, even before the
+hover-intent delay finishes; clearing keyboard-only visibility must not discard the pending click.
+Row-local subscriptions expose held membership without broadcasting each target change to every bubble.
+
+An `interaction` request holds the original row handle and the message body's top offset through
+the existing anchor executor and bounded controller frame loop. The virtualizer retains that row
+and suspends independent measurement compensation. Recorded positioning writes and layout anchoring
+remain excluded from navigation attribution. Other scroll movement cancels the hold even without a
+wheel/key signal: selection-edge scrolling, native drag autoscroll, middle-click autoscroll and
+find-in-page must not be corrected back to the held target.
+An ongoing deliberate scroll gesture blocks acquisition; beginning an admitted hold clears stale
+input attribution from earlier gestures. Later layout stimuli reopen the same generation;
+arrivals, typing, media, divider changes and geometry-based rearming cannot replace an active hold,
+even after its current reconciliation settles. A growing viewport can remove the required scroll
+range, so the executor reserves only the missing bottom space; ending the hold restores it.
+
+Displayed toolbar slots remain fixed during the hold, but current capabilities still disable and
+gate execution. More and reaction panels keep the hold beyond the original row bounds. A held
+reaction picker captures its available list space on opening, keeping its controls reachable without
+scrolling the message or resizing under arriving posts; touch/static picker sizing stays unchanged. Escape closes
+the panel and restores its trigger without invoking broader conversation navigation. A disappearing
+or retracted target closes safely rather than transferring actions to another row. Physical row
+ownership survives archive-id backfill; current action callbacks follow the qualified identity.
+A conflicting known identity, disconnected row or handle resolving elsewhere ends the hold instead.
+
+Pointer departure (with panels closed), or keyboard action-focus departure (with panels closed),
+releases the hold. Mouse-created focus does not keep an otherwise disengaged mouse interaction alive.
+Native `dragend` and `drop` clear dragging even when the browser delivers no `mouseup`. Typing in the
+composer disengages any hold, including one started by a Reply click or keyboard action, using the
+saved-following policy. Only an open More/reaction menu retains its hold during composer input.
+A middle-button press also releases using the saved-following policy. An ordinary middle-click's
+`auxclick` completion clears hover suppression. A held middle drag clears it on physical release,
+even when the browser consumes `auxclick`. Sub-dead-zone pointer jitter does not count as a held drag:
+Blink changes its middle-pan mode only outside its 15-CSS-pixel dead zone on either axis. Such jitter
+must keep every row blocked when release latches the pan. A clicked, latched pan keeps the block until its stopping
+click/release, key or blur; a middle release with no matching observed press ends the block when the
+browser consumes the stopping press. Actual native movement still takes priority through viewport attribution.
+Hosts without `auxclick` clear it on mouseup.
+Only a reader who was following latest before the hold resumes automatically. Disengagement consumes
+current native geometry before applying that saved policy, including pixels whose scroll callback has
+not arrived. Input-end live-edge reporting and deferred interaction rearm use current geometry, not an
+older bottom sample. History reading keeps
+a settled fixed position; a deliberate scroll, own send or explicit jump takes priority and closes
+panels before moving. A manual takeover cannot rearm from the usual near-bottom band alone: actual
+bottom geometry or explicit latest navigation is required. Directed input that ends at the unchanged
+true bottom settles the released hold there even when no scroll event fires, so later arrivals still
+follow. Eligible input retains that settlement intent when its applied layout compensation lands later:
+non-virtualized compensation and virtualizer after-write observations re-check the true bottom after
+input ends. Upward movement or a new position generation invalidates the pending intent; layout alone
+and an ongoing gesture cannot arm following. Upward input does not rearm at its pre-motion bottom;
+its first upward pixel remains reading intent. Scrolling away while held, including within the ordinary 150px band, keeps the reading position.
+Blur and target removal use the same saved following policy after closing panels. Conversation departure, disabling and teardown clear ownership
+without resuming the departed interaction. Touch action sheets and static previews do not acquire this hold.
+
+Beginning a hold revokes previously reported follow-edge evidence before a future offscreen arrival
+can consume it. Intersection-based message-seen reporting and canonical unread counts remain unchanged.
+While holding, the existing latest-message control also appears for arrivals below the viewport inside
+the ordinary near-bottom band; reserved layout space alone does not expose it. A message's open More
+or reaction menu hides that control until the menus close, so the jump never covers the menu.
 
 ## Request provenance
 
@@ -488,7 +634,7 @@ deep growth and media-settle runs.
 | Media at live edge | Current or geometry-rearmed live edge | Debounced measurement stimulus; recovery uses the pre-growth eligibility captured by the caller |
 | Media while reading history | Selected target or fixed bottom-relative fractional anchor | See explicit-target maintenance and pending-batch cancellation above |
 | Unread divider moves while reading history | Selected target or fixed bottom-relative fractional anchor | Preserve the current position under the explicit-target and ambient precedence rules above |
-| Load older/newer | Fixed top-relative offset anchor | Subject to ambient request precedence above; wait for the directional window change and release if the load settles without one; if the anchor disappears after a shift, preserve captured distance from bottom and clamp |
+| Load older/newer | Fixed top-relative offset anchor | Subject to ambient request precedence above; wait for the directional window change (a new first resident ID, or a new interior placement under the resident bound) and release if the load settles without one; restore again on each later window change until the load settles while the reader has not moved on; if the anchor disappears after a shift, preserve captured distance from bottom and clamp |
 | Home / resident-top command | Resident top | Does not itself trigger load-older; later genuine user travel can re-arm ordinary boundary loading |
 | Reaction, typing, resize, MAM completion | Reconcile current position | See selected-target maintenance and stimulus-specific live-edge eligibility above |
 
@@ -590,6 +736,18 @@ remain under application control rather than competing with native anchoring.
 Resident-top animation follows the leased frame contract above. On the virtualized path its
 immediate frame writes use `scrollToOffset`, keeping TanStack's pending target aligned with each
 landed position.
+
+`scrollToOffset` and `scrollToIndex` return a receipt (`ScrollWrite`). Its `outcome()` reads
+`applied` with the offset the browser read back, `queued` while the library holds the write for an
+iOS fling, or `refused` with a reason: `reader` (the reader veto), `superseded` (a newer request
+or write owns the list), `dropped` (the library let go of a held write) or `detached` (the scroller
+changed). A `queued` receipt changes once, to `applied` or `refused`, and is read from the
+library's state on demand. The leased writes pass an `owner` taken from the lease; it is current
+while the request is the active one, whether or not its frame loop is running. A write whose owner
+is no longer current is refused and never written, including a write the library was holding.
+Measurement compensation has no receipt and still cannot be refused. The two emergency writes and
+the explicit-target completion re-anchor pass no owner. Regression coverage is
+`tanstackMessageVirtualizer.receipt.test.tsx`.
 
 ## Test standard
 

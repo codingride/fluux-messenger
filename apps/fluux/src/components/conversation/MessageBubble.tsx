@@ -5,7 +5,7 @@ import { iosHaptic } from '@/platform/ios/haptics'
  * Uses composition to handle view-specific rendering while sharing
  * the common bubble structure.
  */
-import { useState, useMemo, useRef, useEffect, memo, type CSSProperties, type ReactNode } from 'react'
+import { useState, useMemo, useRef, useEffect, useContext, memo, type CSSProperties, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { CornerUpRight, AlertCircle, RefreshCw, Shield, ShieldCheck, ShieldX, ShieldAlert, Ear, UserX } from 'lucide-react'
 import { formatMessagePreview, formatXMPPError, getBareJid, type BaseMessage, type MentionReference, type Contact, type ContactIdentity, type RoomRole, type RoomAffiliation } from '@fluux/sdk'
@@ -24,7 +24,8 @@ import { UnsupportedEncryptionNotice } from './UnsupportedEncryptionNotice'
 import { MessageReactions } from './MessageReactions'
 import { MessageReactorsSheet, type ReactorDetails } from './MessageReactorsSheet'
 import { isActionMessage, type WhisperThreadPosition } from './messageGrouping'
-import { messageRowId } from './messageRowIdentity'
+import { messageRowId, messageWrapIdentity } from './messageRowIdentity'
+import { useWrappedCodeBlocksStore } from '@/stores/wrappedCodeBlocksStore'
 import { messageRowRef, type MessageRowRef } from '@fluux/sdk'
 import { useRequestMessageTarget } from './messageTargetContext'
 import { useOwnGroupWidth } from './messageGroupWidth'
@@ -39,6 +40,7 @@ import { PollClosedCard } from './PollClosedCard'
 import { Tooltip } from '../Tooltip'
 import { MessageActionSheet } from './MessageActionSheet'
 import { computeMessageActions } from './messageActionCapabilities'
+import { MessageInteractionContext, useMessageInteractionHeld } from './useMessageInteractionHold'
 import { downloadAttachment } from '@/utils/download'
 
 type ReplyQuoteCardStyle = CSSProperties & {
@@ -195,6 +197,7 @@ export interface MessageBubbleProps {
 function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
   // Message identity and content
   if (prev.message.id !== next.message.id) return false
+  if (messageRowId(prev.message) !== messageRowId(next.message)) return false
   if (prev.message.body !== next.message.body) return false
   if (prev.whisperWith !== next.whisperWith) return false
   if (prev.whisperThread !== next.whisperThread) return false
@@ -254,6 +257,7 @@ function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): bool
   if (prev.isLastMessage !== next.isLastMessage) return false
   if (prev.isGroupEnd !== next.isGroupEnd) return false
   if (prev.isHovered !== next.isHovered) return false
+  if ((prev.onReaction === undefined) !== (next.onReaction === undefined)) return false
 
   // Sender info
   if (prev.senderName !== next.senderName) return false
@@ -375,7 +379,28 @@ export const MessageBubble = memo(function MessageBubble({
   // positions that preview instead of no-opping or scrolling the live conversation.
   const requestMessageTarget = useRequestMessageTarget()
   const [showReactionPicker, setShowReactionPickerState] = useState(false)
-  const [showMoreMenu, setShowMoreMenu] = useState(false)
+  const [showMoreMenu, setShowMoreMenuState] = useState(false)
+  const interaction = useContext(MessageInteractionContext)
+  const bubbleRef = useRef<HTMLDivElement>(null)
+  const rowId = messageRowId(message)
+  // Stable between renders so the memoized body does not re-render; the late fields
+  // (archive/origin/occupant ids) only change when backfill supplies them.
+  const { id: msgId, type: msgType, from: msgFrom, originId, stanzaId, timestamp } = message
+  const { conversationId, roomJid, occupantId, receivedAt } = message as { conversationId?: string; roomJid?: string; occupantId?: string; receivedAt?: Date }
+  const wrapIdentity = useMemo(
+    () => messageWrapIdentity({ id: msgId, type: msgType, conversationId, roomJid, from: msgFrom, originId, occupantId, stanzaId, timestamp, receivedAt }),
+    [msgId, msgType, conversationId, roomJid, msgFrom, originId, occupantId, stanzaId, timestamp, receivedAt],
+  )
+  // This row's own backfill (same mounted occurrence gaining archive/origin ids) carries its stored
+  // wrap choice along; an unmounted row or a look-alike twin never inherits one.
+  const previousWrapIdentity = useRef(wrapIdentity)
+  useEffect(() => {
+    const previous = previousWrapIdentity.current
+    previousWrapIdentity.current = wrapIdentity
+    if (previous && wrapIdentity) useWrappedCodeBlocksStore.getState().promote(previous, wrapIdentity)
+  }, [wrapIdentity])
+  const interactionHeld = useMessageInteractionHeld(bubbleRef)
+  const openMenusRef = useRef({ more: false, reaction: false })
   const [showAvatarLightbox, setShowAvatarLightbox] = useState(false)
   const [showErrorDetails, setShowErrorDetails] = useState(false)
 
@@ -433,8 +458,26 @@ export const MessageBubble = memo(function MessageBubble({
     reactionsEnabled,
   })
 
-  // Wrap setShowReactionPicker to notify parent
+  const closeInteractionMenus = () => {
+    openMenusRef.current = { more: false, reaction: false }
+    setShowMoreMenuState(false)
+    setShowReactionPickerState(false)
+    onReactionPickerChange?.(false)
+  }
+  const reportMenus = () => {
+    if (rowId) interaction?.setMenuOpen(rowId,
+      openMenusRef.current.more || openMenusRef.current.reaction, closeInteractionMenus,
+      bubbleRef.current?.closest<HTMLElement>('[data-message-row-id]') ?? undefined)
+  }
+  const setShowMoreMenu = (isOpen: boolean) => {
+    openMenusRef.current.more = isOpen
+    reportMenus()
+    setShowMoreMenuState(isOpen)
+  }
+  // The picker remains a list interaction even when its pointer/focus leaves the row's box.
   const setShowReactionPicker = (isOpen: boolean) => {
+    openMenusRef.current.reaction = isOpen
+    reportMenus()
     setShowReactionPickerState(isOpen)
     onReactionPickerChange?.(isOpen)
   }
@@ -557,6 +600,7 @@ export const MessageBubble = memo(function MessageBubble({
   const showSenderHeader = showAvatar && !isActionMessage(message.body)
   return (
     <div
+      ref={bubbleRef}
       data-message-id={message.id}
       data-message-from={senderName}
       data-message-time={formatTime(message.timestamp)}
@@ -614,6 +658,7 @@ export const MessageBubble = memo(function MessageBubble({
           canReply={canReply}
           canEdit={canEdit}
           canDelete={canDelete}
+          interactionHeld={interactionHeld}
           isHidden={hideToolbar || false}
           isSelected={isSelected || false}
           hasKeyboardSelection={hasKeyboardSelection || false}
@@ -641,6 +686,8 @@ export const MessageBubble = memo(function MessageBubble({
         data-msg-chrome={showAvatar ? 'header' : 'cont'}
         // See pickWidthSampleEl in useRowMetrics for the hug-width sampling policy.
         data-msg-own={ownTint ? '' : undefined}
+        // Whisper borders/padding are not the ordinary row's width or chrome.
+        data-msg-whisper={inThread ? '' : undefined}
         // Paint selection on the outer row without changing this content box.
         data-msg-selected={isSelected ? '' : undefined}
         onTouchStart={handleContentTouchStart}
@@ -743,7 +790,7 @@ export const MessageBubble = memo(function MessageBubble({
         )}
 
         {/* Collapsible wrapper for long messages */}
-        <CollapsibleContent messageId={messageRowId(message) ?? message.id} hasMedia={!!(message.attachment || message.linkPreview)}>
+        <CollapsibleContent messageId={messageRowId(message) ?? message.id} wrapIdentity={wrapIdentity} hasMedia={!!(message.attachment || message.linkPreview)}>
           {/* Encryption placeholders take precedence over body text so the
               sender's plaintext fallback never reaches the UI. encryptedPayload:
               an E2EE stanza we couldn't decrypt. unsupportedEncryption: a
@@ -754,6 +801,7 @@ export const MessageBubble = memo(function MessageBubble({
             <UnsupportedEncryptionNotice method={message.unsupportedEncryption.name} />
           ) : (
             <MessageBody
+              wrapIdentity={wrapIdentity}
               body={message.body}
               isEdited={message.isEdited}
               originalBody={message.originalBody}

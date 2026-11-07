@@ -3,14 +3,18 @@
 import { roomMessageFixture } from '@/test-utils/roomMessages'
 import { messageRowId, findMessageRowElement, messageTargetRowId } from './messageRowIdentity'
 import { MessageTargetProvider } from './messageTargetContext'
-import { pickChromeSampleEl } from './useRowMetrics'
+import { pickChromeSampleEl, pickWidthSampleEl } from './useRowMetrics'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import { MessageBubble, buildReplyContext, type MessageBubbleProps } from './MessageBubble'
 import type { BaseMessage } from '@fluux/sdk'
 import { useExpandedMessagesStore } from '@/stores/expandedMessagesStore'
+import { useWrappedCodeBlocksStore } from '@/stores/wrappedCodeBlocksStore'
 import { setPeerVerified, clearPeerVerified } from '@/stores/verifiedPeerKeysStore'
 import type { DensityMode } from '@/stores/settingsStore'
+import { useRef, type ReactNode } from 'react'
+import { MessageToolbar, type MessageToolbarProps } from './MessageToolbar'
+import { MessageInteractionContext, useMessageInteractionHold } from './useMessageInteractionHold'
 
 const haptic = vi.hoisted(() => vi.fn())
 vi.mock('@/platform/ios/haptics', () => ({ iosHaptic: haptic }))
@@ -92,6 +96,16 @@ function createDefaultProps(overrides: Partial<MessageBubbleProps> = {}): Messag
 }
 
 describe('MessageBubble', () => {
+  it('FLM-229 refreshes action identity when a message receives its archive id', () => {
+    const original = createTestMessage()
+    const targets: BaseMessage[] = []
+    const props = createDefaultProps({ message: original, onReaction: () => { targets.push(original) } })
+    const view = render(<MessageBubble {...props} />)
+    const stamped = { ...original, stanzaId: 's1' }
+    view.rerender(<MessageBubble {...props} message={stamped} onReaction={() => { targets.push(stamped) }} />)
+    fireEvent.click(screen.getAllByLabelText('chat.reactWith')[0])
+    expect(targets).toEqual([stamped])
+  })
   it('expands only the selected chat twin', () => {
     const height = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(700)
     useExpandedMessagesStore.getState().clear()
@@ -407,6 +421,19 @@ describe('MessageBubble', () => {
   })
 
   describe('Row chrome sampling', () => {
+    // Intent: FLM-276. Whisper cards have 22px of horizontal inset and 8px of
+    // vertical padding in the native room reproduction; neither is ordinary row geometry.
+    it.each((['start', 'middle', 'end', 'solo'] as const).flatMap(whisperThread =>
+      [true, false].flatMap(showAvatar => [true, false].map(isOutgoing => ({ whisperThread, showAvatar, isOutgoing }))),
+    ))('does not calibrate ordinary rows from $whisperThread whispers (header=$showAvatar, own=$isOutgoing)', ({ whisperThread, showAvatar, isOutgoing }) => {
+      const { container } = render(<MessageBubble {...createDefaultProps({
+        whisperThread, showAvatar, whisperWith: 'Olivia', message: createTestMessage({ isOutgoing }),
+      })} />)
+      expect(container.querySelector('[data-msg-text]')).not.toBeNull()
+      expect(pickWidthSampleEl(container)).toBeNull()
+      expect(pickChromeSampleEl(container, showAvatar ? 'header' : 'cont')).toBeNull()
+    })
+
     const replyContext = {
       senderName: 'Bob', senderColor: 'rgb(0, 255, 0)', body: 'Original message',
       messageId: 'original-msg-1', avatarIdentifier: 'bob@example.com',
@@ -1381,5 +1408,73 @@ describe('Density avatar size', () => {
     const { container } = render(<MessageBubble {...createDefaultProps({ showAvatar: true, timeFormat: '12h' })} />)
     const col = container.querySelector('.flex-shrink-0') as HTMLElement
     expect(col.className).toContain('w-12')
+  })
+})
+
+// FLM-245 F4/F8: measure actual memoized bubbles/toolbar consumers, not a modeled subscription.
+it('FLM-245 updates only old/new held rows and preserves the toolbar handler identities', () => {
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+    matches: query.includes('hover: hover'), media: query, onchange: null,
+    addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+  })))
+  const toolbar = MessageToolbar as unknown as { type: (props: MessageToolbarProps) => ReactNode }
+  const renders = vi.spyOn(toolbar, 'type')
+  const props = ['a', 'b', 'c'].map(id => createDefaultProps({ message: createTestMessage({ id: `held-${id}`, body: `Message ${id}` }) }))
+  function Rows() {
+    const scrollRef = useRef<HTMLDivElement>(null)
+    const interaction = useMessageInteractionHold({ scrollRef, conversationId: 'alice@example.com', enabled: true, begin: () => true, release: () => {} })
+    return <MessageInteractionContext.Provider value={interaction.context}>
+      <div ref={scrollRef} data-held={interaction.heldMessageId ?? ''}>
+        {props.map(p => <div key={p.message.id} data-testid={p.message.id} data-message-row-id={messageRowId(p.message)!}><MessageBubble {...p} /></div>)}
+      </div>
+    </MessageInteractionContext.Provider>
+  }
+  try {
+    render(<Rows />)
+    const initial = props.map(p => renders.mock.calls.find(([value]) => value.myReactions === p.myReactions)![0])
+    renders.mockClear()
+    fireEvent.mouseMove(document.body, { clientX: 0, clientY: 0 })
+    fireEvent.mouseMove(screen.getByTestId('held-a'), { clientX: 100, clientY: 200 })
+    expect(screen.getByTestId('held-a').parentElement).toHaveAttribute('data-held', 'held-a')
+    const count = (p: MessageBubbleProps) => renders.mock.calls.filter(([value]) => value.myReactions === p.myReactions).length
+    const firstCounts = props.map(count)
+    expect(firstCounts).toEqual([1, 0, 0])
+    const current = renders.mock.calls.at(-1)![0]
+    expect(current.onReply).toBe(initial[0].onReply)
+    expect(current.onEdit).toBe(initial[0].onEdit)
+    expect(current.onDelete).toBe(initial[0].onDelete)
+    renders.mockClear()
+    fireEvent.mouseMove(screen.getByTestId('held-b'), { clientX: 120, clientY: 250 })
+    const secondCounts = props.map(count)
+    expect(secondCounts).toEqual([1, 1, 0])
+    console.info('FLM-245 actual row renders', JSON.stringify({ firstCounts, secondCounts }))
+  } finally { renders.mockRestore(); vi.unstubAllGlobals() }
+})
+
+// Source: review FLM-404 R6/R3 — a wrap choice follows its own row through archive backfill and is
+// never handed to a look-alike twin that mounts while the original is unmounted.
+describe('MessageBubble wrap choice and archive backfill', () => {
+  const codeBody = '```\nlong line of code\n```'
+  const twinBase = { id: 'dup', type: 'chat' as const, conversationId: 'alice@example.com', body: codeBody }
+
+  beforeEach(() => useWrappedCodeBlocksStore.getState().clear())
+
+  it('keeps the choice when the mounted row gains an archive id, and does not give it to a twin', () => {
+    const original = createTestMessage(twinBase)
+    const { container, rerender, unmount } = render(<MessageBubble {...createDefaultProps({ message: original })} />)
+    fireEvent.click(screen.getByTitle('chat.wrapLines'))
+    expect(container.querySelector('pre')?.className).toContain('whitespace-pre-wrap')
+    // backfill supplies the archive id to the same mounted row: the choice follows
+    rerender(<MessageBubble {...createDefaultProps({ message: { ...original, stanzaId: 'archive-A' } })} />)
+    expect(container.querySelector('pre')?.className).toContain('whitespace-pre-wrap')
+    unmount()
+    // the original is virtualized out; an archive-only twin mounts first and must not inherit it
+    const twin = render(<MessageBubble {...createDefaultProps({ message: createTestMessage({ ...twinBase, stanzaId: 'archive-B' }) })} />)
+    expect(twin.container.querySelector('pre')?.className).not.toContain('whitespace-pre-wrap')
+    twin.unmount()
+    // the enriched original returns and still has its choice
+    const back = render(<MessageBubble {...createDefaultProps({ message: { ...original, stanzaId: 'archive-A' } })} />)
+    expect(back.container.querySelector('pre')?.className).toContain('whitespace-pre-wrap')
   })
 })

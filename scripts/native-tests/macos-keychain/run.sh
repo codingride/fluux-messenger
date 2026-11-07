@@ -10,7 +10,19 @@ LAB="$(cd "$LAB" && pwd -P)"
 trap 'rm -rf "$LAB"' EXIT
 # Build without any signing or keychain operations. Extract the test executable,
 # not a development app that might open an existing application profile.
-cargo test --locked --manifest-path apps/fluux/src-tauri/Cargo.toml --bin fluux --no-run --message-format=json > "$LAB/build.json"
+if ! cargo test --locked --manifest-path apps/fluux/src-tauri/Cargo.toml --bin fluux --no-run --message-format=json > "$LAB/build.json"; then
+  # Keep human-readable diagnostics before the scratch build stream is removed.
+  python3 - "$LAB/build.json" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    entry = json.loads(line)
+    if entry.get('reason') == 'compiler-message':
+        rendered = entry.get('message', {}).get('rendered')
+        if rendered:
+            print(rendered, file=sys.stderr, end='')
+PY
+  exit 1
+fi
 BIN="$(python3 - "$LAB/build.json" <<'PY'
 import json,sys
 for line in open(sys.argv[1]):
@@ -34,7 +46,10 @@ codesign -s - -i net.processone.fluux "$LAB/owner"
 codesign -s - -i net.processone.fluux.dev "$LAB/reader"
 export FLUUX_PROBE_KEYCHAIN="$HOME/fixture.keychain-db" FLUUX_PROBE_READER="$LAB/reader"
 probe() {
-  FLUUX_PROBE_ACTION="$2" "$LAB/$1" macos_secrets::native::native_keychain_probe --exact --ignored --nocapture
+  FLUUX_PROBE_ACTION="$2" python3 - "$LAB/$1" <<'PYPROBE'
+import subprocess, sys
+subprocess.run([sys.argv[1], "macos_secrets::native::native_keychain_probe", "--exact", "--ignored", "--nocapture"], check=True, timeout=30)
+PYPROBE
 }
 {
   "$LAB/fixture" create "$FLUUX_PROBE_KEYCHAIN" "$HOME/password"
@@ -51,6 +66,42 @@ with open(pathlib.Path(sys.argv[2]).with_suffix('.lock'), 'a+b') as lock:
     subprocess.run([sys.argv[1], 'macos_secrets::native::native_keychain_probe', '--exact', '--ignored', '--nocapture'], check=True, timeout=15)
 PY
   probe reader exclusive-write
+  # Saving must not wait on the other copy's prompt: suspend the production
+  # read just before native lookup, then complete real writes in another identity.
+  for account in secrets-v1 secrets-fresh-v1; do
+    export FLUUX_PROBE_KEYCHAIN="$HOME/pending-$account.keychain-db" FLUUX_PENDING_ACCOUNT="$account"
+    "$LAB/fixture" pending-approved "$FLUUX_PROBE_KEYCHAIN" "$HOME/password" "$LAB/owner" "$LAB/reader"
+    FLUUX_PROBE_ACTION=pending-read python3 - "$LAB/reader" "$LAB/owner" <<'PY'
+import os, selectors, subprocess, sys, time
+args = ['macos_secrets::native::native_keychain_probe', '--exact', '--ignored', '--nocapture']
+reader = subprocess.Popen([sys.argv[1], *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+try:
+    # A semantic barrier, not a sleep: the reader has captured its revision.
+    deadline = time.monotonic() + 15
+    with selectors.DefaultSelector() as ready:
+        ready.register(reader.stdout, selectors.EVENT_READ)
+        output = b''
+        while b'pending native lookup\n' not in output:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not ready.select(remaining):
+                raise TimeoutError('reader did not reach native lookup')
+            chunk = os.read(reader.stdout.fileno(), 4096)
+            if not chunk:
+                raise RuntimeError('reader exited before native lookup: ' + output.decode())
+            output += chunk
+    env = dict(os.environ, FLUUX_PROBE_ACTION='pending-writes')
+    subprocess.run([sys.argv[2], *args], env=env, check=True, timeout=20)
+    assert reader.poll() is None, 'reader must remain paused until all writes finish'
+    tail, _ = reader.communicate(b'\n', timeout=15)
+    print((output + tail).decode(), end='')
+    assert reader.returncode == 0
+finally:
+    if reader.poll() is None:
+        reader.kill()
+        reader.communicate()
+PY
+  done
+  export FLUUX_PROBE_KEYCHAIN="$HOME/approved.keychain-db"
   probe reader startup
   # The Dev identity must not break the installed release's old layout.
   export FLUUX_PROBE_KEYCHAIN="$HOME/release-dev.keychain-db"
@@ -60,6 +111,18 @@ PY
   probe reader startup
   probe reader forget
   probe owner legacy-erased
+  # FLM-86: one real legacy ACL/UTF-8 failure never disables other secrets.
+  for partial in partial-login partial-pgp partial-mcp partial-invalid partial-backup-mcp partial-recovery-pgp; do
+    export FLUUX_PROBE_KEYCHAIN="$HOME/$partial.keychain-db"
+    "$LAB/fixture" "$partial" "$FLUUX_PROBE_KEYCHAIN" "$HOME/password" "$LAB/owner" "$LAB/reader"
+    probe reader "$partial"
+    if [[ "$partial" == partial-recovery-pgp ]]; then
+      probe owner recovery-copy-startup
+    elif [[ "$partial" != partial-invalid ]]; then
+      # The owner can read the refused item: a new process finishes migration.
+      probe owner migrate
+    fi
+  done
   # An earlier development build's pending cleanup is harmless and ignored.
   export FLUUX_PROBE_KEYCHAIN="$HOME/interrupted.keychain-db"
   "$LAB/fixture" create "$FLUUX_PROBE_KEYCHAIN" "$HOME/password"
@@ -76,8 +139,34 @@ PY
     "$LAB/fixture" create "$FLUUX_PROBE_KEYCHAIN" "$HOME/password"
     probe owner "$invalid"
   done
+  # A fresh fixture must not inherit the later restored-account marker.
+  # A current-version cache can be left in legacy mode by a failed read-back.
+  export FLUUX_PROBE_KEYCHAIN="$HOME/cleanup-legacy-mode.keychain-db"
+  "$LAB/fixture" create "$FLUUX_PROBE_KEYCHAIN" "$HOME/password"
+  probe owner seed
+  probe owner cleanup-legacy-mode
+  # Deferred cleanup runs in a separate process with its own no-dialog policy.
+  export FLUUX_PROBE_KEYCHAIN="$HOME/cleanup-trusted.keychain-db"
+  "$LAB/fixture" legacy-approved "$FLUUX_PROBE_KEYCHAIN" "$HOME/password" "$LAB/owner" "$LAB/reader"
+  probe owner cleanup-prepare
+  probe owner cleanup-busy
+  probe owner cleanup-trusted
+  # The untrusted identity can read the shared combined item, but cannot
+  # authorize reads or deletes of the owner's retained old items.
+  export FLUUX_PROBE_KEYCHAIN="$HOME/cleanup-untrusted.keychain-db"
+  "$LAB/fixture" approved "$FLUUX_PROBE_KEYCHAIN" "$HOME/password" "$LAB/owner" "$LAB/reader"
+  probe owner seed
+  probe reader cleanup-untrusted
+  probe owner legacy-read
+  # A writer from the old layout ignores revision coordination. Attempt deletion
+  # by the stale item reference, then verify its replacement survives.
+  export FLUUX_PROBE_KEYCHAIN="$HOME/cleanup-race.keychain-db"
+  "$LAB/fixture" create "$FLUUX_PROBE_KEYCHAIN" "$HOME/password"
+  probe owner seed
+  probe owner cleanup-race
   # Pure failure/recovery tests also execute under the scratch HOME.
   "$LAB/owner" macos_secrets::tests:: --nocapture
+  "$LAB/owner" macos_secrets::cleanup:: --nocapture
   "$LAB/owner" credentials::tests:: --nocapture
   "$LAB/owner" openpgp_storage::tests:: --nocapture
   "$LAB/owner" openpgp::tests::forget --nocapture

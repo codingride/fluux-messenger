@@ -49,10 +49,11 @@ export async function wheelUntil(
   deltaY: number,
   read: () => Promise<number>,
   reached: (value: number) => boolean,
-  { timeoutMs = 20_000, intervalMs = 100, message = 'wheel movement did not reach the required position' } = {},
+  { timeoutMs = 20_000, intervalMs = 100, message = 'wheel movement did not reach the required position', positionPointer = true } = {},
 ): Promise<number> {
   const scroller = page.locator('[data-message-list]').first()
-  await scroller.hover()
+  // A caller exercising a deliberate row hover must keep that pointer target through the wheel.
+  if (positionPointer) await scroller.hover()
   const deadline = Date.now() + timeoutMs
   let value = await read()
   while (!reached(value)) {
@@ -81,6 +82,66 @@ export async function wheelAwayFromBottom(
     distance => distance > minimumDistance,
     { message: `wheel input did not move the reader more than ${minimumDistance}px from the bottom` },
   )
+}
+
+export interface TargetHighlightReading {
+  messageId: string
+  at: number
+  visible: boolean
+  top: number
+  bottom: number
+}
+
+/** Capture a newly applied target flash even when a loaded consumer resumes after it expires. */
+export async function captureTargetHighlight(
+  page: Page,
+  messageId: string,
+  navigate: () => Promise<void>,
+): Promise<TargetHighlightReading> {
+  await page.evaluate(id => {
+    const scope = window as unknown as {
+      __targetHighlightCapture?: { observer: MutationObserver; reading: TargetHighlightReading | null }
+    }
+    const capture: NonNullable<typeof scope.__targetHighlightCapture> = {
+      reading: null,
+      observer: new MutationObserver(records => {
+        for (const record of records) {
+          const row = record.target
+          if (!(row instanceof HTMLElement) || !row.matches('.message-row') ||
+            row.dataset.messageId !== id || !row.classList.contains('message-highlight') ||
+            record.oldValue?.split(/\s+/).includes('message-highlight')) continue
+          const bounds = row.getBoundingClientRect()
+          const list = row.closest('[data-message-list]')?.getBoundingClientRect()
+          capture.reading = { messageId: id, at: performance.now(),
+            visible: bounds.width > 0 && bounds.height > 0 && !!list && bounds.bottom > list.top && bounds.top < list.bottom,
+            top: bounds.top, bottom: bounds.bottom }
+        }
+      }),
+    }
+    scope.__targetHighlightCapture?.observer.disconnect()
+    scope.__targetHighlightCapture = capture
+    capture.observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class'], attributeOldValue: true })
+  }, messageId)
+  try {
+    await navigate()
+    // Target convergence counts rendered frames. Keep the journey's existing deadline rather than
+    // imposing a shorter wall-clock deadline while a loaded engine is still converging.
+    await page.waitForFunction(() => (window as unknown as {
+      __targetHighlightCapture?: { reading: TargetHighlightReading | null }
+    }).__targetHighlightCapture?.reading != null, undefined, { timeout: 0 })
+    const reading = await page.evaluate(() => (window as unknown as {
+      __targetHighlightCapture: { reading: TargetHighlightReading }
+    }).__targetHighlightCapture.reading)
+    expect(reading.messageId).toBe(messageId)
+    expect(reading.visible, 'the requested message must be visible when its completion highlight is applied').toBe(true)
+    return reading
+  } finally {
+    await page.evaluate(() => {
+      const scope = window as unknown as { __targetHighlightCapture?: { observer: MutationObserver } }
+      scope.__targetHighlightCapture?.observer.disconnect()
+      delete scope.__targetHighlightCapture
+    })
+  }
 }
 
 // ── Shared setup ─────────────────────────────────────────────────────────────
@@ -446,17 +507,32 @@ export async function scrollToBottom(page: Page): Promise<void> {
   await settle(page)
 }
 
-/** Activate a 1:1 conversation through the real store + route (no room auto-select race). */
+/**
+ * Open a 1:1 conversation the way the conversation list's click does: start the store activation
+ * and change the route in the same task, then wait until the store and the route both name it.
+ *
+ * Activating first and setting the route only once the store confirms is not safe at startup.
+ * ChatLayout's URL-to-store sync activates whatever conversation a new route names, and the app's
+ * own first-conversation auto-select may still be on its way through that sync when the demo
+ * reports ready. Its activation then lands after ours with a newer token, ours bails, and a wait
+ * on the store alone never ends (FLM-211). Changing the route in the same task makes ours the
+ * newest route, so the sync converges on the requested conversation whatever is still in flight.
+ *
+ * The waits take the test's own budget: on a loaded machine an activation that is converging can
+ * take longer than any fixed setup deadline.
+ */
 export async function activateChat(page: Page, jid: string): Promise<void> {
   await page.evaluate((j) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (window as any).__chatStore?.getState?.()?.activateConversation(j)
+    void (window as any).__chatStore.getState().activateConversation(j)
+    window.location.hash = '#/messages/' + encodeURIComponent(j)
   }, jid)
   await page.waitForFunction((j) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (window as any).__chatStore?.getState?.()?.activeConversationId === j
-  }, jid, { timeout: 10_000 })
-  await page.evaluate((j) => { window.location.hash = '#/messages/' + encodeURIComponent(j) }, jid)
-  await page.waitForSelector('[data-message-list]', { timeout: 10_000 })
+    const state = (window as any).__chatStore.getState()
+    return state.activeConversationId === j && !state.activationPending &&
+      window.location.hash === '#/messages/' + encodeURIComponent(j)
+  }, jid, { timeout: 0 })
+  await page.waitForSelector('[data-message-list]', { timeout: 0 })
   await settle(page)
 }

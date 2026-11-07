@@ -24,7 +24,7 @@ import { usePendingAttachment } from '@/hooks/usePendingAttachment'
 import { useConversationEncryptionState, type ConversationEncryptionState } from '@/hooks/useConversationEncryptionState'
 import { useWebUnlockDialogStore } from '@/stores/webUnlockDialogStore'
 import { EasterEggAnimation } from './easter-eggs/EasterEggAnimation'
-import { ConversationColumn } from './conversation/ConversationColumn'
+import { ConversationColumn, ConversationTail } from './conversation/ConversationColumn'
 import { ChatHeader } from './ChatHeader'
 import { MessageComposer, type ReplyInfo, type EditInfo, type MessageComposerHandle, type PendingAttachment } from './MessageComposer'
 import { useSlashCommands } from '@/hooks/useSlashCommands'
@@ -312,7 +312,8 @@ export function ChatView({ onBack, onSwitchToMessages, onSearchInConversation, o
   // alone (which wrongly treated a scrolled-up-but-focused conversation as
   // "seen"). The SDK's `setActiveConversation` is the SOLE caller of
   // `beginViewportGeneration` — this view only ever READS the current
-  // generation and reports measured geometry against it.
+  // generation and reports measured geometry, or conservatively revokes follow-edge
+  // evidence while an interaction owns the view.
   //
   // The generation is an ACTIVATION value, so it is read on EVERY render (not
   // memoized on conversationId alone): a same-entity reactivation bumps the
@@ -592,54 +593,56 @@ export function ChatView({ onBack, onSwitchToMessages, onSearchInConversation, o
           </MediaAutoloadProvider>
         </div>
 
-        {/* Reaction mention pills — pinned above the composer */}
-        <ReactionMentions conversationId={activeConversation.id} onSee={(id) => chatStore.getState().setTargetMessageId(id)} />
-        <EasterEggMentions conversationId={activeConversation.id} onReplay={(animation, senderName) => chatStore.getState().triggerAnimation(activeConversation.id, animation, senderName)} />
+        <ConversationTail>
+          {/* Reaction mention pills — pinned above the composer */}
+          <ReactionMentions conversationId={activeConversation.id} onSee={(id) => chatStore.getState().setTargetMessageId(id)} />
+          <EasterEggMentions conversationId={activeConversation.id} onReplay={(animation, senderName) => chatStore.getState().triggerAnimation(activeConversation.id, animation, senderName)} />
 
-        {/* Input */}
-        <MessageInput
-          composerRef={composerHandleRef}
-          textareaRef={composerRef as React.RefObject<HTMLTextAreaElement | null>}
-          conversationId={activeConversation.id}
-          conversationName={activeConversation.name}
-          type={activeConversation.type}
-          onMessageIdSent={handleMessageIdSent}
-          replyingTo={replyingTo}
-          onCancelReply={handleCancelReply}
-          editingMessage={editingMessage}
-          onCancelEdit={handleCancelEdit}
-          onEditLastMessage={handleEditLastMessage}
-          sendMessage={sendMessage}
-          sendCorrection={sendCorrection}
-          retractMessage={retractMessage}
-          sendChatState={sendChatState}
-          isArchived={isArchived}
-          unarchiveConversation={unarchiveConversation}
-          setDraft={setDraft}
-          getDraft={getDraft}
-          clearDraft={clearDraft}
-          clearFirstNewMessageId={clearFirstNewMessageId}
-          contactsByJid={contactsByJid}
-          onComposingChange={setIsComposing}
-          sendEasterEgg={sendEasterEgg}
-          uploadState={uploadStateObj}
-          isUploadSupported={isSupported}
-          onFileSelect={handleFileDrop}
-          uploadFile={uploadFile}
-          pendingAttachment={pendingAttachment}
-          onRemovePendingAttachment={handleRemovePendingAttachment}
-          onChoosePhoto={choosePhoto}
-          processLinkPreview={processMessageForLinkPreview}
-          isConnected={isConnected}
-          onSwitchToMessages={onSwitchToMessages}
-          encryptionState={encryptionState}
-          onEncryptionClick={
-            encryptionState.kind === 'encrypted' || encryptionState.kind === 'blocked'
-              ? handleOpenVerify
-              : undefined
-          }
-          isDarkMode={resolvedMode === 'dark'}
-        />
+          {/* Input */}
+          <MessageInput
+            composerRef={composerHandleRef}
+            textareaRef={composerRef as React.RefObject<HTMLTextAreaElement | null>}
+            conversationId={activeConversation.id}
+            conversationName={activeConversation.name}
+            type={activeConversation.type}
+            onMessageIdSent={handleMessageIdSent}
+            replyingTo={replyingTo}
+            onCancelReply={handleCancelReply}
+            editingMessage={editingMessage}
+            onCancelEdit={handleCancelEdit}
+            onEditLastMessage={handleEditLastMessage}
+            sendMessage={sendMessage}
+            sendCorrection={sendCorrection}
+            retractMessage={retractMessage}
+            sendChatState={sendChatState}
+            isArchived={isArchived}
+            unarchiveConversation={unarchiveConversation}
+            setDraft={setDraft}
+            getDraft={getDraft}
+            clearDraft={clearDraft}
+            clearFirstNewMessageId={clearFirstNewMessageId}
+            contactsByJid={contactsByJid}
+            onComposingChange={setIsComposing}
+            sendEasterEgg={sendEasterEgg}
+            uploadState={uploadStateObj}
+            isUploadSupported={isSupported}
+            onFileSelect={handleFileDrop}
+            uploadFile={uploadFile}
+            pendingAttachment={pendingAttachment}
+            onRemovePendingAttachment={handleRemovePendingAttachment}
+            onChoosePhoto={choosePhoto}
+            processLinkPreview={processMessageForLinkPreview}
+            isConnected={isConnected}
+            onSwitchToMessages={onSwitchToMessages}
+            encryptionState={encryptionState}
+            onEncryptionClick={
+              encryptionState.kind === 'encrypted' || encryptionState.kind === 'blocked'
+                ? handleOpenVerify
+                : undefined
+            }
+            isDarkMode={resolvedMode === 'dark'}
+          />
+        </ConversationTail>
 
       </ConversationColumn>
 
@@ -1223,10 +1226,11 @@ export const MessageInput = memo(function MessageInput({
   const { resolveInput, classifyInput } = useSlashCommands(chatCommandContext)
 
   // Draft persistence - saves on conversation change, restores on load
-  const [text, setText] = useConversationDraft({
+  const [text, setText, consumeDraft] = useConversationDraft({
     conversationId,
-    draftOperations: { getDraft, setDraft, clearDraft },
+    draftOperations: { owner: chatStore, getDraft, setDraft, clearDraft },
     composerRef,
+    editingConversationId: editingMessage?.conversationId,
   })
 
   // Convert Message to ReplyInfo for the composer
@@ -1255,7 +1259,7 @@ export const MessageInput = memo(function MessageInput({
     isEncryptedSource(replyingTo)
 
   // Convert Message to EditInfo for the composer
-  const editInfo: EditInfo | null = editingMessage
+  const editInfo: EditInfo | null = editingMessage?.conversationId === conversationId
     ? {
         id: editingMessage.id,
         rowId: messageRowId(editingMessage),
@@ -1280,9 +1284,9 @@ export const MessageInput = memo(function MessageInput({
     // happen plaintext-or-ciphertext-with-no-recipient (depending on
     // `encryptAttachment` below) and the send would fail at encrypt
     // time, leaving an orphaned upload on the server. Opening the
-    // unlock dialog routes the user to the passphrase prompt; the
-    // typed text stays in the composer (we return `false` here, which
-    // skips the `setText('')` clear in MessageComposer).
+    // unlock dialog routes the user to the passphrase prompt. Returning
+    // `false` restores the draft through the composer's rollback after
+    // it was cleared at submission.
     if (encryptionState.kind === 'keyLocked') {
       openWebUnlockDialog()
       return false
@@ -1337,8 +1341,7 @@ export const MessageInput = memo(function MessageInput({
       onRemovePendingAttachment?.()
     }
 
-    // Clear draft immediately so sidebar updates
-    clearDraft(conversationId)
+    // The composer consumed this draft before sending; a newer draft belongs to the user.
 
     // Process link preview in background (don't block on it)
     // Skip when encrypted — the fastening would leak URL/title/image in cleartext
@@ -1370,6 +1373,7 @@ export const MessageInput = memo(function MessageInput({
         onSendCorrection={handleCorrection}
         onRetractMessage={handleRetract}
         onComposingChange={onComposingChange}
+        onConsumeDraft={consumeDraft}
         onSend={(text) => trackSend(handleSend(text))}
         onSendEasterEgg={(animation) => sendEasterEgg(conversationId, type, animation)}
         onSendTypingState={handleTypingState}

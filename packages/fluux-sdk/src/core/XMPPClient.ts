@@ -113,6 +113,8 @@ import { Admin } from './modules/Admin'
 import { Profile } from './modules/Profile'
 import { Discovery } from './modules/Discovery'
 import { Connection } from './modules/Connection'
+import type { SmResumptionState } from './types/connection'
+import { resolveSmRequestSeconds } from './modules/smResumptionPolicy'
 import { PubSub } from './modules/PubSub'
 import { Blocking } from './modules/Blocking'
 import { Ignore } from './modules/Ignore'
@@ -263,6 +265,7 @@ export class XMPPClient {
   private shouldAutoReconnect?: () => boolean
   private e2eeStorageBackend: StorageBackend = new InMemoryStorageBackend()
   private proxyAdapter?: ProxyAdapter
+  private streamManagementMaxSeconds?: number
   private privacyOptions?: PrivacyOptions
   private readonly e2eePlugins?: readonly string[]
   private stateSnapshot?: StateSnapshot
@@ -520,6 +523,8 @@ export class XMPPClient {
     this.userAgentId = config.userAgentId
     this.shouldAutoReconnect = config.shouldAutoReconnect
     this.proxyAdapter = config.proxyAdapter
+    this.streamManagementMaxSeconds = config.streamManagementMaxSeconds
+    resolveSmRequestSeconds(this.streamManagementMaxSeconds) // reject invalid values before connecting
     // Store privacy options for avatar fetching behavior
     this.privacyOptions = config.privacyOptions
     this.e2eePlugins = config.e2eePlugins
@@ -730,6 +735,7 @@ export class XMPPClient {
       fastTokenStorage: this.fastTokenStorage,
       userAgentId: this.userAgentId,
       proxyAdapter: this.proxyAdapter,
+      streamManagementMaxSeconds: this.streamManagementMaxSeconds,
       registerMAMCollector: (queryId: string, collector: (stanza: Element) => void) => this.registerMAMCollector(queryId, collector),
       privacyOptions: this.privacyOptions,
       getE2EEManager: () => this.e2ee,
@@ -843,7 +849,14 @@ export class XMPPClient {
       this.onInternal('mucJoined', (roomJid) => {
         const room = this.stores?.room.getRoom(roomJid)
         if (room && !room.avatar && !room.avatarFromPresence) {
-          this.profile.fetchRoomAvatar(roomJid).catch(() => {})
+          // A restored 40-hex content hash lets the fetch save the picture under
+          // that hash; otherwise the hashless path keys it by a generated ID.
+          const restoredHash = room.avatarHash && /^[0-9a-f]{40}$/i.test(room.avatarHash) ? room.avatarHash : undefined
+          if (restoredHash) {
+            this.profile.fetchRoomAvatar(roomJid, restoredHash).catch(() => {})
+          } else {
+            this.profile.fetchRoomAvatar(roomJid).catch(() => {})
+          }
         }
         // Restore cached avatars for occupants whose presence lacked vcard-temp:x:update
         this.profile.restoreOccupantAvatarsFromCache(roomJid).catch(() => {})
@@ -1673,7 +1686,7 @@ export class XMPPClient {
    * await client.connect({ ...options, smState: stored ? JSON.parse(stored) : undefined })
    * ```
    */
-  getStreamManagementState(): { id: string; inbound: number; outbound: number } | null {
+  getStreamManagementState(): SmResumptionState | null {
     return this.connection.getStreamManagementState()
   }
 
@@ -1925,6 +1938,13 @@ export class XMPPClient {
         securityContext,
         ...(body !== undefined && { body }),
       })
+      // The check is done, so the sender's key is now cached. Decrypt this
+      // sender's messages that still keep their encrypted copy again: they
+      // lose the copy, which the app shows as "could not decrypt", and the
+      // message cache gets the new trust, also for conversations not open.
+      this.deferredDecrypt.retryForPeer(peer).catch((err: unknown) => {
+        e2eeLogger.warn(`retry after a signature check failed for ${getDomain(peer)}: ${err instanceof Error ? err.message : String(err)}`)
+      })
     })
     // When a plugin registers, emit a SDK event so backgroundSync (and other
     // listeners) can trigger deferred decryption of messages that arrived
@@ -2038,6 +2058,9 @@ export class XMPPClient {
   }
 
   private async waitForReplayIngested(timeoutMs: number): Promise<void> {
+    // SM retransmissions need not carry a delay tag. Mark reception until the
+    // ping answer, so Chat can attach slow integration to known peers only.
+    const endReplay = this.stores?.connection.beginReplay?.()
     const deadline = Date.now() + timeoutMs
     // Next macrotask: the resume handler that calls this runs before the
     // connection restores its Stream Management counters.
@@ -2047,6 +2070,8 @@ export class XMPPClient {
       await this.sendIQ(xml('iq', { type: 'get' }, xml('ping', { xmlns: NS_PING })), timeoutMs)
     } catch {
       // An error reply is still an answer; a timeout or a lost socket ends the wait.
+    } finally {
+      endReplay?.()
     }
     // Encrypted replayed messages reach the store only once decrypted, which
     // can end after the answer.

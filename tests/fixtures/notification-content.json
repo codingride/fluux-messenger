@@ -134,15 +134,15 @@
     },
     {
       "id": "room",
-      "app": {"message": {"body": "Hi"}, "room": true, "expected": {"title": "Alice @ Team", "body": "Hi"}, "web": {"title": "Alice @ Team", "body": "Hi"}},
+      "app": {"message": {"body": "Hi"}, "room": true, "systemTitle": "Team — Alice", "expected": {"title": "Alice @ Team", "body": "Hi"}, "web": {"title": "Alice @ Team", "body": "Hi"}},
       "push": {"payload": {"body": "Hi", "title": "Team", "from": "team@conference.example.test", "type": "room"}, "expected": {"title": "Team", "body": "Hi"}},
-      "ios": {"body": "Hi", "room": true, "expected": {"title": "Team", "body": "Hi", "subtitle": "Alice"}}
+      "ios": {"body": "Hi", "room": true, "expected": {"title": "Team", "body": "Alice\nHi", "subtitle": ""}}
     },
     {
       "id": "room-count",
-      "app": {"message": {"body": "Latest"}, "room": true, "count": 2, "expected": {"title": "Alice @ Team", "body": "Latest"}, "web": {"title": "Team", "body": "2 new messages"}},
+      "app": {"message": {"body": "Latest"}, "room": true, "count": 2, "systemTitle": "Team — Alice", "expected": {"title": "Alice @ Team", "body": "Latest"}, "web": {"title": "Team", "body": "2 new messages"}},
       "push": {"payload": {"body": "Latest", "title": "Team", "from": "team@conference.example.test", "type": "room"}, "existingCount": 1, "expected": {"title": "Team", "body": "2 new messages"}},
-      "ios": {"body": "Latest", "room": true, "expected": {"title": "Team", "body": "Latest", "subtitle": "Alice"}}
+      "ios": {"body": "Latest", "room": true, "expected": {"title": "Team", "body": "Alice\nLatest", "subtitle": ""}}
     },
     {
       "id": "unnamed-chat",
@@ -196,11 +196,11 @@
     },
     {
       "id": "unknown-batch",
-      "ios": {"body": "fallback", "expected": {"title": "Alice", "body": "New activity"}, "preview": true, "events": [{"uid": "one", "id": "one", "kind": "newMessage", "body": "Older"}, {"uid": "unknown", "id": "unknown", "kind": "unknown"}]}
+      "ios": {"body": "fallback", "expected": {"title": "Alice", "body": "fallback"}, "preview": true, "events": [{"uid": "one", "id": "one", "kind": "newMessage", "body": "Older"}, {"uid": "unknown", "id": "unknown", "kind": "unknown"}]}
     },
     {
       "id": "unresolved-correction",
-      "ios": {"body": "fallback", "expected": {"title": "Alice", "body": "New activity"}, "preview": true, "events": [{"uid": "one", "id": "one", "kind": "newMessage", "body": "Older"}, {"uid": "edit", "id": "edit", "kind": "metadata", "mutation": "edit", "target": "missing", "text": "Unsafe"}]}
+      "ios": {"body": "fallback", "expected": {"title": "Alice", "body": "fallback"}, "preview": true, "events": [{"uid": "one", "id": "one", "kind": "newMessage", "body": "Older"}, {"uid": "edit", "id": "edit", "kind": "metadata", "mutation": "edit", "target": "missing", "text": "Unsafe"}]}
     },
     {
       "id": "plaintext-explicit",
@@ -216,6 +216,50 @@
     {
       "id": "blank-excluded-from-catchup-count",
       "ios": {"body": "fallback", "preview": true, "events": [{"uid": "blank", "id": "blank", "kind": "newMessage", "body": " \n\t "}, {"uid": "one", "id": "one", "kind": "newMessage", "body": "Readable"}], "expected": {"title": "Alice", "body": "Readable"}}
+    },
+    {
+      "id": "plain-lookup-empty",
+      "ios": {"body": "Only server copy", "preview": true, "events": [], "expected": {"title": "Alice", "body": "Only server copy"}}
+    },
+    {
+      "id": "plain-lookup-failure",
+      "ios": {"body": "Only server copy", "preview": true, "events": [], "expected": {"title": "Alice", "body": "Only server copy"}, "failure": true}
+    },
+    {
+      "id": "plain-lookup-expired",
+      "ios": {"body": "Only server copy", "preview": true, "events": [], "expected": {"title": "Alice", "body": "Only server copy"}, "expired": true}
+    },
+    {
+      "id": "plain-lookup-incomplete",
+      "ios": {"body": "Only server copy", "preview": true, "events": [{"uid": "one", "id": "one", "kind": "newMessage", "body": "Archived copy"}], "expected": {"title": "Alice", "body": "Only server copy"}, "complete": false}
+    },
+    {
+      "id": "plain-lookup-duplicate",
+      "ios": {"body": "Only server copy", "preview": true, "events": [{"uid": "one", "id": "one", "kind": "newMessage", "body": "Archived copy"}], "expected": {"title": "Alice", "body": "Only server copy"}, "duplicate": true}
+    },
+    {
+      "id": "plain-lookup-read",
+      "ios": {"body": "Only server copy", "preview": true, "events": [{"uid": "one", "id": "one", "kind": "newMessage", "body": "Archived copy"}], "expected": {"title": "Alice", "body": "Only server copy"}, "read": true}
+    },
+    {
+      "id": "app-language-encrypted",
+      "ios": {"body": "[OpenPGP-encrypted message]", "preview": true, "events": [], "words": {"activity": "Nouvelle activité", "reaction": "{{nickname}} a réagi : {{text}}", "edit": "{{nickname}} (edit) : {{text}}", "retraction": "{{nickname}} a supprimé un message", "messages": "{{nickname}} : {{count}} nouveaux messages"}, "expected": {"title": "Alice", "body": "Nouvelle activité"}, "encrypted": true}
+    },
+    {
+      "id": "app-language-legacy",
+      "ios": {"body": "This message is encrypted", "preview": true, "events": [], "words": {"activity": "Nouvelle activité", "reaction": "{{nickname}} a réagi : {{text}}", "edit": "{{nickname}} (edit) : {{text}}", "retraction": "{{nickname}} a supprimé un message", "messages": "{{nickname}} : {{count}} nouveaux messages"}, "expected": {"title": "Alice", "body": "Nouvelle activité"}}
+    },
+    {
+      "id": "app-language-empty",
+      "ios": {"body": "", "preview": true, "events": [], "words": {"activity": "Nouvelle activité", "reaction": "{{nickname}} a réagi : {{text}}", "edit": "{{nickname}} (edit) : {{text}}", "retraction": "{{nickname}} a supprimé un message", "messages": "{{nickname}} : {{count}} nouveaux messages"}, "expected": {"title": "Alice", "body": "Nouvelle activité"}}
+    },
+    {
+      "id": "app-language-plain",
+      "ios": {"body": "Only server copy", "preview": true, "events": [], "words": {"activity": "Nouvelle activité", "reaction": "{{nickname}} a réagi : {{text}}", "edit": "{{nickname}} (edit) : {{text}}", "retraction": "{{nickname}} a supprimé un message", "messages": "{{nickname}} : {{count}} nouveaux messages"}, "expected": {"title": "Alice", "body": "Only server copy"}}
+    },
+    {
+      "id": "app-language-other-account",
+      "ios": {"body": "[OpenPGP-encrypted message]", "preview": true, "events": [], "words": {"activity": "Nouvelle activité", "reaction": "{{nickname}} a réagi : {{text}}", "edit": "{{nickname}} (edit) : {{text}}", "retraction": "{{nickname}} a supprimé un message", "messages": "{{nickname}} : {{count}} nouveaux messages"}, "snapshotAccount": "other@example.test", "expected": {"title": "Alice", "body": "New activity"}}
     }
   ]
 }
