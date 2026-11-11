@@ -4,6 +4,7 @@ import type { Message, RoomMessage } from '@fluux/sdk'
 import { bootDemo } from './harness/demoBoot'
 import { withPinWindow } from './harness/pinWindow'
 import { syncEngineGeometry } from './harness/compositorSync'
+import { publishWheelListener } from './harness/wheelInput'
 import {
   STRESS_ROOM_JID,
   FRAME_SAMPLE_MS,
@@ -1998,6 +1999,73 @@ test.describe('Sliding window (load-older past the cap)', () => {
     expect(recentered.atLiveEdge, `jump-to-latest did not recenter to the live edge: ${JSON.stringify(recentered)}`).toBe(true)
     expect(recentered.count, `resident not bounded after recenter: ${JSON.stringify(recentered)}`).toBeLessThanOrEqual(100)
   })
+
+  // A reader could not scroll back past the resident window of a one-to-one chat longer than it:
+  // every pull past the bound was undone and the view went back to the newest messages. A pull at
+  // the bound trims the newest rows; when the new bottom row was the reader's own message, the list
+  // followed it as if it had just been sent, and the pin at the bottom of the slid window loaded
+  // newer history until the window was back at the newest messages. The demo chat has the reader
+  // send every seventh message, so the second and third slides here end on one of theirs.
+  test('scrolling back past the bound keeps sliding older when a slide ends on the reader own message', async ({ page }) => {
+    const chatJid = 'stress-contact@fluux.chat'
+    await bootDemo(page, '/demo.html?tutorial=false&virt=1&window=100&stress=rooms:1,messages:150,msgStep:0')
+    await activateChat(page, chatJid)
+
+    const readWindow = (newestId: string | null) => page.evaluate(({ jid, newestId }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const store = (window as any).__chatStore.getState()
+      const messages: { id: string; timestamp: Date | string; isOutgoing?: boolean }[] = store.messages.get(jid) ?? []
+      const last = messages[messages.length - 1]
+      return {
+        firstAt: messages.length ? new Date(messages[0].timestamp).getTime() : null,
+        lastId: last?.id ?? null,
+        lastIsOwn: Boolean(last?.isOutgoing),
+        count: messages.length,
+        atLiveEdge: store.windowAtLiveEdge.get(jid) !== false,
+        newestRendered: newestId !== null &&
+          document.querySelector(`[data-message-list] [data-message-id="${CSS.escape(newestId)}"]`) !== null,
+      }
+    }, { jid: chatJid, newestId })
+
+    const start = await readWindow(null)
+    expect(start.atLiveEdge, `expected to open at the newest messages: ${JSON.stringify(start)}`).toBe(true)
+    expect(start.count, `expected a full window: ${JSON.stringify(start)}`).toBe(100)
+    const newestId = start.lastId!
+
+    /** The window once it stops moving: a snap back runs on after the pull has landed. */
+    const readSettled = async () => {
+      let previous = await readWindow(newestId)
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        await page.waitForTimeout(400)
+        const next = await readWindow(newestId)
+        if (JSON.stringify(next) === JSON.stringify(previous)) return next
+        previous = next
+      }
+      return previous
+    }
+
+    let previousFirstAt = start.firstAt!
+    let slidOntoOwnMessage = false
+    for (let pull = 1; pull <= 5; pull += 1) {
+      await scrollToTopAndLoad(page)
+      await page.waitForFunction(({ jid, before }) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const messages = (window as any).__chatStore.getState().messages.get(jid) ?? []
+        return messages.length > 0 && new Date(messages[0].timestamp).getTime() !== before
+      }, { jid: chatJid, before: previousFirstAt }, { timeout: 6_000 }).catch(() => { /* asserted below */ })
+      const after = await readSettled()
+      const where = `after pull ${pull}: ${JSON.stringify(after)}`
+      expect(after.firstAt!, `the window did not slide older, ${where}`).toBeLessThan(previousFirstAt)
+      expect(after.atLiveEdge, `the window went back to the newest messages, ${where}`).toBe(false)
+      expect(after.lastId, `the window went back to the newest messages, ${where}`).not.toBe(newestId)
+      expect(after.newestRendered, `the list shows the newest message again, ${where}`).toBe(false)
+      expect(after.count, `the window grew past its bound, ${where}`).toBeLessThanOrEqual(100)
+      slidOntoOwnMessage ||= after.lastIsOwn
+      previousFirstAt = after.firstAt!
+    }
+    // The case the journey exists for: a slide that left the reader's own message at the bottom.
+    expect(slidOntoOwnMessage, 'no slide ended on the reader own message; the journey no longer covers the defect').toBe(true)
+  })
 })
 
 // ── Opening a conversation from a push notification ──
@@ -3093,6 +3161,105 @@ test.describe('Insertion drift while scrolled up', () => {
   }
 
   /**
+   * Record what the next older-history page leaves in the resident window, read as it merges and
+   * before any positioning reacts. With `carryFirstRow`, the first resident row first loses its
+   * archive id, as the oldest resident row can, and the page carries it back with that id: a page
+   * asked for from a later row's archive id reaches back over it. Merging the page backfills the
+   * id, which renames the row's handle, in the same commit that adds the older rows and, at the
+   * resident bound, trims the newest.
+   */
+  async function watchNextOlderPage(
+    page: Page,
+    kind: ConversationKind,
+    options: { carryFirstRow?: boolean } = {},
+  ) {
+    const ready = await page.evaluate(([jid, kind, carryFirstRow]) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any
+      const store = kind === 'room' ? w.__roomStore : w.__chatStore
+      const method = kind === 'room' ? 'mergeRoomMAMMessages' : 'mergeMAMMessages'
+      const original = store.getState()[method]
+      if (typeof original !== 'function') return false
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let carried: any = null
+      if (carryFirstRow) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const resident: any[] = store.getState().messages.get(jid) ?? []
+        if (!resident[0]?.stanzaId) return false
+        carried = resident[0]
+        store.setState({
+          messages: new Map(store.getState().messages)
+            .set(jid, [{ ...carried, stanzaId: undefined }, ...resident.slice(1)]),
+        })
+      }
+      w.__olderPageLanding = null
+      store.setState({
+        // The merge's arguments: id, page rows, page info, complete, direction, options.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        [method]: (id: string, rows: any[], ...rest: unknown[]) => {
+          if (id !== jid || rest[2] !== 'backward') return original(id, rows, ...rest)
+          store.setState({ [method]: original })
+          original(id, carried ? [...rows, carried] : rows, ...rest)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const resident: any[] = store.getState().messages.get(jid) ?? []
+          const carriedIndex = carried
+            ? resident.findIndex((message) => message.id === carried.id)
+            : -1
+          w.__olderPageLanding = {
+            firstId: resident[0]?.id ?? null,
+            count: resident.length,
+            tailId: resident.at(-1)?.id ?? null,
+            tailIsOutgoing: Boolean(resident.at(-1)?.isOutgoing),
+            carriedIndex,
+            carriedStanzaId: carriedIndex >= 0 ? resident[carriedIndex].stanzaId ?? null : null,
+            expectedStanzaId: carried?.stanzaId ?? null,
+          }
+        },
+      })
+      return true
+    }, [conversationJid(kind), kind, options.carryFirstRow ?? false] as const)
+    expect(ready, 'the older-history merge must be watchable for this scenario').toBe(true)
+    await settle(page)
+    await syncEngineGeometry(page)
+  }
+
+  /** What {@link watchNextOlderPage} recorded as the page merged, or null before it did. */
+  const readOlderPageLanding = (page: Page) => page.evaluate(() =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__olderPageLanding as {
+      firstId: string | null
+      count: number
+      tailId: string | null
+      tailIsOutgoing: boolean
+      carriedIndex: number
+      carriedStanzaId: string | null
+      expectedStanzaId: string | null
+    } | null)
+
+  /**
+   * The reader wrote the newest half of the stress room's resident rows. A load-older at the
+   * resident bound trims the newest rows, so the bottom row it leaves is one of their own older
+   * messages: nobody sent anything.
+   */
+  async function ownNewestHalfOfRoom(page: Page) {
+    await page.evaluate((jid) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const store = (window as any).__roomStore
+      const state = store.getState()
+      const nick = state.rooms.get(jid)?.nickname as string
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const resident: any[] = state.messages.get(jid) ?? []
+      const half = Math.floor(resident.length / 2)
+      const owned = resident.map((message, index) => index < half
+        ? message
+        : { ...message, isOutgoing: true, nick, from: `${jid}/${nick}` })
+      store.setState({ messages: new Map(state.messages).set(jid, owned) })
+    }, STRESS_ROOM_JID)
+    await settle(page)
+    await syncEngineGeometry(page)
+  }
+
+  /**
    * Whether a hover hold (FLM-229) is active as a load-older starts. Either way the pointer rests on
    * the middle of the list, where every later wheel lands, and stays there: a hover hold starts only
    * when the pointer moves onto a message, so none starts later on. With `none`, one wheel tick ends
@@ -3151,7 +3318,8 @@ test.describe('Insertion drift while scrolled up', () => {
    * and the arrival lands between the rows they now read and those rows: below the view after
    * scrolling up, above it after scrolling down. The rows the reader then sees are the ones tracked.
    * `hover` says whether a hover hold is active as the load starts; every wheel lands where the
-   * pointer rests, which stays put.
+   * pointer rests, which stays put. With `arrival: false` no delayed message lands, so only the
+   * batch moves the window.
    */
   async function insertDuringInFlightLoadOlder(
     page: Page,
@@ -3162,6 +3330,7 @@ test.describe('Insertion drift while scrolled up', () => {
       scrollBeforeArrival?: 'up' | 'down'
       kind?: ConversationKind
       hover?: HoverAtLoadStart
+      arrival?: boolean
     } = {},
   ) {
     const kind = options.kind ?? 'room'
@@ -3227,6 +3396,8 @@ test.describe('Insertion drift while scrolled up', () => {
       )
       await page.waitForTimeout(400)
       await syncEngineGeometry(page)
+      await expect(list, 'precondition: the reader\'s wheel must end any hover hold')
+        .not.toHaveAttribute('data-message-interaction')
       const moved = await readView(page, kind)
       expect(moved, 'the message list must be readable').not.toBeNull()
       expect(
@@ -3238,7 +3409,9 @@ test.describe('Insertion drift while scrolled up', () => {
     }
 
     // The delayed arrival lands while that load is still waiting for its batch.
-    await deliverDelayed(page, kind, { id: 'delayed-arrival-0', timestamp: insertTs, body })
+    if (options.arrival !== false) {
+      await deliverDelayed(page, kind, { id: 'delayed-arrival-0', timestamp: insertTs, body })
+    }
     await page.waitForTimeout(400)
     await syncEngineGeometry(page)
 
@@ -3599,25 +3772,172 @@ test.describe('Insertion drift while scrolled up', () => {
 
   // FLM-210, review FLM-338 R1, at the resident bound: there the arrival also evicts the oldest
   // row, a window shift the pending load restores for at once, so it held the same off-screen row.
-  // No hover-hold variant here: at the bound a load the hover hold refused leaves its batch, which
-  // also evicts the newest rows, unheld even with no arrival (FLM-384).
-  test('invariant-14q: at the resident bound, a reader who scrolls up while a load-older waits keeps their rows when a delayed message lands below them', async ({ page }) => {
+  // With a hover hold, the load the hover hold refused leaves its batch to ambient insertion
+  // handling, and at the bound that batch also evicts the newest rows.
+  for (const hover of HOVER_AT_LOAD_START) {
+    test(`invariant-14q${hoverVariant(hover)}: at the resident bound, a reader who scrolls up while a load-older waits keeps their rows when a delayed message lands below them`, async ({ page }) => {
+      await openScrolledUp(page, FULL_WINDOW_INSERTION_URL)
+      const r = await insertDuringInFlightLoadOlder(
+        page,
+        'bound delayed arrival below a reader who scrolled up\n'.repeat(18),
+        { scrollBeforeArrival: 'up', hover },
+      )
+      console.log(`── INSERTION-DRIFT bound-below-moved-reader ${hover} ──`, JSON.stringify(r))
+      expect(
+        r.loadStartBelowViewport,
+        `precondition: the wheel must take the rows the load started from below the view — ${JSON.stringify(r)}`,
+      ).toBe(true)
+      expect(r.insertedBelowViewport, `the arrival must land BELOW the viewport — ${JSON.stringify(r)}`).toBe(true)
+      expect(
+        r.insertedAboveLoadStart,
+        `the arrival must land above the rows the load started from — ${JSON.stringify(r)}`,
+      ).toBe(true)
+      expect(
+        r.firstIdMidway,
+        `precondition: at the resident bound the arrival must evict the oldest row — ${JSON.stringify(r)}`,
+      ).not.toBe(r.firstIdBefore)
+      expect(
+        r.firstIdAfter,
+        `precondition: the gated load-older must have delivered its batch — ${JSON.stringify(r)}`,
+      ).not.toBe(r.firstIdMidway)
+      expect(
+        r.midwayDrift,
+        `an arrival below the reader moved their rows by ${r.midwayDrift}px while the load waited — ${JSON.stringify(r)}`,
+      ).toBeLessThanOrEqual(HELD_ROW_PX)
+      expect(
+        r.drift,
+        `an arrival below the reader moved their rows by ${r.drift}px once the batch landed — ${JSON.stringify(r)}`,
+      ).toBeLessThanOrEqual(HELD_ROW_PX)
+    })
+  }
+
+  // The reported defect, at the same bound with no arrival. A hover hold as the load starts makes
+  // the controller refuse the load's restore, so the batch is ambient insertion handling's to hold.
+  // At the bound the batch also evicts the newest rows, which moves the bottom row, and that
+  // handling took the batch for a live-edge arrival: the rows the reader scrolled to left the view.
+  for (const hover of HOVER_AT_LOAD_START) {
+    test(`invariant-14w${hoverVariant(hover)}: at the resident bound, a reader who scrolls up while a load-older waits keeps their rows when the batch lands`, async ({ page }) => {
+      await openScrolledUp(page, FULL_WINDOW_INSERTION_URL)
+      const r = await insertDuringInFlightLoadOlder(page, '', {
+        scrollBeforeArrival: 'up',
+        hover,
+        arrival: false,
+      })
+      console.log(`── INSERTION-DRIFT bound-batch-moved-reader ${hover} ──`, JSON.stringify(r))
+      expect(
+        r.loadStartBelowViewport,
+        `precondition: the wheel must take the rows the load started from below the view — ${JSON.stringify(r)}`,
+      ).toBe(true)
+      expect(
+        r.firstIdMidway,
+        `precondition: nothing may move the window before the batch — ${JSON.stringify(r)}`,
+      ).toBe(r.firstIdBefore)
+      expect(
+        r.firstIdAfter,
+        `precondition: the gated load-older must have delivered its batch — ${JSON.stringify(r)}`,
+      ).not.toBe(r.firstIdBefore)
+      expect(
+        r.residentCountAfter,
+        `precondition: at the resident bound the batch must evict as many newest rows — ${JSON.stringify(r)}`,
+      ).toBe(r.residentCountBefore)
+      expect(
+        r.drift,
+        `the batch moved the reader's rows by ${r.drift}px — ${JSON.stringify(r)}`,
+      ).toBeLessThanOrEqual(HELD_ROW_PX)
+    })
+  }
+
+  // Bug found in review of the hold above: the batch can also carry the row that was first and
+  // backfill its archive id, which renames that row's handle. Looked up by that handle, the row
+  // seemed evicted, so the batch was taken for a live-edge arrival again.
+  for (const hover of HOVER_AT_LOAD_START) {
+    test(`invariant-14y${hoverVariant(hover)}: at the resident bound, a reader who scrolls up while a load-older waits keeps their rows when the batch also backfills the first row's archive id`, async ({ page }) => {
+      await openScrolledUp(page, FULL_WINDOW_INSERTION_URL)
+      await watchNextOlderPage(page, 'room', { carryFirstRow: true })
+      const r = await insertDuringInFlightLoadOlder(page, '', {
+        scrollBeforeArrival: 'up',
+        hover,
+        arrival: false,
+      })
+      const landing = await readOlderPageLanding(page)
+      console.log(`── INSERTION-DRIFT bound-batch-backfills-first ${hover} ──`, JSON.stringify({ ...r, landing }))
+      expect(
+        r.loadStartBelowViewport,
+        `precondition: the wheel must take the rows the load started from below the view — ${JSON.stringify(r)}`,
+      ).toBe(true)
+      expect(
+        landing !== null && landing.firstId !== r.firstIdBefore,
+        `precondition: the gated load-older must have delivered its batch — ${JSON.stringify(landing)}`,
+      ).toBe(true)
+      expect(
+        landing!.carriedStanzaId !== null && landing!.carriedStanzaId === landing!.expectedStanzaId,
+        `precondition: the batch must backfill the first row's archive id — ${JSON.stringify(landing)}`,
+      ).toBe(true)
+      expect(
+        landing!.carriedIndex,
+        `precondition: the row that was first must stay resident below the older rows — ${JSON.stringify(landing)}`,
+      ).toBeGreaterThan(0)
+      expect(
+        landing!.count,
+        `precondition: at the resident bound the batch must evict as many newest rows — ${JSON.stringify(landing)}`,
+      ).toBe(r.residentCountBefore)
+      expect(
+        r.drift,
+        `the batch moved the reader's rows by ${r.drift}px — ${JSON.stringify(r)}`,
+      ).toBeLessThanOrEqual(HELD_ROW_PX)
+    })
+  }
+
+  // Bug found in review of the hold above: trimming the newest rows can leave one of the reader's
+  // own older messages last. That moved bottom row was taken for the reader's send, which returned
+  // them to the live edge although they sent nothing.
+  for (const hover of HOVER_AT_LOAD_START) {
+    test(`invariant-14z${hoverVariant(hover)}: at the resident bound, a reader who scrolls up while a load-older waits keeps their rows when the trimmed tail leaves their own older message last`, async ({ page }) => {
+      await openScrolledUp(page, FULL_WINDOW_INSERTION_URL)
+      await ownNewestHalfOfRoom(page)
+      await watchNextOlderPage(page, 'room')
+      const r = await insertDuringInFlightLoadOlder(page, '', {
+        scrollBeforeArrival: 'up',
+        hover,
+        arrival: false,
+      })
+      const landing = await readOlderPageLanding(page)
+      console.log(`── INSERTION-DRIFT bound-batch-own-tail ${hover} ──`, JSON.stringify({ ...r, landing }))
+      expect(
+        r.loadStartBelowViewport,
+        `precondition: the wheel must take the rows the load started from below the view — ${JSON.stringify(r)}`,
+      ).toBe(true)
+      expect(
+        landing !== null && landing.firstId !== r.firstIdBefore,
+        `precondition: the gated load-older must have delivered its batch — ${JSON.stringify(landing)}`,
+      ).toBe(true)
+      expect(
+        landing!.count,
+        `precondition: at the resident bound the batch must evict as many newest rows — ${JSON.stringify(landing)}`,
+      ).toBe(r.residentCountBefore)
+      expect(
+        landing!.tailIsOutgoing,
+        `precondition: the trimmed tail must leave the reader's own older message last — ${JSON.stringify(landing)}`,
+      ).toBe(true)
+      expect(
+        r.drift,
+        `the batch moved the reader's rows by ${r.drift}px — ${JSON.stringify(r)}`,
+      ).toBeLessThanOrEqual(HELD_ROW_PX)
+    })
+  }
+
+  // The same defect class without a hover hold: at the bound an arrival above the reader
+  // starts the load's restore, and the reader then scrolls on, which releases the load. Its batch
+  // is again ambient insertion handling's to hold, and it evicts the newest rows.
+  test('invariant-14x: at the resident bound, a reader who scrolls on while a load-older waits after an interior arrival keeps the rows they scrolled to', async ({ page }) => {
     await openScrolledUp(page, FULL_WINDOW_INSERTION_URL)
     const r = await insertDuringInFlightLoadOlder(
       page,
-      'bound delayed arrival below a reader who scrolled up\n'.repeat(18),
-      { scrollBeforeArrival: 'up' },
+      'bound delayed arrival before the reader scrolls on\n'.repeat(18),
+      { wheelDuringWaitPx: 200 },
     )
-    console.log('── INSERTION-DRIFT bound-below-moved-reader ──', JSON.stringify(r))
-    expect(
-      r.loadStartBelowViewport,
-      `precondition: the wheel must take the rows the load started from below the view — ${JSON.stringify(r)}`,
-    ).toBe(true)
-    expect(r.insertedBelowViewport, `the arrival must land BELOW the viewport — ${JSON.stringify(r)}`).toBe(true)
-    expect(
-      r.insertedAboveLoadStart,
-      `the arrival must land above the rows the load started from — ${JSON.stringify(r)}`,
-    ).toBe(true)
+    console.log('── INSERTION-DRIFT bound-moved-during-load-older ──', JSON.stringify(r))
+    expect(r.insertedAboveViewport, 'the arrival must land ABOVE the viewport').toBe(true)
     expect(
       r.firstIdMidway,
       `precondition: at the resident bound the arrival must evict the oldest row — ${JSON.stringify(r)}`,
@@ -3627,12 +3947,12 @@ test.describe('Insertion drift while scrolled up', () => {
       `precondition: the gated load-older must have delivered its batch — ${JSON.stringify(r)}`,
     ).not.toBe(r.firstIdMidway)
     expect(
-      r.midwayDrift,
-      `an arrival below the reader moved their rows by ${r.midwayDrift}px while the load waited — ${JSON.stringify(r)}`,
-    ).toBeLessThanOrEqual(HELD_ROW_PX)
+      r.movedTop !== null && r.midwayTop !== null && r.movedTop - r.midwayTop > 100,
+      `precondition: the wheel must have moved the reader down the history — ${JSON.stringify(r)}`,
+    ).toBe(true)
     expect(
-      r.drift,
-      `an arrival below the reader moved their rows by ${r.drift}px once the batch landed — ${JSON.stringify(r)}`,
+      r.movedDrift,
+      `the batch moved the rows the reader scrolled to by ${r.movedDrift}px — ${JSON.stringify(r)}`,
     ).toBeLessThanOrEqual(HELD_ROW_PX)
   })
 
@@ -4579,20 +4899,25 @@ for (const virtualized of [false, true]) {
       await page.waitForTimeout(SETTLE_MS)
       const list = page.locator('[data-message-list]').first()
       await list.hover()
+      if (input === 'prevented-wheel') {
+        await list.evaluate(scroller => {
+          const scope = window as unknown as { __mediaInputEvents: { trusted: boolean; top: number }[] }
+          scope.__mediaInputEvents = []
+          scroller.addEventListener('wheel', event => {
+            scope.__mediaInputEvents.push({ trusted: event.isTrusted, top: scroller.scrollTop })
+            event.preventDefault()
+          }, { passive: false, once: true })
+        })
+        await publishWheelListener(page)
+      }
       const before = await list.evaluate((scroller, input) => {
         const scope = window as unknown as FinalBoundaryWindow & {
           __fluuxTriggerMediaLoad: () => void
           __mediaInputEvents: { trusted: boolean; top: number }[]
         }
         scope.__finalLoads = 0
-        scope.__mediaInputEvents = []
+        if (input === 'scheduled-scroll') scope.__mediaInputEvents = []
         scope.__fluuxTriggerMediaLoad()
-        if (input === 'prevented-wheel') {
-          scroller.addEventListener('wheel', event => {
-            scope.__mediaInputEvents.push({ trusted: event.isTrusted, top: scroller.scrollTop })
-            event.preventDefault()
-          }, { passive: false, once: true })
-        }
         return { top: scroller.scrollTop, height: scroller.scrollHeight }
       }, input)
       if (input === 'scheduled-scroll') {
