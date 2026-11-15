@@ -15,7 +15,7 @@ export interface ChangelogEntry {
 export const changelog: ChangelogEntry[] = [
   {
     version: '0.18.3',
-    date: 'Unreleased',
+    date: '2026-11-12',
     sections: [{
       type: 'added',
       items: [
@@ -33,6 +33,12 @@ export const changelog: ChangelogEntry[] = [
         'Scrolling up in conversations and rooms no longer jumps or skips messages when Fluux corrects its size estimate for older messages, for example after a long run of your own short replies',
         'Scrolling back through a very long conversation or room no longer gets stuck or returns to the newest messages once you go past the latest 5,000 messages, so you can read back to the start',
         'In long conversations and rooms, the messages you are reading no longer jump away when older messages finish loading while your pointer rests on a message or you keep scrolling',
+        'Reading stays put when a conversation or room grows, when media finishes loading, and while you keep scrolling. On iOS, pulling past the end of a conversation while it grows brings you back to its newest messages when you let go',
+        'macOS: reading a conversation or room now also clears its notifications that arrived before Fluux was last restarted',
+        'iOS: the app icon badge now shows Fluux\'s own unread count as soon as the app is open and connected, instead of keeping an old saved number until the archive catch-up ends',
+        'iOS: the unread widget now asks the system to refresh itself about once an hour and re-reads its list, instead of relying only on redraw requests from the app',
+        'When the system keychain is locked or unavailable as you sign in with Remember me, Fluux now tells you your password was not saved instead of failing silently. On Linux, a keyring still locked at startup no longer makes Fluux forget your saved password, so the next start with the keyring unlocked signs you in',
+        'Changing your password no longer reports a failure when the server accepted the new password but the system keychain could not save it. Fluux now tells you the new password was not saved, and the next start no longer tries the old saved password',
       ],
     }],
   },

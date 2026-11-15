@@ -88,6 +88,7 @@ script `scripts/test-affected.sh` uses this same implementation, not another rul
 | `PhotoPreparation.swift`, `ShareInboxPlugin.swift`, photo fixture | `test:ios-photos` and platform contracts |
 | `HingeLayout.swift`, hinge layout fixture | `test:ios-hinge` and platform contracts |
 | `ShareViewController.swift`, share integration fixtures/schemes | `test:ios-extensions`, `test:ios-share`, `macos-share.test.mjs` and platform contracts |
+| iOS widget, `UnreadList.swift`, `NotificationService.swift`, push extension sources, widget lab files | `test:ios-widgets` (simulator widget lab) beside the checks below |
 | Push/NotificationAvatars/NotificationPreviews, notification fixtures | `test:ios-notifications` and platform contracts; diagnostic integration fixtures also run `test:ios-diagnostic` |
 | iOS project/generation/configuration | Project/generated-file/extension contracts and conservative fallback; review additional native steps |
 | TLS, Cargo/build features, native permissions or Tauri configuration | Native crate and production-TLS suites, TLS/feature guards, platform and generation contracts, full JavaScript families |
@@ -109,7 +110,8 @@ see [the read-only signature probe](MACOS_COMMUNICATION_PROTOTYPE.md#checks-with
 and `FLUUX_PHOTO_FIXTURES` pointing to real JPEG/HEIC images, including location
 and rotated portrait cases. `test:ios-share` needs the existing Xcode/XcodeGen
 setup and `FLUUX_SHARE_RESULTS` as an absolute output directory **outside** the
-project. Diagnostic integration fixtures similarly require
+project. `test:ios-widgets` (the simulator widget lab,
+see `scripts/native-tests/ios-widgets/README.md`) needs `FLUUX_WIDGETS_RESULTS` the same way. Diagnostic integration fixtures similarly require
 `FLUUX_DIAGNOSTIC_RESULTS` outside the project. The selector rejects known missing
 prerequisites before starting work;
 commands fail for other missing tools. It never interprets a native skip as proof,
@@ -179,6 +181,15 @@ To reproduce one engine's job or one scroll suite:
 npm run test:e2e -- --project="*-chromium" --workers=2
 npm run test:e2e -- --project=scroll-reading-webkit
 ```
+
+On macOS, the WebKit projects keep their failure traces without screenshots. Playwright's
+WebKit takes each trace screenshot through the macOS window server, about 25 times a
+second per test, and each picture takes one of the window server's image buffers. With
+several workers, the buffers can pile up faster than they are freed; when none is left, the
+window server aborts and macOS ends the login session. The traces keep
+their DOM snapshots, actions, console and network. For the same reason, avoid video
+recording on long macOS WebKit runs: it captures the window the same way. A `--trace` flag
+on the command line is safe: it changes only the mode and keeps screenshots off.
 
 ### macOS native startup recovery
 
