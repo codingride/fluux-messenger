@@ -121,6 +121,7 @@ export { getRoomModerationId, roomStanzaIdsMergeable } from './utils/roomStanzaI
 // than another export. See `diagnostics/channel.ts` for the contract.
 export { subscribeDiagnostics } from './diagnostics/channel'
 export type {
+  BadgeDecisionDiagnostic,
   DiagnosticEvent,
   DiagnosticHandler,
   DiagnosticKind,
@@ -595,6 +596,8 @@ export type { NickDisplay } from './core/nick'
 export { discoSupportsPep } from './core/modules/Discovery'
 
 // XMPP URI utilities (RFC 5122)
+export { buildRoomMessageLink, parseRoomMessageLink } from './utils/roomMessageLink'
+export type { RoomMessageLink } from './utils/roomMessageLink'
 export { parseXmppUri, isMucJid } from './utils/xmppUri'
 export type { XmppUri } from './utils/xmppUri'
 

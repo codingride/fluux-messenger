@@ -50,6 +50,15 @@ Open http://localhost:5173 and connect with your XMPP credentials.
 | `npm run tauri:install` | Build + install the desktop app into `/Applications` (macOS) |
 | `npm run screenshots`   | Generate demo screenshots (see below)                        |
 
+### Heavy tests on the Windows runner
+
+A private manual dispatcher can run Fluux's complete workspace unit suites and
+Chromium/WebKit browser sweeps on Windows. See
+[Requesting heavy tests on Windows](WINDOWS_HEAVY_TESTS.md) for profiles, the
+exact-version request through the first mate, and the evidence handoff.
+This does not change the existing gate: Windows WebKit is neither Safari nor
+WKWebView, and does not validate Fluux's Windows WebView2 shell.
+
 ### Targeted local tests
 
 During iteration, use `npm run test:local` from the project root. With no arguments
@@ -890,6 +899,41 @@ identifier, message content, or raw exception text is included. If an encrypted
 placeholder keeps spinning, the last started phase without a terminal line
 identifies the initialization stage to investigate. A `ready` line means plugin
 registration completed, not that every pending message has decrypted.
+
+### Automatic badge diagnostics
+
+Fluux automatically keeps an independent local badge-decision journal during normal
+use, without enabling notification debugging. In **Settings → Advanced**, enable
+advanced mode to expose the console. Open **Show Console** from the user menu, then
+choose **Export badge diagnostics** (the bug icon beside **Export log**). This action
+works even when the XMPP log is empty and downloads `fluux-badge-diagnostics.json`.
+Desktop uses the normal save dialog; cancelling writes nothing. A save failure shows
+an error rather than claiming success. This file is separate from the XMPP log, which
+can contain private protocol data.
+
+The journal records decryption start/completion, arrival acceptance and local cache
+write results, unread/read-pointer changes, visibility and viewport decisions, badge
+totals with their delivery target and desktop-native setter completion/failure. A pending
+decryption has a start without a completion. A native success means its promise completed, **not** that the operating
+system visibly drew the badge. Cache acceptance is not durable storage: those outcomes
+have separate events. Unavailable local storage leaves a bounded in-memory journal;
+the export reports `persistence: unavailable`, so it must not be mistaken for a durable
+record. The SDK publishes observations through its existing diagnostic channel;
+applications other than Fluux do not automatically persist them.
+
+Only allowlisted enums, booleans, counts, timestamps and random process-local correlation
+tokens enter storage or this export. No message content, addresses, protocol message IDs,
+passwords, key material or raw exception text is included. A bounded in-memory map joins
+related events; it is not persisted and tokens change after a restart or eviction.
+The record can still reveal timing and usage counts; review it before sharing. Fluux
+uploads nothing automatically.
+
+Retention is the most recent **1,000 events**, at most **one MiB**, with events older
+than **seven days** removed on startup, recording, export and scheduled idle expiry.
+The local journal survives ordinary restarts when storage is available. An explicit
+full local-data wipe removes its saved and in-memory history too. It cannot reconstruct
+events from before this feature or prove another device's behavior. Decryption algorithms, read-state policy and badge
+counts are unchanged.
 
 For deep SDK connection/proxy tracing (high-volume logs such as machine transitions, disconnect phase timing, and proxy op lifecycle), enable the connection trace flag:
 

@@ -43,9 +43,11 @@ const BASE_URL = isolatedPort !== null
  */
 
 const SUITES = [
+  { name: 'badge-diagnostics', testMatch: 'badge-diagnostics.ts' },
   { name: 'backup-recovery', testMatch: 'backup-recovery.ts' },
   { name: 'archiving', testMatch: 'archiving-preferences.ts' },
   { name: 'message-updates', testMatch: 'message-updates.ts' },
+  { name: 'message-links', testMatch: 'message-links.ts' },
   { name: 'mobile-members', testMatch: 'mobile-members.ts' },
   { name: 'command-palette', testMatch: 'command-palette.ts' },
   { name: 'scroll-reading-width', testMatch: 'scroll-reading-width.ts' },
@@ -57,7 +59,7 @@ const SUITES = [
   { name: 'message-hover', testMatch: 'message-hover.ts' },
   { name: 'reply-quote', testMatch: 'reply-quote.ts' },
   { name: 'message-code-wrap', testMatch: 'message-code-wrap.ts' },
-  { name: 'composer', testMatch: 'composer-geometry.ts' },
+  { name: 'composer', testMatch: ['composer-geometry.ts', 'composer-transition.ts'] },
   { name: 'composer-send', testMatch: 'composer-send.ts' },
   { name: 'popover', testMatch: 'popover-geometry.ts' },
   { name: 'history-loading', testMatch: 'history-loading.ts' },
@@ -168,7 +170,7 @@ export default defineConfig({
     ...SUITES.flatMap(suite =>
       ENGINES.map(engine => ({
         name: `${suite.name}-${engine.name}`,
-        testMatch: suite.testMatch,
+        testMatch: typeof suite.testMatch === 'string' ? suite.testMatch : [...suite.testMatch],
         use: { ...engine.use },
       })),
     ),
